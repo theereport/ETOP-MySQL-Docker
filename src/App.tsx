@@ -111,7 +111,7 @@ body: JSON.stringify({
     content: message.content,
   })),
   top_k: 6,
-  department: 'Accounts Receivable',
+  department: null,
 }),
 
       })
