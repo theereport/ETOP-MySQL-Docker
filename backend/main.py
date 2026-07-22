@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sql_workspace import router as sql_workspace_router
+from schema_explorer import router as schema_explorer_router
 
 # ---------------------------------------------------------
 # Local-only configuration
@@ -73,6 +74,7 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 app.include_router(sql_workspace_router)
+app.include_router(schema_explorer_router)
 
 # ---------------------------------------------------------
 # Request and response models

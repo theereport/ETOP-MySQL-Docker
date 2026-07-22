@@ -11,6 +11,9 @@ import {
   useState,
 } from 'react'
 
+import DatabaseExplorer from './DatabaseExplorer'
+import './SqlStudio.css'
+
 type ConnectionStatus = {
   connected: boolean
   database: string
@@ -64,11 +67,23 @@ type QueryTab = {
 }
 
 type BottomPanel = 'results' | 'messages' | 'history'
-type SidePanel = 'saved' | 'history' | 'ai'
+
+type SidePanel =
+  | 'database'
+  | 'saved'
+  | 'history'
+  | 'ai'
+
+type StoredSqlWorkspace = {
+  tabs: QueryTab[]
+  activeTabId: string
+}
 
 const API_BASE = 'http://127.0.0.1:8000'
+
 const TAB_STORAGE_KEY = 'enterprise-ai-sql-tabs'
-const ACTIVE_TAB_STORAGE_KEY = 'enterprise-ai-active-sql-tab'
+const ACTIVE_TAB_STORAGE_KEY =
+  'enterprise-ai-active-sql-tab'
 
 const STARTER_SQL = `SELECT
     1 AS TestValue,
@@ -90,29 +105,60 @@ function createTab(
   }
 }
 
-function loadStoredTabs(): QueryTab[] {
+function loadStoredWorkspace(): StoredSqlWorkspace {
   try {
     const rawTabs = localStorage.getItem(TAB_STORAGE_KEY)
+    const storedActiveTabId = localStorage.getItem(
+      ACTIVE_TAB_STORAGE_KEY,
+    )
 
     if (!rawTabs) {
-      return [createTab('Query 1')]
+      const initialTab = createTab('Query 1')
+
+      return {
+        tabs: [initialTab],
+        activeTabId: initialTab.id,
+      }
     }
 
     const parsedTabs = JSON.parse(rawTabs) as QueryTab[]
 
     if (!Array.isArray(parsedTabs) || parsedTabs.length === 0) {
-      return [createTab('Query 1')]
+      const initialTab = createTab('Query 1')
+
+      return {
+        tabs: [initialTab],
+        activeTabId: initialTab.id,
+      }
     }
 
-    return parsedTabs.map((tab) => ({
+    const normalizedTabs = parsedTabs.map((tab) => ({
       ...tab,
       savedQueryId: tab.savedQueryId ?? null,
       category: tab.category || 'General',
       description: tab.description || '',
       isDirty: Boolean(tab.isDirty),
     }))
+
+    const validActiveTabId =
+      storedActiveTabId &&
+      normalizedTabs.some(
+        (tab) => tab.id === storedActiveTabId,
+      )
+        ? storedActiveTabId
+        : normalizedTabs[0].id
+
+    return {
+      tabs: normalizedTabs,
+      activeTabId: validActiveTabId,
+    }
   } catch {
-    return [createTab('Query 1')]
+    const initialTab = createTab('Query 1')
+
+    return {
+      tabs: [initialTab],
+      activeTabId: initialTab.id,
+    }
   }
 }
 
@@ -134,6 +180,7 @@ function downloadBlob(blob: Blob, fileName: string) {
 
   anchor.href = downloadUrl
   anchor.download = fileName
+
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()
@@ -151,25 +198,26 @@ function formatDateTime(value: string): string {
   return parsed.toLocaleString()
 }
 
+function quoteIdentifier(identifier: string): string {
+  return `\`${identifier.replaceAll('`', '``')}\``
+}
+
 export default function SqlWorkspace() {
-  const [tabs, setTabs] = useState<QueryTab[]>(loadStoredTabs)
+  const initialWorkspaceRef = useRef<StoredSqlWorkspace | null>(
+    null,
+  )
 
-  const [activeTabId, setActiveTabId] = useState(() => {
-    const storedActiveTab = localStorage.getItem(
-      ACTIVE_TAB_STORAGE_KEY,
-    )
+  if (!initialWorkspaceRef.current) {
+    initialWorkspaceRef.current = loadStoredWorkspace()
+  }
 
-    const availableTabs = loadStoredTabs()
+  const [tabs, setTabs] = useState<QueryTab[]>(
+    initialWorkspaceRef.current.tabs,
+  )
 
-    if (
-      storedActiveTab &&
-      availableTabs.some((tab) => tab.id === storedActiveTab)
-    ) {
-      return storedActiveTab
-    }
-
-    return availableTabs[0].id
-  })
+  const [activeTabId, setActiveTabId] = useState(
+    initialWorkspaceRef.current.activeTabId,
+  )
 
   const [rowLimit, setRowLimit] = useState(500)
 
@@ -179,6 +227,7 @@ export default function SqlWorkspace() {
   const [result, setResult] = useState<SqlResult | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+
   const [executionMessage, setExecutionMessage] = useState(
     'Run a query to display execution details.',
   )
@@ -187,19 +236,32 @@ export default function SqlWorkspace() {
   const [isExporting, setIsExporting] = useState(false)
   const [isExplaining, setIsExplaining] = useState(false)
 
-  const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([])
-  const [history, setHistory] = useState<QueryHistoryItem[]>([])
+  const [savedQueries, setSavedQueries] = useState<
+    SavedQuery[]
+  >([])
+
+  const [history, setHistory] = useState<
+    QueryHistoryItem[]
+  >([])
 
   const [librarySearch, setLibrarySearch] = useState('')
+
   const [activeSidePanel, setActiveSidePanel] =
-    useState<SidePanel>('saved')
+    useState<SidePanel>('database')
 
   const [activeBottomPanel, setActiveBottomPanel] =
     useState<BottomPanel>('results')
 
   const [aiResponse, setAiResponse] = useState('')
 
-  const editorRef = useRef<Parameters<OnMount>[0] | null>(null)
+  const editorRef =
+    useRef<Parameters<OnMount>[0] | null>(null)
+
+  const executeQueryRef =
+    useRef<() => Promise<void>>(async () => {})
+
+  const saveQueryRef =
+    useRef<() => Promise<void>>(async () => {})
 
   const activeTab = useMemo(() => {
     return (
@@ -245,7 +307,10 @@ export default function SqlWorkspace() {
     setError('')
 
     try {
-      const response = await fetch(`${API_BASE}/sql/connection`)
+      const response = await fetch(
+        `${API_BASE}/sql/connection`,
+      )
+
       const body = await response.json().catch(() => null)
 
       if (!response.ok) {
@@ -260,6 +325,7 @@ export default function SqlWorkspace() {
       setRowLimit(data.default_limit)
     } catch (requestError) {
       setConnection(null)
+
       setError(
         requestError instanceof Error
           ? requestError.message
@@ -320,7 +386,10 @@ export default function SqlWorkspace() {
   }, [loadConnection, loadHistory, loadSavedQueries])
 
   useEffect(() => {
-    localStorage.setItem(TAB_STORAGE_KEY, JSON.stringify(tabs))
+    localStorage.setItem(
+      TAB_STORAGE_KEY,
+      JSON.stringify(tabs),
+    )
   }, [tabs])
 
   useEffect(() => {
@@ -395,9 +464,7 @@ export default function SqlWorkspace() {
         monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
         monaco.KeyCode.F5,
       ],
-      run: () => {
-        void executeQuery()
-      },
+      run: () => executeQueryRef.current(),
     })
 
     editor.addAction({
@@ -406,9 +473,7 @@ export default function SqlWorkspace() {
       keybindings: [
         monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
       ],
-      run: () => {
-        void saveQuery()
-      },
+      run: () => saveQueryRef.current(),
     })
 
     editor.focus()
@@ -425,11 +490,16 @@ export default function SqlWorkspace() {
     const nextNumber = tabs.length + 1
     const newTab = createTab(`Query ${nextNumber}`)
 
-    setTabs((currentTabs) => [...currentTabs, newTab])
+    setTabs((currentTabs) => [
+      ...currentTabs,
+      newTab,
+    ])
+
     setActiveTabId(newTab.id)
     setResult(null)
     setError('')
     setNotice('New SQL tab created.')
+
     setExecutionMessage(
       'Run a query to display execution details.',
     )
@@ -450,11 +520,14 @@ export default function SqlWorkspace() {
     ])
 
     setActiveTabId(duplicatedTab.id)
+    setResult(null)
     setNotice('Query tab duplicated.')
   }
 
   function closeTab(tabId: string) {
-    const tabToClose = tabs.find((tab) => tab.id === tabId)
+    const tabToClose = tabs.find(
+      (tab) => tab.id === tabId,
+    )
 
     if (!tabToClose) {
       return
@@ -475,6 +548,7 @@ export default function SqlWorkspace() {
       setTabs([replacementTab])
       setActiveTabId(replacementTab.id)
       setResult(null)
+
       return
     }
 
@@ -491,7 +565,10 @@ export default function SqlWorkspace() {
     if (activeTabId === tabId) {
       const nextActiveTab =
         remainingTabs[
-          Math.min(closingIndex, remainingTabs.length - 1)
+          Math.min(
+            closingIndex,
+            remainingTabs.length - 1,
+          )
         ]
 
       setActiveTabId(nextActiveTab.id)
@@ -499,20 +576,35 @@ export default function SqlWorkspace() {
     }
   }
 
-  function renameActiveTab() {
+  function renameTab(tabId: string) {
+    const tab = tabs.find(
+      (currentTab) => currentTab.id === tabId,
+    )
+
+    if (!tab) {
+      return
+    }
+
     const nextTitle = window.prompt(
       'Enter the query tab name:',
-      activeTab.title,
+      tab.title,
     )
 
     if (!nextTitle?.trim()) {
       return
     }
 
-    updateActiveTab({
-      title: nextTitle.trim(),
-      isDirty: true,
-    })
+    setTabs((currentTabs) =>
+      currentTabs.map((currentTab) =>
+        currentTab.id === tabId
+          ? {
+              ...currentTab,
+              title: nextTitle.trim(),
+              isDirty: true,
+            }
+          : currentTab,
+      ),
+    )
   }
 
   async function executeQuery() {
@@ -525,21 +617,27 @@ export default function SqlWorkspace() {
     setNotice('')
     setResult(null)
     setActiveBottomPanel('messages')
-    setExecutionMessage('Executing query against MySQL…')
+
+    setExecutionMessage(
+      'Executing query against MySQL…',
+    )
 
     const startedAt = performance.now()
 
     try {
-      const response = await fetch(`${API_BASE}/sql/execute`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+      const response = await fetch(
+        `${API_BASE}/sql/execute`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            sql: activeTab.sql,
+            row_limit: rowLimit,
+          }),
         },
-        body: JSON.stringify({
-          sql: activeTab.sql,
-          row_limit: rowLimit,
-        }),
-      })
+      )
 
       const body = await response.json().catch(() => null)
 
@@ -552,6 +650,7 @@ export default function SqlWorkspace() {
       const queryResult = body as SqlResult
 
       setResult(queryResult)
+
       setExecutionMessage(
         [
           'Query completed successfully.',
@@ -568,6 +667,7 @@ export default function SqlWorkspace() {
       )
 
       setActiveBottomPanel('results')
+
       await loadHistory()
     } catch (requestError) {
       const totalMilliseconds = Math.round(
@@ -580,11 +680,13 @@ export default function SqlWorkspace() {
           : 'The SQL query failed.'
 
       setError(message)
+
       setExecutionMessage(
         `Query failed after ${totalMilliseconds.toLocaleString()} ms.\n\n${message}`,
       )
 
       setActiveBottomPanel('messages')
+
       await loadHistory()
     } finally {
       setIsExecuting(false)
@@ -600,32 +702,39 @@ export default function SqlWorkspace() {
     setError('')
 
     try {
-      const response = await fetch(`${API_BASE}/sql/export`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+      const response = await fetch(
+        `${API_BASE}/sql/export`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            sql: activeTab.sql,
+            row_limit: rowLimit,
+          }),
         },
-        body: JSON.stringify({
-          sql: activeTab.sql,
-          row_limit: rowLimit,
-        }),
-      })
+      )
 
       if (!response.ok) {
         const body = await response.json().catch(() => null)
 
         throw new Error(
-          body?.detail ?? 'Unable to export the results.',
+          body?.detail ??
+            'Unable to export the results.',
         )
       }
 
       const blob = await response.blob()
 
+      const safeTitle =
+        activeTab.title
+          .replace(/[^a-z0-9-_]+/gi, '-')
+          .replace(/^-+|-+$/g, '') || 'sql-results'
+
       downloadBlob(
         blob,
-        `${activeTab.title
-          .replace(/[^a-z0-9-_]+/gi, '-')
-          .replace(/^-+|-+$/g, '') || 'sql-results'}-${new Date()
+        `${safeTitle}-${new Date()
           .toISOString()
           .replaceAll(':', '-')
           .slice(0, 19)}.csv`,
@@ -642,8 +751,14 @@ export default function SqlWorkspace() {
   }
 
   async function saveQuery() {
-    if (!activeTab.title.trim() || !activeTab.sql.trim()) {
-      setError('Enter a query title and SQL before saving.')
+    if (
+      !activeTab.title.trim() ||
+      !activeTab.sql.trim()
+    ) {
+      setError(
+        'Enter a query title and SQL before saving.',
+      )
+
       return
     }
 
@@ -651,7 +766,8 @@ export default function SqlWorkspace() {
     setNotice('')
 
     try {
-      const isUpdating = activeTab.savedQueryId !== null
+      const isUpdating =
+        activeTab.savedQueryId !== null
 
       const response = await fetch(
         isUpdating
@@ -722,10 +838,17 @@ export default function SqlWorkspace() {
       isDirty: false,
     }
 
-    setTabs((currentTabs) => [...currentTabs, queryTab])
+    setTabs((currentTabs) => [
+      ...currentTabs,
+      queryTab,
+    ])
+
     setActiveTabId(queryTab.id)
     setResult(null)
-    setNotice(`Opened saved query: ${query.title}`)
+
+    setNotice(
+      `Opened saved query: ${query.title}`,
+    )
   }
 
   async function deleteSavedQuery(query: SavedQuery) {
@@ -749,7 +872,8 @@ export default function SqlWorkspace() {
 
       if (!response.ok) {
         throw new Error(
-          body?.detail ?? 'Unable to delete the query.',
+          body?.detail ??
+            'Unable to delete the query.',
         )
       }
 
@@ -766,6 +890,7 @@ export default function SqlWorkspace() {
       )
 
       setNotice('Saved query deleted.')
+
       await loadSavedQueries()
     } catch (requestError) {
       setError(
@@ -778,7 +903,10 @@ export default function SqlWorkspace() {
 
   async function copySql() {
     try {
-      await navigator.clipboard.writeText(activeTab.sql)
+      await navigator.clipboard.writeText(
+        activeTab.sql,
+      )
+
       setNotice('SQL copied to the clipboard.')
     } catch {
       setError('Unable to copy the SQL.')
@@ -796,16 +924,18 @@ export default function SqlWorkspace() {
     setAiResponse('')
 
     try {
-      const response = await fetch(`${API_BASE}/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: [
-            {
-              role: 'user',
-              content: `Explain the following MySQL query clearly.
+      const response = await fetch(
+        `${API_BASE}/chat`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messages: [
+              {
+                role: 'user',
+                content: `Explain the following MySQL query clearly.
 
 Include:
 1. What the query does
@@ -819,16 +949,18 @@ Include:
 SQL:
 
 ${activeTab.sql}`,
-            },
-          ],
-        }),
-      })
+              },
+            ],
+          }),
+        },
+      )
 
       const body = await response.json().catch(() => null)
 
       if (!response.ok) {
         throw new Error(
-          body?.detail ?? 'Unable to explain the SQL.',
+          body?.detail ??
+            'Unable to explain the SQL.',
         )
       }
 
@@ -844,7 +976,9 @@ ${activeTab.sql}`,
     }
   }
 
-  function openHistoryQuery(item: QueryHistoryItem) {
+  function openHistoryQuery(
+    item: QueryHistoryItem,
+  ) {
     const queryTab: QueryTab = {
       id: crypto.randomUUID(),
       title: `History ${item.id}`,
@@ -857,10 +991,17 @@ ${activeTab.sql}`,
       isDirty: true,
     }
 
-    setTabs((currentTabs) => [...currentTabs, queryTab])
+    setTabs((currentTabs) => [
+      ...currentTabs,
+      queryTab,
+    ])
+
     setActiveTabId(queryTab.id)
     setResult(null)
-    setNotice('Query opened from local history.')
+
+    setNotice(
+      'Query opened from local history.',
+    )
   }
 
   async function clearHistory() {
@@ -873,15 +1014,21 @@ ${activeTab.sql}`,
     }
 
     try {
-      const response = await fetch(`${API_BASE}/sql/history`, {
-        method: 'DELETE',
-      })
+      const response = await fetch(
+        `${API_BASE}/sql/history`,
+        {
+          method: 'DELETE',
+        },
+      )
 
       if (!response.ok) {
-        throw new Error('Unable to clear query history.')
+        throw new Error(
+          'Unable to clear query history.',
+        )
       }
 
       setNotice('Query history cleared.')
+
       await loadHistory()
     } catch (requestError) {
       setError(
@@ -891,6 +1038,86 @@ ${activeTab.sql}`,
       )
     }
   }
+
+  function insertTextIntoEditor(text: string) {
+    const editor = editorRef.current
+
+    if (!editor) {
+      updateActiveTab({
+        sql: `${activeTab.sql}${text}`,
+        isDirty: true,
+      })
+
+      return
+    }
+
+    const selection = editor.getSelection()
+
+    if (!selection) {
+      return
+    }
+
+    editor.executeEdits('database-explorer', [
+      {
+        range: selection,
+        text,
+        forceMoveMarkers: true,
+      },
+    ])
+
+    editor.focus()
+  }
+
+  function openTableQuery(
+    tableName: string,
+    columns: string[],
+  ) {
+    const quotedTable = quoteIdentifier(tableName)
+
+    const selectedColumns =
+      columns.length > 0 && columns.length <= 40
+        ? columns
+            .map(
+              (column) =>
+                `    ${quoteIdentifier(column)}`,
+            )
+            .join(',\n')
+        : '    *'
+
+    const generatedSql = `SELECT
+${selectedColumns}
+FROM ${quotedTable}
+LIMIT 100;`
+
+    const newTab: QueryTab = {
+      id: crypto.randomUUID(),
+      title: tableName,
+      sql: generatedSql,
+      savedQueryId: null,
+      category: 'Schema Explorer',
+      description: `Generated from database object ${tableName}.`,
+      isDirty: true,
+    }
+
+    setTabs((currentTabs) => [
+      ...currentTabs,
+      newTab,
+    ])
+
+    setActiveTabId(newTab.id)
+    setResult(null)
+
+    setExecutionMessage(
+      `Generated a read-only SELECT query for ${tableName}.`,
+    )
+
+    setNotice(
+      `Opened ${tableName} in a new SQL tab.`,
+    )
+  }
+
+  executeQueryRef.current = executeQuery
+  saveQueryRef.current = saveQuery
 
   return (
     <section className="sql-studio">
@@ -948,23 +1175,30 @@ ${activeTab.sql}`,
             onClick={() => void explainSql()}
             disabled={isExplaining}
           >
-            {isExplaining ? 'Explaining…' : 'Explain'}
+            {isExplaining
+              ? 'Explaining…'
+              : 'Explain'}
           </button>
 
           <label className="sql-row-limit-control">
             Rows
+
             <input
               type="number"
               min={1}
-              max={connection?.maximum_limit ?? 5000}
+              max={
+                connection?.maximum_limit ?? 5000
+              }
               value={rowLimit}
               onChange={(event) =>
                 setRowLimit(
                   Math.min(
-                    connection?.maximum_limit ?? 5000,
+                    connection?.maximum_limit ??
+                      5000,
                     Math.max(
                       1,
-                      Number(event.target.value) || 1,
+                      Number(event.target.value) ||
+                        1,
                     ),
                   ),
                 )
@@ -988,8 +1222,17 @@ ${activeTab.sql}`,
         </div>
       </div>
 
-      {error && <div className="sql-studio-error">{error}</div>}
-      {notice && <div className="sql-studio-notice">{notice}</div>}
+      {error && (
+        <div className="sql-studio-error">
+          {error}
+        </div>
+      )}
+
+      {notice && (
+        <div className="sql-studio-notice">
+          {notice}
+        </div>
+      )}
 
       <div className="sql-studio-layout">
         <aside className="sql-studio-left-panel">
@@ -997,13 +1240,31 @@ ${activeTab.sql}`,
             <strong>Explorer</strong>
           </div>
 
-          <div className="sql-studio-side-tabs">
+          <div className="sql-studio-side-tabs four-tabs">
             <button
               type="button"
               className={
-                activeSidePanel === 'saved' ? 'active' : ''
+                activeSidePanel === 'database'
+                  ? 'active'
+                  : ''
               }
-              onClick={() => setActiveSidePanel('saved')}
+              onClick={() =>
+                setActiveSidePanel('database')
+              }
+            >
+              Database
+            </button>
+
+            <button
+              type="button"
+              className={
+                activeSidePanel === 'saved'
+                  ? 'active'
+                  : ''
+              }
+              onClick={() =>
+                setActiveSidePanel('saved')
+              }
             >
               Saved
             </button>
@@ -1011,9 +1272,13 @@ ${activeTab.sql}`,
             <button
               type="button"
               className={
-                activeSidePanel === 'history' ? 'active' : ''
+                activeSidePanel === 'history'
+                  ? 'active'
+                  : ''
               }
-              onClick={() => setActiveSidePanel('history')}
+              onClick={() =>
+                setActiveSidePanel('history')
+              }
             >
               History
             </button>
@@ -1021,13 +1286,24 @@ ${activeTab.sql}`,
             <button
               type="button"
               className={
-                activeSidePanel === 'ai' ? 'active' : ''
+                activeSidePanel === 'ai'
+                  ? 'active'
+                  : ''
               }
-              onClick={() => setActiveSidePanel('ai')}
+              onClick={() =>
+                setActiveSidePanel('ai')
+              }
             >
               AI
             </button>
           </div>
+
+          {activeSidePanel === 'database' && (
+            <DatabaseExplorer
+              onOpenTableQuery={openTableQuery}
+              onInsertText={insertTextIntoEditor}
+            />
+          )}
 
           {activeSidePanel === 'saved' && (
             <div className="sql-studio-side-content">
@@ -1035,47 +1311,60 @@ ${activeTab.sql}`,
                 className="sql-studio-search"
                 value={librarySearch}
                 onChange={(event) =>
-                  setLibrarySearch(event.target.value)
+                  setLibrarySearch(
+                    event.target.value,
+                  )
                 }
                 placeholder="Search saved queries..."
               />
 
               <div className="sql-studio-query-list">
-                {filteredSavedQueries.map((query) => (
-                  <div
-                    className="sql-studio-query-item"
-                    key={query.id}
-                  >
-                    <button
-                      type="button"
-                      className="sql-studio-query-open"
-                      onDoubleClick={() =>
-                        openSavedQuery(query)
-                      }
-                      onClick={() => openSavedQuery(query)}
+                {filteredSavedQueries.map(
+                  (query) => (
+                    <div
+                      className="sql-studio-query-item"
+                      key={query.id}
                     >
-                      <span className="sql-file-icon">SQL</span>
+                      <button
+                        type="button"
+                        className="sql-studio-query-open"
+                        onClick={() =>
+                          openSavedQuery(query)
+                        }
+                      >
+                        <span className="sql-file-icon">
+                          SQL
+                        </span>
 
-                      <span>
-                        <strong>{query.title}</strong>
-                        <small>{query.category}</small>
-                      </span>
-                    </button>
+                        <span>
+                          <strong>
+                            {query.title}
+                          </strong>
 
-                    <button
-                      type="button"
-                      className="sql-query-delete"
-                      onClick={() =>
-                        void deleteSavedQuery(query)
-                      }
-                      title="Delete saved query"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
+                          <small>
+                            {query.category}
+                          </small>
+                        </span>
+                      </button>
 
-                {filteredSavedQueries.length === 0 && (
+                      <button
+                        type="button"
+                        className="sql-query-delete"
+                        onClick={() =>
+                          void deleteSavedQuery(
+                            query,
+                          )
+                        }
+                        title="Delete saved query"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ),
+                )}
+
+                {filteredSavedQueries.length ===
+                  0 && (
                   <p className="sql-studio-empty">
                     No saved queries found.
                   </p>
@@ -1089,7 +1378,9 @@ ${activeTab.sql}`,
               <button
                 type="button"
                 className="sql-studio-clear-history"
-                onClick={() => void clearHistory()}
+                onClick={() =>
+                  void clearHistory()
+                }
               >
                 Clear History
               </button>
@@ -1100,7 +1391,9 @@ ${activeTab.sql}`,
                     type="button"
                     key={item.id}
                     className="sql-studio-history-item"
-                    onClick={() => openHistoryQuery(item)}
+                    onClick={() =>
+                      openHistoryQuery(item)
+                    }
                   >
                     <span
                       className={
@@ -1118,7 +1411,9 @@ ${activeTab.sql}`,
                       </strong>
 
                       <small>
-                        {formatDateTime(item.executed_at)}
+                        {formatDateTime(
+                          item.executed_at,
+                        )}
                       </small>
 
                       <p>{item.sql}</p>
@@ -1137,16 +1432,20 @@ ${activeTab.sql}`,
 
           {activeSidePanel === 'ai' && (
             <div className="sql-studio-side-content sql-studio-ai">
-              <strong>Local SQL Assistant</strong>
+              <strong>
+                Local SQL Assistant
+              </strong>
 
               <p>
-                Analyze the active SQL tab using Gemma running
-                locally.
+                Analyze the active SQL tab using
+                Gemma running locally.
               </p>
 
               <button
                 type="button"
-                onClick={() => void explainSql()}
+                onClick={() =>
+                  void explainSql()
+                }
                 disabled={isExplaining}
               >
                 {isExplaining
@@ -1160,11 +1459,13 @@ ${activeTab.sql}`,
                 </div>
               )}
 
-              {!aiResponse && !isExplaining && (
-                <p className="sql-studio-empty">
-                  AI analysis will appear here.
-                </p>
-              )}
+              {!aiResponse &&
+                !isExplaining && (
+                  <p className="sql-studio-empty">
+                    AI analysis will appear
+                    here.
+                  </p>
+                )}
             </div>
           )}
         </aside>
@@ -1185,12 +1486,13 @@ ${activeTab.sql}`,
                     setActiveTabId(tab.id)
                     setResult(null)
                   }}
-                  onDoubleClick={() => {
-                    setActiveTabId(tab.id)
-                    renameActiveTab()
-                  }}
+                  onDoubleClick={() =>
+                    renameTab(tab.id)
+                  }
                 >
-                  <span className="sql-tab-file-icon">SQL</span>
+                  <span className="sql-tab-file-icon">
+                    SQL
+                  </span>
 
                   <span className="sql-tab-title">
                     {tab.title}
@@ -1214,7 +1516,11 @@ ${activeTab.sql}`,
                       closeTab(tab.id)
                     }}
                     onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
+                      if (
+                        event.key === 'Enter' ||
+                        event.key === ' '
+                      ) {
+                        event.preventDefault()
                         event.stopPropagation()
                         closeTab(tab.id)
                       }
@@ -1239,6 +1545,7 @@ ${activeTab.sql}`,
           <div className="sql-active-query-details">
             <label>
               <span>Title</span>
+
               <input
                 value={activeTab.title}
                 onChange={(event) =>
@@ -1252,11 +1559,13 @@ ${activeTab.sql}`,
 
             <label>
               <span>Category</span>
+
               <input
                 value={activeTab.category}
                 onChange={(event) =>
                   updateActiveTab({
-                    category: event.target.value,
+                    category:
+                      event.target.value,
                     isDirty: true,
                   })
                 }
@@ -1265,11 +1574,13 @@ ${activeTab.sql}`,
 
             <label>
               <span>Description</span>
+
               <input
                 value={activeTab.description}
                 onChange={(event) =>
                   updateActiveTab({
-                    description: event.target.value,
+                    description:
+                      event.target.value,
                     isDirty: true,
                   })
                 }
@@ -1290,7 +1601,9 @@ ${activeTab.sql}`,
               language="sql"
               theme="enterprise-sql-dark"
               value={activeTab.sql}
-              beforeMount={handleEditorBeforeMount}
+              beforeMount={
+                handleEditorBeforeMount
+              }
               onMount={handleEditorMount}
               onChange={updateSql}
               path={`${activeTab.id}.sql`}
@@ -1344,29 +1657,38 @@ ${activeTab.sql}`,
               <button
                 type="button"
                 className={
-                  activeBottomPanel === 'results'
+                  activeBottomPanel ===
+                  'results'
                     ? 'active'
                     : ''
                 }
                 onClick={() =>
-                  setActiveBottomPanel('results')
+                  setActiveBottomPanel(
+                    'results',
+                  )
                 }
               >
                 Results
+
                 {result && (
-                  <span>{result.row_count}</span>
+                  <span>
+                    {result.row_count}
+                  </span>
                 )}
               </button>
 
               <button
                 type="button"
                 className={
-                  activeBottomPanel === 'messages'
+                  activeBottomPanel ===
+                  'messages'
                     ? 'active'
                     : ''
                 }
                 onClick={() =>
-                  setActiveBottomPanel('messages')
+                  setActiveBottomPanel(
+                    'messages',
+                  )
                 }
               >
                 Messages
@@ -1375,12 +1697,15 @@ ${activeTab.sql}`,
               <button
                 type="button"
                 className={
-                  activeBottomPanel === 'history'
+                  activeBottomPanel ===
+                  'history'
                     ? 'active'
                     : ''
                 }
                 onClick={() =>
-                  setActiveBottomPanel('history')
+                  setActiveBottomPanel(
+                    'history',
+                  )
                 }
               >
                 History
@@ -1391,13 +1716,16 @@ ${activeTab.sql}`,
               {result && (
                 <>
                   <span>
-                    {result.execution_ms.toLocaleString()} ms
+                    {result.execution_ms.toLocaleString()}{' '}
+                    ms
                   </span>
 
                   <button
                     type="button"
                     className="sql-export-button"
-                    onClick={() => void exportResults()}
+                    onClick={() =>
+                      void exportResults()
+                    }
                     disabled={isExporting}
                   >
                     {isExporting
@@ -1409,88 +1737,148 @@ ${activeTab.sql}`,
             </div>
 
             <div className="sql-bottom-content">
-              {activeBottomPanel === 'results' && (
+              {activeBottomPanel ===
+                'results' && (
                 <>
                   {!result && (
                     <div className="sql-studio-empty-panel">
-                      Run the active query to display results.
+                      Run the active query to
+                      display results.
                     </div>
                   )}
 
-                  {result && result.columns.length > 0 && (
-                    <div className="sql-studio-table-wrapper">
-                      <table className="sql-studio-results-table">
-                        <thead>
-                          <tr>
-                            <th>#</th>
+                  {result &&
+                    result.columns.length ===
+                      0 && (
+                      <div className="sql-studio-empty-panel">
+                        The query completed but
+                        returned no columns.
+                      </div>
+                    )}
 
-                            {result.columns.map((column) => (
-                              <th key={column}>{column}</th>
-                            ))}
-                          </tr>
-                        </thead>
+                  {result &&
+                    result.columns.length >
+                      0 && (
+                      <div className="sql-studio-table-wrapper">
+                        <table className="sql-studio-results-table">
+                          <thead>
+                            <tr>
+                              <th>#</th>
 
-                        <tbody>
-                          {result.rows.map((row, rowIndex) => (
-                            <tr key={rowIndex}>
-                              <td>{rowIndex + 1}</td>
-
-                              {result.columns.map((column) => (
-                                <td
-                                  key={`${rowIndex}-${column}`}
-                                  title={displayCellValue(
-                                    row[column],
-                                  )}
-                                >
-                                  {displayCellValue(row[column])}
-                                </td>
-                              ))}
+                              {result.columns.map(
+                                (column) => (
+                                  <th
+                                    key={
+                                      column
+                                    }
+                                  >
+                                    {column}
+                                  </th>
+                                ),
+                              )}
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                          </thead>
+
+                          <tbody>
+                            {result.rows.map(
+                              (
+                                row,
+                                rowIndex,
+                              ) => (
+                                <tr
+                                  key={
+                                    rowIndex
+                                  }
+                                >
+                                  <td>
+                                    {rowIndex +
+                                      1}
+                                  </td>
+
+                                  {result.columns.map(
+                                    (
+                                      column,
+                                    ) => (
+                                      <td
+                                        key={`${rowIndex}-${column}`}
+                                        title={displayCellValue(
+                                          row[
+                                            column
+                                          ],
+                                        )}
+                                      >
+                                        {displayCellValue(
+                                          row[
+                                            column
+                                          ],
+                                        )}
+                                      </td>
+                                    ),
+                                  )}
+                                </tr>
+                              ),
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                 </>
               )}
 
-              {activeBottomPanel === 'messages' && (
+              {activeBottomPanel ===
+                'messages' && (
                 <pre className="sql-execution-messages">
                   {executionMessage}
                 </pre>
               )}
 
-              {activeBottomPanel === 'history' && (
+              {activeBottomPanel ===
+                'history' && (
                 <div className="sql-bottom-history">
-                  {history.slice(0, 30).map((item) => (
-                    <button
-                      type="button"
-                      key={item.id}
-                      onClick={() => openHistoryQuery(item)}
-                    >
-                      <span
-                        className={
-                          item.success
-                            ? 'history-state successful'
-                            : 'history-state failed'
+                  {history
+                    .slice(0, 30)
+                    .map((item) => (
+                      <button
+                        type="button"
+                        key={item.id}
+                        onClick={() =>
+                          openHistoryQuery(
+                            item,
+                          )
                         }
-                      />
+                      >
+                        <span
+                          className={
+                            item.success
+                              ? 'history-state successful'
+                              : 'history-state failed'
+                          }
+                        />
 
-                      <strong>
-                        {item.success
-                          ? `${item.row_count} rows`
-                          : 'Failed'}
-                      </strong>
+                        <strong>
+                          {item.success
+                            ? `${item.row_count} rows`
+                            : 'Failed'}
+                        </strong>
 
-                      <span>{item.execution_ms} ms</span>
+                        <span>
+                          {
+                            item.execution_ms
+                          }{' '}
+                          ms
+                        </span>
 
-                      <span>
-                        {formatDateTime(item.executed_at)}
-                      </span>
+                        <span>
+                          {formatDateTime(
+                            item.executed_at,
+                          )}
+                        </span>
 
-                      <code>{item.sql}</code>
-                    </button>
-                  ))}
+                        <code>
+                          {item.sql}
+                        </code>
+                      </button>
+                    ))}
                 </div>
               )}
             </div>
@@ -1528,8 +1916,10 @@ ${activeTab.sql}`,
 
         {result && (
           <div>
-            {result.row_count.toLocaleString()} rows ·{' '}
-            {result.execution_ms.toLocaleString()} ms
+            {result.row_count.toLocaleString()}{' '}
+            rows ·{' '}
+            {result.execution_ms.toLocaleString()}{' '}
+            ms
           </div>
         )}
       </footer>
