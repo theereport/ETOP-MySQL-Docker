@@ -1,7 +1,13 @@
+import Editor, {
+  type BeforeMount,
+  type OnMount,
+} from '@monaco-editor/react'
+
 import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 
@@ -47,10 +53,68 @@ type QueryHistoryItem = {
   executed_at: string
 }
 
+type QueryTab = {
+  id: string
+  title: string
+  sql: string
+  savedQueryId: number | null
+  category: string
+  description: string
+  isDirty: boolean
+}
+
+type BottomPanel = 'results' | 'messages' | 'history'
+type SidePanel = 'saved' | 'history' | 'ai'
+
 const API_BASE = 'http://127.0.0.1:8000'
+const TAB_STORAGE_KEY = 'enterprise-ai-sql-tabs'
+const ACTIVE_TAB_STORAGE_KEY = 'enterprise-ai-active-sql-tab'
 
 const STARTER_SQL = `SELECT
-    1 AS TestValue;`
+    1 AS TestValue,
+    CURRENT_DATE() AS Today,
+    CURRENT_USER() AS ConnectedUser;`
+
+function createTab(
+  title = 'Untitled Query',
+  sql = STARTER_SQL,
+): QueryTab {
+  return {
+    id: crypto.randomUUID(),
+    title,
+    sql,
+    savedQueryId: null,
+    category: 'General',
+    description: '',
+    isDirty: false,
+  }
+}
+
+function loadStoredTabs(): QueryTab[] {
+  try {
+    const rawTabs = localStorage.getItem(TAB_STORAGE_KEY)
+
+    if (!rawTabs) {
+      return [createTab('Query 1')]
+    }
+
+    const parsedTabs = JSON.parse(rawTabs) as QueryTab[]
+
+    if (!Array.isArray(parsedTabs) || parsedTabs.length === 0) {
+      return [createTab('Query 1')]
+    }
+
+    return parsedTabs.map((tab) => ({
+      ...tab,
+      savedQueryId: tab.savedQueryId ?? null,
+      category: tab.category || 'General',
+      description: tab.description || '',
+      isDirty: Boolean(tab.isDirty),
+    }))
+  } catch {
+    return [createTab('Query 1')]
+  }
+}
 
 function displayCellValue(value: unknown): string {
   if (value === null || value === undefined) {
@@ -77,8 +141,36 @@ function downloadBlob(blob: Blob, fileName: string) {
   URL.revokeObjectURL(downloadUrl)
 }
 
+function formatDateTime(value: string): string {
+  const parsed = new Date(value)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value
+  }
+
+  return parsed.toLocaleString()
+}
+
 export default function SqlWorkspace() {
-  const [sql, setSql] = useState(STARTER_SQL)
+  const [tabs, setTabs] = useState<QueryTab[]>(loadStoredTabs)
+
+  const [activeTabId, setActiveTabId] = useState(() => {
+    const storedActiveTab = localStorage.getItem(
+      ACTIVE_TAB_STORAGE_KEY,
+    )
+
+    const availableTabs = loadStoredTabs()
+
+    if (
+      storedActiveTab &&
+      availableTabs.some((tab) => tab.id === storedActiveTab)
+    ) {
+      return storedActiveTab
+    }
+
+    return availableTabs[0].id
+  })
+
   const [rowLimit, setRowLimit] = useState(500)
 
   const [connection, setConnection] =
@@ -87,6 +179,9 @@ export default function SqlWorkspace() {
   const [result, setResult] = useState<SqlResult | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [executionMessage, setExecutionMessage] = useState(
+    'Run a query to display execution details.',
+  )
 
   const [isExecuting, setIsExecuting] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
@@ -95,18 +190,23 @@ export default function SqlWorkspace() {
   const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([])
   const [history, setHistory] = useState<QueryHistoryItem[]>([])
 
-  const [selectedSavedQueryId, setSelectedSavedQueryId] =
-    useState<number | null>(null)
-
-  const [title, setTitle] = useState('')
-  const [category, setCategory] = useState('General')
-  const [description, setDescription] = useState('')
   const [librarySearch, setLibrarySearch] = useState('')
+  const [activeSidePanel, setActiveSidePanel] =
+    useState<SidePanel>('saved')
 
-  const [activePanel, setActivePanel] =
-    useState<'library' | 'history' | 'ai'>('library')
+  const [activeBottomPanel, setActiveBottomPanel] =
+    useState<BottomPanel>('results')
 
   const [aiResponse, setAiResponse] = useState('')
+
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null)
+
+  const activeTab = useMemo(() => {
+    return (
+      tabs.find((tab) => tab.id === activeTabId) ??
+      tabs[0]
+    )
+  }, [activeTabId, tabs])
 
   const filteredSavedQueries = useMemo(() => {
     const search = librarySearch.trim().toLowerCase()
@@ -125,18 +225,36 @@ export default function SqlWorkspace() {
     })
   }, [librarySearch, savedQueries])
 
+  const updateActiveTab = useCallback(
+    (updates: Partial<QueryTab>) => {
+      setTabs((currentTabs) =>
+        currentTabs.map((tab) =>
+          tab.id === activeTabId
+            ? {
+                ...tab,
+                ...updates,
+              }
+            : tab,
+        ),
+      )
+    },
+    [activeTabId],
+  )
+
   const loadConnection = useCallback(async () => {
+    setError('')
+
     try {
       const response = await fetch(`${API_BASE}/sql/connection`)
+      const body = await response.json().catch(() => null)
 
       if (!response.ok) {
-        const body = await response.json().catch(() => null)
         throw new Error(
           body?.detail ?? 'Unable to connect to MySQL.',
         )
       }
 
-      const data: ConnectionStatus = await response.json()
+      const data = body as ConnectionStatus
 
       setConnection(data)
       setRowLimit(data.default_limit)
@@ -153,15 +271,15 @@ export default function SqlWorkspace() {
   const loadSavedQueries = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE}/sql/saved`)
+      const body = await response.json().catch(() => null)
 
       if (!response.ok) {
-        throw new Error('Unable to load saved queries.')
+        throw new Error(
+          body?.detail ?? 'Unable to load saved queries.',
+        )
       }
 
-      const data: { queries: SavedQuery[] } =
-        await response.json()
-
-      setSavedQueries(data.queries)
+      setSavedQueries(body.queries as SavedQuery[])
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -177,14 +295,15 @@ export default function SqlWorkspace() {
         `${API_BASE}/sql/history?limit=100`,
       )
 
+      const body = await response.json().catch(() => null)
+
       if (!response.ok) {
-        throw new Error('Unable to load query history.')
+        throw new Error(
+          body?.detail ?? 'Unable to load query history.',
+        )
       }
 
-      const data: { history: QueryHistoryItem[] } =
-        await response.json()
-
-      setHistory(data.history)
+      setHistory(body.history as QueryHistoryItem[])
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -200,8 +319,204 @@ export default function SqlWorkspace() {
     void loadHistory()
   }, [loadConnection, loadHistory, loadSavedQueries])
 
+  useEffect(() => {
+    localStorage.setItem(TAB_STORAGE_KEY, JSON.stringify(tabs))
+  }, [tabs])
+
+  useEffect(() => {
+    localStorage.setItem(
+      ACTIVE_TAB_STORAGE_KEY,
+      activeTabId,
+    )
+  }, [activeTabId])
+
+  function handleEditorBeforeMount(
+    monaco: Parameters<BeforeMount>[0],
+  ) {
+    monaco.editor.defineTheme('enterprise-sql-dark', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        {
+          token: 'keyword.sql',
+          foreground: '8B80FF',
+          fontStyle: 'bold',
+        },
+        {
+          token: 'string.sql',
+          foreground: '9ED6A5',
+        },
+        {
+          token: 'number.sql',
+          foreground: 'F1C77A',
+        },
+        {
+          token: 'comment.sql',
+          foreground: '65758B',
+          fontStyle: 'italic',
+        },
+        {
+          token: 'operator.sql',
+          foreground: 'A8B8CB',
+        },
+      ],
+      colors: {
+        'editor.background': '#080E18',
+        'editor.foreground': '#D9E4F2',
+        'editorLineNumber.foreground': '#4D5B70',
+        'editorLineNumber.activeForeground': '#A6B3C4',
+        'editorCursor.foreground': '#8B80FF',
+        'editor.selectionBackground': '#3D356F88',
+        'editor.inactiveSelectionBackground': '#302B5066',
+        'editor.lineHighlightBackground': '#101827',
+        'editorIndentGuide.background1': '#1E2A3C',
+        'editorIndentGuide.activeBackground1': '#394A63',
+        'editorWidget.background': '#111A29',
+        'editorWidget.border': '#263349',
+        'editorSuggestWidget.background': '#111A29',
+        'editorSuggestWidget.border': '#263349',
+        'editorSuggestWidget.selectedBackground': '#27334A',
+        'input.background': '#0D1522',
+        'input.border': '#263349',
+      },
+    })
+  }
+
+  function handleEditorMount(
+    editor: Parameters<OnMount>[0],
+    monaco: Parameters<OnMount>[1],
+  ) {
+    editorRef.current = editor
+
+    editor.addAction({
+      id: 'run-sql-query',
+      label: 'Run SQL Query',
+      keybindings: [
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+        monaco.KeyCode.F5,
+      ],
+      run: () => {
+        void executeQuery()
+      },
+    })
+
+    editor.addAction({
+      id: 'save-sql-query',
+      label: 'Save SQL Query',
+      keybindings: [
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+      ],
+      run: () => {
+        void saveQuery()
+      },
+    })
+
+    editor.focus()
+  }
+
+  function updateSql(nextSql: string | undefined) {
+    updateActiveTab({
+      sql: nextSql ?? '',
+      isDirty: true,
+    })
+  }
+
+  function createNewTab() {
+    const nextNumber = tabs.length + 1
+    const newTab = createTab(`Query ${nextNumber}`)
+
+    setTabs((currentTabs) => [...currentTabs, newTab])
+    setActiveTabId(newTab.id)
+    setResult(null)
+    setError('')
+    setNotice('New SQL tab created.')
+    setExecutionMessage(
+      'Run a query to display execution details.',
+    )
+  }
+
+  function duplicateTab() {
+    const duplicatedTab: QueryTab = {
+      ...activeTab,
+      id: crypto.randomUUID(),
+      title: `${activeTab.title} Copy`,
+      savedQueryId: null,
+      isDirty: true,
+    }
+
+    setTabs((currentTabs) => [
+      ...currentTabs,
+      duplicatedTab,
+    ])
+
+    setActiveTabId(duplicatedTab.id)
+    setNotice('Query tab duplicated.')
+  }
+
+  function closeTab(tabId: string) {
+    const tabToClose = tabs.find((tab) => tab.id === tabId)
+
+    if (!tabToClose) {
+      return
+    }
+
+    if (
+      tabToClose.isDirty &&
+      !window.confirm(
+        `Close "${tabToClose.title}" without saving its latest changes?`,
+      )
+    ) {
+      return
+    }
+
+    if (tabs.length === 1) {
+      const replacementTab = createTab('Query 1')
+
+      setTabs([replacementTab])
+      setActiveTabId(replacementTab.id)
+      setResult(null)
+      return
+    }
+
+    const closingIndex = tabs.findIndex(
+      (tab) => tab.id === tabId,
+    )
+
+    const remainingTabs = tabs.filter(
+      (tab) => tab.id !== tabId,
+    )
+
+    setTabs(remainingTabs)
+
+    if (activeTabId === tabId) {
+      const nextActiveTab =
+        remainingTabs[
+          Math.min(closingIndex, remainingTabs.length - 1)
+        ]
+
+      setActiveTabId(nextActiveTab.id)
+      setResult(null)
+    }
+  }
+
+  function renameActiveTab() {
+    const nextTitle = window.prompt(
+      'Enter the query tab name:',
+      activeTab.title,
+    )
+
+    if (!nextTitle?.trim()) {
+      return
+    }
+
+    updateActiveTab({
+      title: nextTitle.trim(),
+      isDirty: true,
+    })
+  }
+
   async function executeQuery() {
-    if (!sql.trim() || isExecuting) {
+    if (!activeTab.sql.trim() || isExecuting) {
       return
     }
 
@@ -209,6 +524,10 @@ export default function SqlWorkspace() {
     setError('')
     setNotice('')
     setResult(null)
+    setActiveBottomPanel('messages')
+    setExecutionMessage('Executing query against MySQL…')
+
+    const startedAt = performance.now()
 
     try {
       const response = await fetch(`${API_BASE}/sql/execute`, {
@@ -217,7 +536,7 @@ export default function SqlWorkspace() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          sql,
+          sql: activeTab.sql,
           row_limit: rowLimit,
         }),
       })
@@ -233,18 +552,39 @@ export default function SqlWorkspace() {
       const queryResult = body as SqlResult
 
       setResult(queryResult)
+      setExecutionMessage(
+        [
+          'Query completed successfully.',
+          `${queryResult.row_count.toLocaleString()} rows returned.`,
+          `${queryResult.execution_ms.toLocaleString()} ms database execution time.`,
+          queryResult.limit_applied
+            ? `A LIMIT ${queryResult.row_limit} safeguard was applied.`
+            : 'The query supplied its own limit or did not require one.',
+        ].join('\n'),
+      )
+
       setNotice(
         `Query completed: ${queryResult.row_count.toLocaleString()} rows in ${queryResult.execution_ms.toLocaleString()} ms.`,
       )
 
+      setActiveBottomPanel('results')
       await loadHistory()
     } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : 'The SQL query failed.',
+      const totalMilliseconds = Math.round(
+        performance.now() - startedAt,
       )
 
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'The SQL query failed.'
+
+      setError(message)
+      setExecutionMessage(
+        `Query failed after ${totalMilliseconds.toLocaleString()} ms.\n\n${message}`,
+      )
+
+      setActiveBottomPanel('messages')
       await loadHistory()
     } finally {
       setIsExecuting(false)
@@ -252,7 +592,7 @@ export default function SqlWorkspace() {
   }
 
   async function exportResults() {
-    if (!sql.trim() || isExporting) {
+    if (!activeTab.sql.trim() || isExporting) {
       return
     }
 
@@ -266,7 +606,7 @@ export default function SqlWorkspace() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          sql,
+          sql: activeTab.sql,
           row_limit: rowLimit,
         }),
       })
@@ -283,7 +623,9 @@ export default function SqlWorkspace() {
 
       downloadBlob(
         blob,
-        `sql-results-${new Date()
+        `${activeTab.title
+          .replace(/[^a-z0-9-_]+/gi, '-')
+          .replace(/^-+|-+$/g, '') || 'sql-results'}-${new Date()
           .toISOString()
           .replaceAll(':', '-')
           .slice(0, 19)}.csv`,
@@ -300,7 +642,7 @@ export default function SqlWorkspace() {
   }
 
   async function saveQuery() {
-    if (!title.trim() || !sql.trim()) {
+    if (!activeTab.title.trim() || !activeTab.sql.trim()) {
       setError('Enter a query title and SQL before saving.')
       return
     }
@@ -309,11 +651,11 @@ export default function SqlWorkspace() {
     setNotice('')
 
     try {
-      const isUpdating = selectedSavedQueryId !== null
+      const isUpdating = activeTab.savedQueryId !== null
 
       const response = await fetch(
         isUpdating
-          ? `${API_BASE}/sql/saved/${selectedSavedQueryId}`
+          ? `${API_BASE}/sql/saved/${activeTab.savedQueryId}`
           : `${API_BASE}/sql/saved`,
         {
           method: isUpdating ? 'PUT' : 'POST',
@@ -321,10 +663,10 @@ export default function SqlWorkspace() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            title,
-            category,
-            description,
-            sql,
+            title: activeTab.title,
+            category: activeTab.category,
+            description: activeTab.description,
+            sql: activeTab.sql,
           }),
         },
       )
@@ -336,6 +678,13 @@ export default function SqlWorkspace() {
           body?.detail ?? 'Unable to save the query.',
         )
       }
+
+      updateActiveTab({
+        savedQueryId: isUpdating
+          ? activeTab.savedQueryId
+          : Number(body.id),
+        isDirty: false,
+      })
 
       setNotice(
         isUpdating
@@ -353,23 +702,38 @@ export default function SqlWorkspace() {
     }
   }
 
-  function loadSavedQuery(query: SavedQuery) {
-    setSelectedSavedQueryId(query.id)
-    setTitle(query.title)
-    setCategory(query.category)
-    setDescription(query.description)
-    setSql(query.sql)
+  function openSavedQuery(query: SavedQuery) {
+    const existingTab = tabs.find(
+      (tab) => tab.savedQueryId === query.id,
+    )
+
+    if (existingTab) {
+      setActiveTabId(existingTab.id)
+      return
+    }
+
+    const queryTab: QueryTab = {
+      id: crypto.randomUUID(),
+      title: query.title,
+      sql: query.sql,
+      savedQueryId: query.id,
+      category: query.category,
+      description: query.description,
+      isDirty: false,
+    }
+
+    setTabs((currentTabs) => [...currentTabs, queryTab])
+    setActiveTabId(queryTab.id)
     setResult(null)
-    setError('')
-    setNotice(`Loaded saved query: ${query.title}`)
+    setNotice(`Opened saved query: ${query.title}`)
   }
 
   async function deleteSavedQuery(query: SavedQuery) {
-    const confirmed = window.confirm(
-      `Delete the saved query "${query.title}"?`,
-    )
-
-    if (!confirmed) {
+    if (
+      !window.confirm(
+        `Delete the saved query "${query.title}"?`,
+      )
+    ) {
       return
     }
 
@@ -381,17 +745,25 @@ export default function SqlWorkspace() {
         },
       )
 
-      if (!response.ok) {
-        const body = await response.json().catch(() => null)
+      const body = await response.json().catch(() => null)
 
+      if (!response.ok) {
         throw new Error(
           body?.detail ?? 'Unable to delete the query.',
         )
       }
 
-      if (selectedSavedQueryId === query.id) {
-        createNewQuery()
-      }
+      setTabs((currentTabs) =>
+        currentTabs.map((tab) =>
+          tab.savedQueryId === query.id
+            ? {
+                ...tab,
+                savedQueryId: null,
+                isDirty: true,
+              }
+            : tab,
+        ),
+      )
 
       setNotice('Saved query deleted.')
       await loadSavedQueries()
@@ -404,29 +776,9 @@ export default function SqlWorkspace() {
     }
   }
 
-  function duplicateCurrentQuery() {
-    setSelectedSavedQueryId(null)
-    setTitle(title ? `${title} Copy` : 'Query Copy')
-    setNotice(
-      'A new unsaved copy was created. Change the title and save it.',
-    )
-  }
-
-  function createNewQuery() {
-    setSelectedSavedQueryId(null)
-    setTitle('')
-    setCategory('General')
-    setDescription('')
-    setSql(STARTER_SQL)
-    setResult(null)
-    setError('')
-    setNotice('New query started.')
-    setAiResponse('')
-  }
-
   async function copySql() {
     try {
-      await navigator.clipboard.writeText(sql)
+      await navigator.clipboard.writeText(activeTab.sql)
       setNotice('SQL copied to the clipboard.')
     } catch {
       setError('Unable to copy the SQL.')
@@ -434,11 +786,11 @@ export default function SqlWorkspace() {
   }
 
   async function explainSql() {
-    if (!sql.trim() || isExplaining) {
+    if (!activeTab.sql.trim() || isExplaining) {
       return
     }
 
-    setActivePanel('ai')
+    setActiveSidePanel('ai')
     setIsExplaining(true)
     setError('')
     setAiResponse('')
@@ -457,15 +809,16 @@ export default function SqlWorkspace() {
 
 Include:
 1. What the query does
-2. How its joins work
-3. How its filters work
-4. What each calculated field does
-5. Any possible logic, performance, or data-quality concerns
-6. Do not change the SQL unless explaining a suggested improvement
+2. How each join works
+3. How filters and date logic work
+4. What calculated fields do
+5. Possible logic or data-quality issues
+6. Performance concerns
+7. Suggested improvements, without changing the original SQL unless you clearly label a revised version
 
 SQL:
 
-${sql}`,
+${activeTab.sql}`,
             },
           ],
         }),
@@ -491,12 +844,31 @@ ${sql}`,
     }
   }
 
-  async function clearHistory() {
-    const confirmed = window.confirm(
-      'Clear all locally stored SQL query history?',
-    )
+  function openHistoryQuery(item: QueryHistoryItem) {
+    const queryTab: QueryTab = {
+      id: crypto.randomUUID(),
+      title: `History ${item.id}`,
+      sql: item.sql,
+      savedQueryId: null,
+      category: 'History',
+      description: `Loaded from query history on ${formatDateTime(
+        item.executed_at,
+      )}`,
+      isDirty: true,
+    }
 
-    if (!confirmed) {
+    setTabs((currentTabs) => [...currentTabs, queryTab])
+    setActiveTabId(queryTab.id)
+    setResult(null)
+    setNotice('Query opened from local history.')
+  }
+
+  async function clearHistory() {
+    if (
+      !window.confirm(
+        'Clear all locally stored SQL query history?',
+      )
+    ) {
       return
     }
 
@@ -521,279 +893,117 @@ ${sql}`,
   }
 
   return (
-    <section className="sql-workspace">
-      <div className="sql-workspace-header">
-        <div>
-          <p className="eyebrow">READ-ONLY DATA WORKSPACE</p>
-          <h3>SQL Workspace</h3>
-          <p>
-            Write, execute, save, explain, and export MySQL
-            queries locally.
-          </p>
-        </div>
-
-        <div
-          className={
-            connection?.connected
-              ? 'sql-connection connected'
-              : 'sql-connection disconnected'
-          }
-        >
-          <span className="status-dot" />
+    <section className="sql-studio">
+      <div className="sql-studio-commandbar">
+        <div className="sql-studio-connection">
+          <span
+            className={
+              connection?.connected
+                ? 'sql-connection-light connected'
+                : 'sql-connection-light'
+            }
+          />
 
           <div>
             <strong>
               {connection?.connected
-                ? 'MySQL Connected'
-                : 'MySQL Not Connected'}
+                ? connection.database
+                : 'MySQL disconnected'}
             </strong>
 
-            <p>
+            <span>
               {connection?.connected
-                ? `${connection.database} · ${connection.user}`
-                : 'Check the backend .env settings'}
-            </p>
+                ? `${connection.user} · Read Only`
+                : 'Check backend connection settings'}
+            </span>
           </div>
+        </div>
+
+        <div className="sql-studio-command-actions">
+          <button
+            type="button"
+            onClick={createNewTab}
+            title="New Query"
+          >
+            ＋ New Query
+          </button>
 
           <button
             type="button"
-            onClick={() => void loadConnection()}
+            onClick={() => void saveQuery()}
+            title="Save Query (Ctrl+S)"
           >
-            Retest
+            Save
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void copySql()}
+          >
+            Copy SQL
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void explainSql()}
+            disabled={isExplaining}
+          >
+            {isExplaining ? 'Explaining…' : 'Explain'}
+          </button>
+
+          <label className="sql-row-limit-control">
+            Rows
+            <input
+              type="number"
+              min={1}
+              max={connection?.maximum_limit ?? 5000}
+              value={rowLimit}
+              onChange={(event) =>
+                setRowLimit(
+                  Math.min(
+                    connection?.maximum_limit ?? 5000,
+                    Math.max(
+                      1,
+                      Number(event.target.value) || 1,
+                    ),
+                  ),
+                )
+              }
+            />
+          </label>
+
+          <button
+            type="button"
+            className="sql-run-command"
+            onClick={() => void executeQuery()}
+            disabled={
+              isExecuting ||
+              !activeTab.sql.trim() ||
+              !connection?.connected
+            }
+            title="Run Query (Ctrl+Enter or F5)"
+          >
+            {isExecuting ? 'Running…' : '▶ Run'}
           </button>
         </div>
       </div>
 
-      {error && <div className="chat-error">{error}</div>}
+      {error && <div className="sql-studio-error">{error}</div>}
+      {notice && <div className="sql-studio-notice">{notice}</div>}
 
-      {notice && <div className="sql-notice">{notice}</div>}
-
-      <div className="sql-layout">
-        <div className="sql-main-column">
-          <div className="sql-editor-card">
-            <div className="sql-query-details">
-              <label>
-                <span>Query title</span>
-                <input
-                  value={title}
-                  onChange={(event) =>
-                    setTitle(event.target.value)
-                  }
-                  placeholder="Example: Weekly Credit Review"
-                />
-              </label>
-
-              <label>
-                <span>Category</span>
-                <input
-                  value={category}
-                  onChange={(event) =>
-                    setCategory(event.target.value)
-                  }
-                  placeholder="Credit, Sales, Cost, AR..."
-                />
-              </label>
-
-              <label className="sql-description-field">
-                <span>Description</span>
-                <input
-                  value={description}
-                  onChange={(event) =>
-                    setDescription(event.target.value)
-                  }
-                  placeholder="What is this query used for?"
-                />
-              </label>
-            </div>
-
-            <div className="sql-editor-toolbar">
-              <div>
-                <strong>
-                  {selectedSavedQueryId
-                    ? `Saved Query #${selectedSavedQueryId}`
-                    : 'Unsaved Query'}
-                </strong>
-
-                <span>
-                  Read-only statements are enforced by the
-                  backend.
-                </span>
-              </div>
-
-              <div className="sql-toolbar-actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={createNewQuery}
-                >
-                  New
-                </button>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={duplicateCurrentQuery}
-                >
-                  Duplicate
-                </button>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => void copySql()}
-                >
-                  Copy SQL
-                </button>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => void saveQuery()}
-                >
-                  {selectedSavedQueryId ? 'Update' : 'Save'}
-                </button>
-              </div>
-            </div>
-
-            <textarea
-              className="sql-editor"
-              value={sql}
-              onChange={(event) => setSql(event.target.value)}
-              spellCheck={false}
-              placeholder="Enter a read-only MySQL query..."
-            />
-
-            <div className="sql-run-bar">
-              <label>
-                Row limit
-                <input
-                  type="number"
-                  min={1}
-                  max={connection?.maximum_limit ?? 5000}
-                  value={rowLimit}
-                  onChange={(event) =>
-                    setRowLimit(
-                      Math.max(
-                        1,
-                        Number(event.target.value) || 1,
-                      ),
-                    )
-                  }
-                />
-              </label>
-
-              <div>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => void explainSql()}
-                  disabled={isExplaining || !sql.trim()}
-                >
-                  {isExplaining
-                    ? 'Explaining…'
-                    : 'Explain with AI'}
-                </button>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => void exportResults()}
-                  disabled={isExporting || !sql.trim()}
-                >
-                  {isExporting
-                    ? 'Exporting…'
-                    : 'Export CSV'}
-                </button>
-
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void executeQuery()}
-                  disabled={
-                    isExecuting ||
-                    !sql.trim() ||
-                    !connection?.connected
-                  }
-                >
-                  {isExecuting
-                    ? 'Running Query…'
-                    : 'Run Query'}
-                </button>
-              </div>
-            </div>
+      <div className="sql-studio-layout">
+        <aside className="sql-studio-left-panel">
+          <div className="sql-studio-panel-title">
+            <strong>Explorer</strong>
           </div>
 
-          <div className="sql-results-card">
-            <div className="sql-results-header">
-              <div>
-                <h4>Query Results</h4>
-
-                <p>
-                  {result
-                    ? `${result.row_count.toLocaleString()} rows · ${result.execution_ms.toLocaleString()} ms`
-                    : 'Run a query to display results.'}
-                </p>
-              </div>
-
-              {result?.limit_applied && (
-                <span className="sql-limit-badge">
-                  LIMIT {result.row_limit} applied
-                </span>
-              )}
-            </div>
-
-            {!result && (
-              <div className="sql-empty-results">
-                Results will appear here.
-              </div>
-            )}
-
-            {result && result.columns.length === 0 && (
-              <div className="sql-empty-results">
-                The query completed but returned no columns.
-              </div>
-            )}
-
-            {result && result.columns.length > 0 && (
-              <div className="sql-table-wrapper">
-                <table className="sql-results-table">
-                  <thead>
-                    <tr>
-                      <th>#</th>
-
-                      {result.columns.map((column) => (
-                        <th key={column}>{column}</th>
-                      ))}
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {result.rows.map((row, rowIndex) => (
-                      <tr key={rowIndex}>
-                        <td>{rowIndex + 1}</td>
-
-                        {result.columns.map((column) => (
-                          <td key={`${rowIndex}-${column}`}>
-                            {displayCellValue(row[column])}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <aside className="sql-side-panel">
-          <div className="sql-panel-tabs">
+          <div className="sql-studio-side-tabs">
             <button
               type="button"
               className={
-                activePanel === 'library' ? 'active' : ''
+                activeSidePanel === 'saved' ? 'active' : ''
               }
-              onClick={() => setActivePanel('library')}
+              onClick={() => setActiveSidePanel('saved')}
             >
               Saved
             </button>
@@ -801,26 +1011,28 @@ ${sql}`,
             <button
               type="button"
               className={
-                activePanel === 'history' ? 'active' : ''
+                activeSidePanel === 'history' ? 'active' : ''
               }
-              onClick={() => setActivePanel('history')}
+              onClick={() => setActiveSidePanel('history')}
             >
               History
             </button>
 
             <button
               type="button"
-              className={activePanel === 'ai' ? 'active' : ''}
-              onClick={() => setActivePanel('ai')}
+              className={
+                activeSidePanel === 'ai' ? 'active' : ''
+              }
+              onClick={() => setActiveSidePanel('ai')}
             >
               AI
             </button>
           </div>
 
-          {activePanel === 'library' && (
-            <div className="sql-panel-content">
+          {activeSidePanel === 'saved' && (
+            <div className="sql-studio-side-content">
               <input
-                className="sql-library-search"
+                className="sql-studio-search"
                 value={librarySearch}
                 onChange={(event) =>
                   setLibrarySearch(event.target.value)
@@ -828,43 +1040,43 @@ ${sql}`,
                 placeholder="Search saved queries..."
               />
 
-              <div className="sql-library-list">
+              <div className="sql-studio-query-list">
                 {filteredSavedQueries.map((query) => (
                   <div
-                    className={
-                      selectedSavedQueryId === query.id
-                        ? 'sql-library-item selected'
-                        : 'sql-library-item'
-                    }
+                    className="sql-studio-query-item"
                     key={query.id}
                   >
                     <button
                       type="button"
-                      className="sql-library-load"
-                      onClick={() => loadSavedQuery(query)}
+                      className="sql-studio-query-open"
+                      onDoubleClick={() =>
+                        openSavedQuery(query)
+                      }
+                      onClick={() => openSavedQuery(query)}
                     >
-                      <strong>{query.title}</strong>
-                      <span>{query.category}</span>
-                      <p>
-                        {query.description ||
-                          'No description entered.'}
-                      </p>
+                      <span className="sql-file-icon">SQL</span>
+
+                      <span>
+                        <strong>{query.title}</strong>
+                        <small>{query.category}</small>
+                      </span>
                     </button>
 
                     <button
                       type="button"
-                      className="sql-delete-button"
+                      className="sql-query-delete"
                       onClick={() =>
                         void deleteSavedQuery(query)
                       }
+                      title="Delete saved query"
                     >
-                      Delete
+                      ×
                     </button>
                   </div>
                 ))}
 
                 {filteredSavedQueries.length === 0 && (
-                  <p className="sql-panel-empty">
+                  <p className="sql-studio-empty">
                     No saved queries found.
                   </p>
                 )}
@@ -872,88 +1084,455 @@ ${sql}`,
             </div>
           )}
 
-          {activePanel === 'history' && (
-            <div className="sql-panel-content">
+          {activeSidePanel === 'history' && (
+            <div className="sql-studio-side-content">
               <button
                 type="button"
-                className="secondary-button sql-clear-history"
+                className="sql-studio-clear-history"
                 onClick={() => void clearHistory()}
               >
                 Clear History
               </button>
 
-              <div className="sql-history-list">
+              <div className="sql-studio-history-list">
                 {history.map((item) => (
                   <button
                     type="button"
-                    className="sql-history-item"
                     key={item.id}
-                    onClick={() => {
-                      setSql(item.sql)
-                      setResult(null)
-                      setNotice(
-                        'Loaded SQL from local query history.',
-                      )
-                    }}
+                    className="sql-studio-history-item"
+                    onClick={() => openHistoryQuery(item)}
                   >
-                    <div>
+                    <span
+                      className={
+                        item.success
+                          ? 'history-state successful'
+                          : 'history-state failed'
+                      }
+                    />
+
+                    <span>
                       <strong>
-                        {item.success ? 'Successful' : 'Failed'}
+                        {item.success
+                          ? `${item.row_count} rows`
+                          : 'Failed'}
                       </strong>
 
-                      <span>{item.executed_at}</span>
-                    </div>
+                      <small>
+                        {formatDateTime(item.executed_at)}
+                      </small>
 
-                    <p>{item.sql}</p>
-
-                    <small>
-                      {item.success
-                        ? `${item.row_count} rows · ${item.execution_ms} ms`
-                        : item.error_message}
-                    </small>
+                      <p>{item.sql}</p>
+                    </span>
                   </button>
                 ))}
 
                 {history.length === 0 && (
-                  <p className="sql-panel-empty">
-                    No query history has been recorded.
+                  <p className="sql-studio-empty">
+                    No query history recorded.
                   </p>
                 )}
               </div>
             </div>
           )}
 
-          {activePanel === 'ai' && (
-            <div className="sql-panel-content sql-ai-panel">
-              <h4>Local SQL Assistant</h4>
+          {activeSidePanel === 'ai' && (
+            <div className="sql-studio-side-content sql-studio-ai">
+              <strong>Local SQL Assistant</strong>
 
               <p>
-                Uses your locally running Gemma model. It does
-                not execute or modify the query.
+                Analyze the active SQL tab using Gemma running
+                locally.
               </p>
 
-              {isExplaining && (
-                <div className="sql-ai-loading">
-                  Analyzing the SQL locally…
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => void explainSql()}
+                disabled={isExplaining}
+              >
+                {isExplaining
+                  ? 'Analyzing SQL…'
+                  : 'Explain Active Query'}
+              </button>
 
-              {!isExplaining && aiResponse && (
-                <div className="sql-ai-response">
+              {aiResponse && (
+                <div className="sql-studio-ai-response">
                   {aiResponse}
                 </div>
               )}
 
-              {!isExplaining && !aiResponse && (
-                <p className="sql-panel-empty">
-                  Click Explain with AI to analyze the current
-                  SQL.
+              {!aiResponse && !isExplaining && (
+                <p className="sql-studio-empty">
+                  AI analysis will appear here.
                 </p>
               )}
             </div>
           )}
         </aside>
+
+        <div className="sql-studio-center">
+          <div className="sql-editor-tabs">
+            <div className="sql-editor-tab-list">
+              {tabs.map((tab) => (
+                <button
+                  type="button"
+                  key={tab.id}
+                  className={
+                    tab.id === activeTabId
+                      ? 'sql-editor-tab active'
+                      : 'sql-editor-tab'
+                  }
+                  onClick={() => {
+                    setActiveTabId(tab.id)
+                    setResult(null)
+                  }}
+                  onDoubleClick={() => {
+                    setActiveTabId(tab.id)
+                    renameActiveTab()
+                  }}
+                >
+                  <span className="sql-tab-file-icon">SQL</span>
+
+                  <span className="sql-tab-title">
+                    {tab.title}
+                  </span>
+
+                  {tab.isDirty && (
+                    <span
+                      className="sql-tab-dirty"
+                      title="Unsaved changes"
+                    >
+                      ●
+                    </span>
+                  )}
+
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className="sql-tab-close"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      closeTab(tab.id)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.stopPropagation()
+                        closeTab(tab.id)
+                      }
+                    }}
+                  >
+                    ×
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              className="sql-new-tab-button"
+              onClick={createNewTab}
+              title="New query tab"
+            >
+              ＋
+            </button>
+          </div>
+
+          <div className="sql-active-query-details">
+            <label>
+              <span>Title</span>
+              <input
+                value={activeTab.title}
+                onChange={(event) =>
+                  updateActiveTab({
+                    title: event.target.value,
+                    isDirty: true,
+                  })
+                }
+              />
+            </label>
+
+            <label>
+              <span>Category</span>
+              <input
+                value={activeTab.category}
+                onChange={(event) =>
+                  updateActiveTab({
+                    category: event.target.value,
+                    isDirty: true,
+                  })
+                }
+              />
+            </label>
+
+            <label>
+              <span>Description</span>
+              <input
+                value={activeTab.description}
+                onChange={(event) =>
+                  updateActiveTab({
+                    description: event.target.value,
+                    isDirty: true,
+                  })
+                }
+              />
+            </label>
+
+            <button
+              type="button"
+              onClick={duplicateTab}
+            >
+              Duplicate
+            </button>
+          </div>
+
+          <div className="sql-monaco-editor">
+            <Editor
+              height="100%"
+              language="sql"
+              theme="enterprise-sql-dark"
+              value={activeTab.sql}
+              beforeMount={handleEditorBeforeMount}
+              onMount={handleEditorMount}
+              onChange={updateSql}
+              path={`${activeTab.id}.sql`}
+              options={{
+                automaticLayout: true,
+                minimap: {
+                  enabled: true,
+                  side: 'right',
+                  showSlider: 'mouseover',
+                },
+                fontFamily:
+                  'Consolas, "Cascadia Code", "Courier New", monospace',
+                fontSize: 13,
+                lineHeight: 21,
+                lineNumbers: 'on',
+                glyphMargin: true,
+                folding: true,
+                foldingHighlight: true,
+                bracketPairColorization: {
+                  enabled: true,
+                },
+                guides: {
+                  bracketPairs: true,
+                  indentation: true,
+                },
+                renderLineHighlight: 'all',
+                scrollBeyondLastLine: false,
+                wordWrap: 'off',
+                tabSize: 4,
+                insertSpaces: true,
+                formatOnPaste: false,
+                formatOnType: false,
+                suggestOnTriggerCharacters: true,
+                quickSuggestions: {
+                  other: true,
+                  comments: false,
+                  strings: false,
+                },
+                cursorBlinking: 'smooth',
+                smoothScrolling: true,
+                padding: {
+                  top: 12,
+                  bottom: 12,
+                },
+              }}
+            />
+          </div>
+
+          <div className="sql-bottom-panel">
+            <div className="sql-bottom-tabs">
+              <button
+                type="button"
+                className={
+                  activeBottomPanel === 'results'
+                    ? 'active'
+                    : ''
+                }
+                onClick={() =>
+                  setActiveBottomPanel('results')
+                }
+              >
+                Results
+                {result && (
+                  <span>{result.row_count}</span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                className={
+                  activeBottomPanel === 'messages'
+                    ? 'active'
+                    : ''
+                }
+                onClick={() =>
+                  setActiveBottomPanel('messages')
+                }
+              >
+                Messages
+              </button>
+
+              <button
+                type="button"
+                className={
+                  activeBottomPanel === 'history'
+                    ? 'active'
+                    : ''
+                }
+                onClick={() =>
+                  setActiveBottomPanel('history')
+                }
+              >
+                History
+              </button>
+
+              <div className="sql-bottom-tab-spacer" />
+
+              {result && (
+                <>
+                  <span>
+                    {result.execution_ms.toLocaleString()} ms
+                  </span>
+
+                  <button
+                    type="button"
+                    className="sql-export-button"
+                    onClick={() => void exportResults()}
+                    disabled={isExporting}
+                  >
+                    {isExporting
+                      ? 'Exporting…'
+                      : 'Export CSV'}
+                  </button>
+                </>
+              )}
+            </div>
+
+            <div className="sql-bottom-content">
+              {activeBottomPanel === 'results' && (
+                <>
+                  {!result && (
+                    <div className="sql-studio-empty-panel">
+                      Run the active query to display results.
+                    </div>
+                  )}
+
+                  {result && result.columns.length > 0 && (
+                    <div className="sql-studio-table-wrapper">
+                      <table className="sql-studio-results-table">
+                        <thead>
+                          <tr>
+                            <th>#</th>
+
+                            {result.columns.map((column) => (
+                              <th key={column}>{column}</th>
+                            ))}
+                          </tr>
+                        </thead>
+
+                        <tbody>
+                          {result.rows.map((row, rowIndex) => (
+                            <tr key={rowIndex}>
+                              <td>{rowIndex + 1}</td>
+
+                              {result.columns.map((column) => (
+                                <td
+                                  key={`${rowIndex}-${column}`}
+                                  title={displayCellValue(
+                                    row[column],
+                                  )}
+                                >
+                                  {displayCellValue(row[column])}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {activeBottomPanel === 'messages' && (
+                <pre className="sql-execution-messages">
+                  {executionMessage}
+                </pre>
+              )}
+
+              {activeBottomPanel === 'history' && (
+                <div className="sql-bottom-history">
+                  {history.slice(0, 30).map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      onClick={() => openHistoryQuery(item)}
+                    >
+                      <span
+                        className={
+                          item.success
+                            ? 'history-state successful'
+                            : 'history-state failed'
+                        }
+                      />
+
+                      <strong>
+                        {item.success
+                          ? `${item.row_count} rows`
+                          : 'Failed'}
+                      </strong>
+
+                      <span>{item.execution_ms} ms</span>
+
+                      <span>
+                        {formatDateTime(item.executed_at)}
+                      </span>
+
+                      <code>{item.sql}</code>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
+
+      <footer className="sql-studio-statusbar">
+        <div>
+          <span
+            className={
+              connection?.connected
+                ? 'sql-connection-light connected'
+                : 'sql-connection-light'
+            }
+          />
+
+          {connection?.connected
+            ? `${connection.server} · ${connection.database}`
+            : 'MySQL disconnected'}
+        </div>
+
+        <div>READ ONLY</div>
+
+        <div>
+          {activeTab.savedQueryId
+            ? `Saved Query #${activeTab.savedQueryId}`
+            : 'Local Query Tab'}
+        </div>
+
+        <div className="sql-statusbar-spacer" />
+
+        <div>Ctrl+Enter / F5: Run</div>
+        <div>Ctrl+S: Save</div>
+
+        {result && (
+          <div>
+            {result.row_count.toLocaleString()} rows ·{' '}
+            {result.execution_ms.toLocaleString()} ms
+          </div>
+        )}
+      </footer>
     </section>
   )
 }
