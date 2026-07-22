@@ -354,25 +354,31 @@ def main() -> None:
         description="Index local company documents using Ollama."
     )
 
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group(required=True)
+
+    group.add_argument(
         "--folder",
-        required=True,
         help=(
             "Folder name underneath data\\documents, "
             'such as "Accounts Receivable".'
         ),
     )
 
+    group.add_argument(
+        "--all",
+        action="store_true",
+        help="Index every supported document under data\\documents.",
+    )
+
     args = parser.parse_args()
 
-    target_folder = DOCUMENTS_ROOT / args.folder
-
     try:
-        index_folder(target_folder)
+        if args.all:
+            index_folder(DOCUMENTS_ROOT)
+        else:
+            target_folder = DOCUMENTS_ROOT / args.folder
+            index_folder(target_folder)
+
     except Exception as exc:
         print(f"\nIndexing failed: {exc}")
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

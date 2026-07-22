@@ -1,3 +1,7 @@
+import subprocess
+import sys
+import threading
+from datetime import datetime
 import json
 import math
 import sqlite3
@@ -32,6 +36,19 @@ DATABASE_PATH = (
 DEFAULT_TOP_K = 6
 MAX_TOP_K = 10
 MINIMUM_SIMILARITY = 0.30
+INDEX_SCRIPT_PATH = Path(__file__).resolve().parent / "index_documents.py"
+
+index_job = {
+    "running": False,
+    "status": "idle",
+    "started_at": None,
+    "completed_at": None,
+    "return_code": None,
+    "message": "No indexing job has been run.",
+    "output": "",
+}
+
+index_job_lock = threading.Lock()
 
 
 # ---------------------------------------------------------
@@ -397,6 +414,74 @@ def get_latest_user_question(
         detail="No user question was provided.",
     )
 
+def run_full_index() -> None:
+    with index_job_lock:
+        index_job["running"] = True
+        index_job["status"] = "running"
+        index_job["started_at"] = datetime.now().isoformat(timespec="seconds")
+        index_job["completed_at"] = None
+        index_job["return_code"] = None
+        index_job["message"] = "Indexing all local SOP folders."
+        index_job["output"] = ""
+
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(INDEX_SCRIPT_PATH),
+                "--all",
+            ],
+            cwd=str(INDEX_SCRIPT_PATH.parent),
+            capture_output=True,
+            text=True,
+            timeout=7200,
+            check=False,
+        )
+
+        combined_output = "\n".join(
+            value.strip()
+            for value in [result.stdout, result.stderr]
+            if value and value.strip()
+        )
+
+        with index_job_lock:
+            index_job["running"] = False
+            index_job["completed_at"] = datetime.now().isoformat(
+                timespec="seconds"
+            )
+            index_job["return_code"] = result.returncode
+            index_job["output"] = combined_output[-15000:]
+
+            if result.returncode == 0:
+                index_job["status"] = "completed"
+                index_job["message"] = (
+                    "The local knowledge base was updated successfully."
+                )
+            else:
+                index_job["status"] = "failed"
+                index_job["message"] = (
+                    "The indexing process completed with errors."
+                )
+
+    except subprocess.TimeoutExpired:
+        with index_job_lock:
+            index_job["running"] = False
+            index_job["status"] = "failed"
+            index_job["completed_at"] = datetime.now().isoformat(
+                timespec="seconds"
+            )
+            index_job["message"] = (
+                "Indexing exceeded the two-hour time limit."
+            )
+
+    except Exception as exc:
+        with index_job_lock:
+            index_job["running"] = False
+            index_job["status"] = "failed"
+            index_job["completed_at"] = datetime.now().isoformat(
+                timespec="seconds"
+            )
+            index_job["message"] = f"Indexing failed: {exc}"
 
 # ---------------------------------------------------------
 # API endpoints
@@ -462,7 +547,31 @@ def knowledge_status() -> dict:
         "departments": departments,
         "database": str(DATABASE_PATH),
     }
+@app.post("/knowledge/reindex")
+def reindex_knowledge() -> dict:
+    with index_job_lock:
+        if index_job["running"]:
+            raise HTTPException(
+                status_code=409,
+                detail="A knowledge-base indexing job is already running.",
+            )
 
+        index_thread = threading.Thread(
+            target=run_full_index,
+            daemon=True,
+        )
+        index_thread.start()
+
+    return {
+        "started": True,
+        "message": "Local SOP indexing has started.",
+    }
+
+
+@app.get("/knowledge/reindex/status")
+def reindex_status() -> dict:
+    with index_job_lock:
+        return dict(index_job)
 
 @app.post(
     "/knowledge/search",
