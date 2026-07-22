@@ -597,4 +597,46 @@ button {
   .chat-bubble {
     max-width: 88%;
   }
+}.source-list {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.source-list > strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.source-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 7px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 11px;
+}
+
+.source-item span {
+  overflow-wrap: anywhere;
+}
+
+.source-item small {
+  flex: 0 0 auto;
+  color: #64748b;
+}
+
+.chat-row.user .source-list {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .source-item {
+    flex-direction: column;
+    gap: 4px;
+  }
 }

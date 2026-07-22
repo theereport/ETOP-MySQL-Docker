@@ -10,9 +10,20 @@ type WorkbenchModule = {
   status: ModuleStatus
 }
 
+type ChatSource = {
+  file_path: string
+  file_name: string
+  department: string | null
+  page_number: number | null
+  chunk_number: number
+  similarity: number
+  excerpt: string
+}
+
 type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
+  sources?: ChatSource[]
 }
 
 const modules: WorkbenchModule[] = [
@@ -89,17 +100,20 @@ function App() {
     setIsLoading(true)
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/chat', {
+      const response = await fetch('http://127.0.0.1:8000/knowledge/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          messages: updatedMessages.map((message) => ({
-            role: message.role,
-            content: message.content,
-          })),
-        }),
+body: JSON.stringify({
+  messages: updatedMessages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  })),
+  top_k: 6,
+  department: 'Accounts Receivable',
+}),
+
       })
 
       if (!response.ok) {
@@ -110,13 +124,19 @@ function App() {
         )
       }
 
-      const data: { response: string; model: string } = await response.json()
+      const data: {
+  response: string
+  model: string
+  search_mode: string
+  sources: ChatSource[]
+} = await response.json()
 
       setMessages((currentMessages) => [
         ...currentMessages,
         {
           role: 'assistant',
           content: data.response,
+          sources: data.sources,
         },
       ])
     } catch (requestError) {
@@ -314,6 +334,30 @@ function App() {
                       {message.role === 'user' ? 'You' : 'Local Assistant'}
                     </strong>
                     <p>{message.content}</p>
+
+{message.sources && message.sources.length > 0 && (
+  <div className="source-list">
+    <strong>Local sources</strong>
+
+    {message.sources.map((source, sourceIndex) => (
+      <div
+        className="source-item"
+        key={`${source.file_path}-${source.chunk_number}-${sourceIndex}`}
+      >
+        <span>
+          [{sourceIndex + 1}] {source.file_path}
+          {source.page_number !== null
+            ? ` · Page ${source.page_number}`
+            : ''}
+        </span>
+
+        <small>
+          Match: {(source.similarity * 100).toFixed(1)}%
+        </small>
+      </div>
+    ))}
+  </div>
+)}
                   </div>
                 </div>
               ))}
