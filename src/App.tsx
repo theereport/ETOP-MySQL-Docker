@@ -1,7 +1,15 @@
-import { FormEvent, useEffect, useState } from 'react'
+import {
+  FormEvent,
+  KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import './App.css'
 
 type ModuleStatus = 'Ready' | 'Coming Soon'
+
+type AssistantMode = 'knowledge' | 'general'
 
 type WorkbenchModule = {
   title: string
@@ -47,7 +55,7 @@ type IndexJobStatus = {
 const modules: WorkbenchModule[] = [
   {
     title: 'AI Assistant',
-    description: 'Chat with your local Ollama models and company SOPs.',
+    description: 'Chat with local AI or search company knowledge.',
     icon: '🤖',
     status: 'Ready',
   },
@@ -86,17 +94,25 @@ const modules: WorkbenchModule[] = [
 function App() {
   const [selectedModule, setSelectedModule] = useState('Dashboard')
 
+  const [assistantMode, setAssistantMode] =
+    useState<AssistantMode>('knowledge')
+
+  const [selectedDepartment, setSelectedDepartment] =
+    useState('')
+
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
       content:
-        'I am your local Enterprise AI Assistant. I can search your indexed company SOPs and answer using Ollama on this computer.',
+        'I am your local Enterprise AI Assistant. Company Knowledge mode searches your indexed SOPs. General Local AI mode uses Gemma without searching company documents.',
     },
   ])
 
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
+  const [copiedMessageIndex, setCopiedMessageIndex] =
+    useState<number | null>(null)
 
   const [knowledgeStatus, setKnowledgeStatus] =
     useState<KnowledgeStatus | null>(null)
@@ -108,7 +124,48 @@ function App() {
   const [isRefreshingKnowledge, setIsRefreshingKnowledge] =
     useState(false)
 
-  async function sendMessage(event: FormEvent<HTMLFormElement>) {
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+
+  async function loadKnowledgeStatus() {
+    setIsRefreshingKnowledge(true)
+    setKnowledgeError('')
+
+    try {
+      const [knowledgeResponse, jobResponse] = await Promise.all([
+        fetch('http://127.0.0.1:8000/knowledge/status'),
+        fetch(
+          'http://127.0.0.1:8000/knowledge/reindex/status',
+        ),
+      ])
+
+      if (!knowledgeResponse.ok || !jobResponse.ok) {
+        throw new Error(
+          'Unable to load the local knowledge-base status.',
+        )
+      }
+
+      const knowledgeData: KnowledgeStatus =
+        await knowledgeResponse.json()
+
+      const jobData: IndexJobStatus =
+        await jobResponse.json()
+
+      setKnowledgeStatus(knowledgeData)
+      setIndexStatus(jobData)
+    } catch (statusError) {
+      setKnowledgeError(
+        statusError instanceof Error
+          ? statusError.message
+          : 'Unable to reach the local backend.',
+      )
+    } finally {
+      setIsRefreshingKnowledge(false)
+    }
+  }
+
+  async function sendMessage(
+    event: FormEvent<HTMLFormElement>,
+  ) {
     event.preventDefault()
 
     const trimmedInput = input.trim()
@@ -130,26 +187,40 @@ function App() {
     setIsLoading(true)
 
     try {
-      const response = await fetch(
-        'http://127.0.0.1:8000/knowledge/chat',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            messages: updatedMessages.map((message) => ({
-              role: message.role,
-              content: message.content,
-            })),
-            top_k: 6,
-            department: null,
-          }),
+      const endpoint =
+        assistantMode === 'knowledge'
+          ? 'http://127.0.0.1:8000/knowledge/chat'
+          : 'http://127.0.0.1:8000/chat'
+
+      const requestBody =
+        assistantMode === 'knowledge'
+          ? {
+              messages: updatedMessages.map((message) => ({
+                role: message.role,
+                content: message.content,
+              })),
+              top_k: 6,
+              department: selectedDepartment || null,
+            }
+          : {
+              messages: updatedMessages.map((message) => ({
+                role: message.role,
+                content: message.content,
+              })),
+            }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-      )
+        body: JSON.stringify(requestBody),
+      })
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => null)
+        const errorData = await response
+          .json()
+          .catch(() => null)
 
         throw new Error(
           errorData?.detail ??
@@ -157,21 +228,36 @@ function App() {
         )
       }
 
-      const data: {
-        response: string
-        model: string
-        search_mode: string
-        sources: ChatSource[]
-      } = await response.json()
+      if (assistantMode === 'knowledge') {
+        const data: {
+          response: string
+          model: string
+          search_mode: string
+          sources: ChatSource[]
+        } = await response.json()
 
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        {
-          role: 'assistant',
-          content: data.response,
-          sources: data.sources,
-        },
-      ])
+        setMessages((currentMessages) => [
+          ...currentMessages,
+          {
+            role: 'assistant',
+            content: data.response,
+            sources: data.sources,
+          },
+        ])
+      } else {
+        const data: {
+          response: string
+          model: string
+        } = await response.json()
+
+        setMessages((currentMessages) => [
+          ...currentMessages,
+          {
+            role: 'assistant',
+            content: data.response,
+          },
+        ])
+      }
     } catch (requestError) {
       const message =
         requestError instanceof Error
@@ -185,48 +271,68 @@ function App() {
   }
 
   function clearChat() {
+    const openingMessage =
+      assistantMode === 'knowledge'
+        ? 'Chat cleared. I am ready to search your local company SOPs.'
+        : 'Chat cleared. I am ready to help using the local Gemma model.'
+
     setMessages([
       {
         role: 'assistant',
-        content:
-          'Chat cleared. I am ready to search your local company SOPs.',
+        content: openingMessage,
       },
     ])
 
     setError('')
+    setCopiedMessageIndex(null)
   }
 
-  async function loadKnowledgeStatus() {
-    setIsRefreshingKnowledge(true)
-    setKnowledgeError('')
+  function changeAssistantMode(mode: AssistantMode) {
+    if (mode === assistantMode) {
+      return
+    }
 
+    setAssistantMode(mode)
+    setSelectedDepartment('')
+    setError('')
+
+    setMessages([
+      {
+        role: 'assistant',
+        content:
+          mode === 'knowledge'
+            ? 'Company Knowledge mode is active. I will answer using only your indexed local SOPs and display supporting sources.'
+            : 'General Local AI mode is active. I will answer using Gemma running locally without searching company SOPs.',
+      },
+    ])
+  }
+
+  async function copyAnswer(
+    content: string,
+    messageIndex: number,
+  ) {
     try {
-      const [knowledgeResponse, jobResponse] = await Promise.all([
-        fetch('http://127.0.0.1:8000/knowledge/status'),
-        fetch('http://127.0.0.1:8000/knowledge/reindex/status'),
-      ])
+      await navigator.clipboard.writeText(content)
+      setCopiedMessageIndex(messageIndex)
 
-      if (!knowledgeResponse.ok || !jobResponse.ok) {
-        throw new Error(
-          'Unable to load the local knowledge-base status.',
-        )
-      }
+      window.setTimeout(() => {
+        setCopiedMessageIndex(null)
+      }, 2000)
+    } catch {
+      setError('Unable to copy the answer.')
+    }
+  }
 
-      const knowledgeData: KnowledgeStatus =
-        await knowledgeResponse.json()
-
-      const jobData: IndexJobStatus = await jobResponse.json()
-
-      setKnowledgeStatus(knowledgeData)
-      setIndexStatus(jobData)
-    } catch (statusError) {
-      setKnowledgeError(
-        statusError instanceof Error
-          ? statusError.message
-          : 'Unable to reach the local backend.',
-      )
-    } finally {
-      setIsRefreshingKnowledge(false)
+  function handleChatKeyDown(
+    event: KeyboardEvent<HTMLTextAreaElement>,
+  ) {
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !isLoading
+    ) {
+      event.preventDefault()
+      event.currentTarget.form?.requestSubmit()
     }
   }
 
@@ -242,7 +348,9 @@ function App() {
       )
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => null)
+        const errorData = await response
+          .json()
+          .catch(() => null)
 
         throw new Error(
           errorData?.detail ??
@@ -261,7 +369,10 @@ function App() {
   }
 
   useEffect(() => {
-    if (selectedModule !== 'SOP Search') {
+    if (
+      selectedModule !== 'SOP Search' &&
+      selectedModule !== 'AI Assistant'
+    ) {
       return
     }
 
@@ -279,6 +390,12 @@ function App() {
 
     return () => window.clearInterval(intervalId)
   }, [indexStatus?.running])
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({
+      behavior: 'smooth',
+    })
+  }, [messages, isLoading])
 
   return (
     <div className="app-shell">
@@ -313,7 +430,9 @@ function App() {
                   ? 'nav-item active'
                   : 'nav-item'
               }
-              onClick={() => setSelectedModule(module.title)}
+              onClick={() =>
+                setSelectedModule(module.title)
+              }
             >
               <span>{module.icon}</span>
               {module.title}
@@ -336,7 +455,9 @@ function App() {
       <main className="main-content">
         <header className="top-bar">
           <div>
-            <p className="eyebrow">LOCAL ENTERPRISE PLATFORM</p>
+            <p className="eyebrow">
+              LOCAL ENTERPRISE PLATFORM
+            </p>
             <h2>{selectedModule}</h2>
           </div>
 
@@ -359,14 +480,15 @@ function App() {
                 </span>
 
                 <h3>
-                  Your local command center for AI, reporting, and
-                  automation.
+                  Your local command center for AI, reporting,
+                  and automation.
                 </h3>
 
                 <p>
-                  Search company knowledge, generate SQL, manage reports,
-                  build internal tools, and automate repetitive work from
-                  one secure local platform.
+                  Search company knowledge, generate SQL,
+                  manage reports, build internal tools, and
+                  automate repetitive work from one secure local
+                  platform.
                 </p>
 
                 <button
@@ -384,8 +506,8 @@ function App() {
                 <strong>Local Only</strong>
 
                 <p>
-                  React, FastAPI, SQLite, document embeddings, and Ollama
-                  are configured for local access.
+                  React, FastAPI, SQLite, document embeddings,
+                  and Ollama are configured for local access.
                 </p>
               </div>
             </section>
@@ -441,14 +563,14 @@ function App() {
             <div className="chat-header">
               <div>
                 <p className="eyebrow">
-                  LOCAL SOP INTELLIGENCE
+                  LOCAL AI INTELLIGENCE
                 </p>
 
                 <h3>Enterprise AI Assistant</h3>
 
                 <p>
-                  Model: gemma3:12b · Knowledge: Local SOP index ·
-                  Connection: 127.0.0.1
+                  Model: gemma3:12b · Connection:
+                  127.0.0.1
                 </p>
               </div>
 
@@ -458,6 +580,100 @@ function App() {
               >
                 Clear chat
               </button>
+            </div>
+
+            <div className="assistant-controls">
+              <div className="assistant-mode-group">
+                <span className="control-label">
+                  Assistant mode
+                </span>
+
+                <div className="mode-selector">
+                  <button
+                    type="button"
+                    className={
+                      assistantMode === 'knowledge'
+                        ? 'mode-button active'
+                        : 'mode-button'
+                    }
+                    onClick={() =>
+                      changeAssistantMode('knowledge')
+                    }
+                  >
+                    <span>📚</span>
+                    Company Knowledge
+                  </button>
+
+                  <button
+                    type="button"
+                    className={
+                      assistantMode === 'general'
+                        ? 'mode-button active'
+                        : 'mode-button'
+                    }
+                    onClick={() =>
+                      changeAssistantMode('general')
+                    }
+                  >
+                    <span>🤖</span>
+                    General Local AI
+                  </button>
+                </div>
+              </div>
+
+              {assistantMode === 'knowledge' && (
+                <label className="department-filter">
+                  <span className="control-label">
+                    Department
+                  </span>
+
+                  <select
+                    value={selectedDepartment}
+                    onChange={(event) =>
+                      setSelectedDepartment(
+                        event.target.value,
+                      )
+                    }
+                  >
+                    <option value="">
+                      All indexed departments
+                    </option>
+
+                    {knowledgeStatus?.departments?.map(
+                      (department) => (
+                        <option
+                          key={department}
+                          value={department}
+                        >
+                          {department}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+              )}
+            </div>
+
+            <div
+              className={
+                assistantMode === 'knowledge'
+                  ? 'assistant-mode-notice knowledge'
+                  : 'assistant-mode-notice general'
+              }
+            >
+              <strong>
+                {assistantMode === 'knowledge'
+                  ? 'Company Knowledge mode'
+                  : 'General Local AI mode'}
+              </strong>
+
+              <span>
+                {assistantMode === 'knowledge'
+                  ? selectedDepartment
+                    ? `Searching only the ${selectedDepartment} SOP index.`
+                    : 'Searching all indexed company SOP departments.'
+                  : 'Using the local Gemma model without searching company SOPs.'}
+              </span>
             </div>
 
             <div className="chat-messages">
@@ -471,11 +687,30 @@ function App() {
                   </div>
 
                   <div className="chat-bubble">
-                    <strong>
-                      {message.role === 'user'
-                        ? 'You'
-                        : 'Local Assistant'}
-                    </strong>
+                    <div className="chat-bubble-header">
+                      <strong>
+                        {message.role === 'user'
+                          ? 'You'
+                          : 'Local Assistant'}
+                      </strong>
+
+                      {message.role === 'assistant' && (
+                        <button
+                          type="button"
+                          className="copy-answer-button"
+                          onClick={() =>
+                            void copyAnswer(
+                              message.content,
+                              index,
+                            )
+                          }
+                        >
+                          {copiedMessageIndex === index
+                            ? 'Copied'
+                            : 'Copy'}
+                        </button>
+                      )}
+                    </div>
 
                     <p>{message.content}</p>
 
@@ -486,26 +721,30 @@ function App() {
 
                           {message.sources.map(
                             (source, sourceIndex) => (
-                              <div
-                                className="source-item"
+                              <details
+                                className="source-item source-details"
                                 key={`${source.file_path}-${source.chunk_number}-${sourceIndex}`}
                               >
-                                <span>
-                                  [{sourceIndex + 1}]{' '}
-                                  {source.file_path}
-                                  {source.page_number !== null
-                                    ? ` · Page ${source.page_number}`
-                                    : ''}
-                                </span>
+                                <summary>
+                                  <span>
+                                    [{sourceIndex + 1}]{' '}
+                                    {source.file_path}
+                                    {source.page_number !== null
+                                      ? ` · Page ${source.page_number}`
+                                      : ''}
+                                  </span>
 
-                                <small>
-                                  Match:{' '}
-                                  {(
-                                    source.similarity * 100
-                                  ).toFixed(1)}
-                                  %
-                                </small>
-                              </div>
+                                  <small>
+                                    Match:{' '}
+                                    {(
+                                      source.similarity * 100
+                                    ).toFixed(1)}
+                                    %
+                                  </small>
+                                </summary>
+
+                                <p>{source.excerpt}</p>
+                              </details>
                             ),
                           )}
                         </div>
@@ -520,10 +759,17 @@ function App() {
 
                   <div className="chat-bubble">
                     <strong>Local Assistant</strong>
-                    <p>Searching local SOPs and thinking…</p>
+
+                    <p>
+                      {assistantMode === 'knowledge'
+                        ? 'Searching local SOPs and thinking…'
+                        : 'Thinking locally…'}
+                    </p>
                   </div>
                 </div>
               )}
+
+              <div ref={messagesEndRef} />
             </div>
 
             {error && (
@@ -539,7 +785,12 @@ function App() {
                 onChange={(event) =>
                   setInput(event.target.value)
                 }
-                placeholder="Ask a question about your company SOPs..."
+                onKeyDown={handleChatKeyDown}
+                placeholder={
+                  assistantMode === 'knowledge'
+                    ? 'Ask a question about your company SOPs...'
+                    : 'Ask the local Gemma model anything...'
+                }
                 rows={3}
                 disabled={isLoading}
               />
@@ -553,9 +804,16 @@ function App() {
               </button>
             </form>
 
+            <p className="chat-keyboard-note">
+              Press Enter to send. Press Shift + Enter for a
+              new line.
+            </p>
+
             <p className="privacy-note">
-              Local path: Browser → FastAPI → SQLite SOP index →
-              Ollama. No cloud AI API is configured.
+              {assistantMode === 'knowledge'
+                ? 'Local path: Browser → FastAPI → SQLite SOP index → Ollama.'
+                : 'Local path: Browser → FastAPI → Ollama.'}{' '}
+              No cloud AI API is configured.
             </p>
           </section>
         )}
@@ -571,8 +829,8 @@ function App() {
                 <h3>Knowledge Base</h3>
 
                 <p>
-                  Manage the company SOP index stored locally on this
-                  computer.
+                  Manage the company SOP index stored locally on
+                  this computer.
                 </p>
               </div>
 
@@ -625,7 +883,8 @@ function App() {
               <div className="knowledge-stat-card">
                 <span>Departments</span>
                 <strong>
-                  {knowledgeStatus?.departments?.length ?? '—'}
+                  {knowledgeStatus?.departments?.length ??
+                    '—'}
                 </strong>
               </div>
 
@@ -738,9 +997,9 @@ function App() {
               <h3>{selectedModule}</h3>
 
               <p>
-                This module has been added to the application shell.
-                Its working functionality will be built in a later
-                phase.
+                This module has been added to the application
+                shell. Its working functionality will be built
+                in a later phase.
               </p>
 
               <button
