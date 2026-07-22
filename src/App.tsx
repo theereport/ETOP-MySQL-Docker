@@ -1,21 +1,26 @@
 import {
-  FormEvent,
-  KeyboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
+
 import './App.css'
+import './DesktopShell.css'
+import SqlWorkspace from './components/SqlWorkspace'
 
 type ModuleStatus = 'Ready' | 'Coming Soon'
-
 type AssistantMode = 'knowledge' | 'general'
 
 type WorkbenchModule = {
   title: string
+  shortTitle: string
   description: string
   icon: string
   status: ModuleStatus
+  group: 'Core' | 'Data' | 'Operations'
 }
 
 type ChatSource = {
@@ -52,59 +57,87 @@ type IndexJobStatus = {
   output: string
 }
 
+const API_BASE = 'http://127.0.0.1:8000'
+
 const modules: WorkbenchModule[] = [
   {
-    title: 'AI Assistant',
-    description: 'Chat with local AI or search company knowledge.',
-    icon: '🤖',
+    title: 'Dashboard',
+    shortTitle: 'Dashboard',
+    description: 'Enterprise command center and system overview.',
+    icon: '⌂',
     status: 'Ready',
+    group: 'Core',
+  },
+  {
+    title: 'AI Assistant',
+    shortTitle: 'AI Assistant',
+    description: 'Use local AI and indexed company knowledge.',
+    icon: '✦',
+    status: 'Ready',
+    group: 'Core',
   },
   {
     title: 'SQL Workspace',
-    description: 'Create, save, and organize SQL queries.',
-    icon: '🗄️',
-    status: 'Coming Soon',
-  },
-  {
-    title: 'Report Builder',
-    description: 'Build accounting and operational reports.',
-    icon: '📊',
-    status: 'Coming Soon',
+    shortTitle: 'SQL Studio',
+    description: 'Create, execute, save, and organize SQL queries.',
+    icon: '⌘',
+    status: 'Ready',
+    group: 'Data',
   },
   {
     title: 'SOP Search',
-    description: 'Manage and search company procedures and documentation.',
-    icon: '📄',
+    shortTitle: 'Knowledge Base',
+    description: 'Manage and search indexed company procedures.',
+    icon: '▤',
     status: 'Ready',
+    group: 'Data',
+  },
+  {
+    title: 'Report Builder',
+    shortTitle: 'Report Builder',
+    description: 'Create accounting and operational reports.',
+    icon: '▥',
+    status: 'Coming Soon',
+    group: 'Data',
   },
   {
     title: 'Automation Center',
+    shortTitle: 'Automation',
     description: 'Manage PowerShell and Python automations.',
-    icon: '⚙️',
+    icon: '⚙',
     status: 'Coming Soon',
+    group: 'Operations',
   },
   {
     title: 'Project Tracker',
-    description: 'Track ERP modernization and improvement projects.',
-    icon: '📁',
+    shortTitle: 'Projects',
+    description: 'Track transformation and technology projects.',
+    icon: '◇',
     status: 'Coming Soon',
+    group: 'Operations',
   },
 ]
 
+const navigationGroups = ['Core', 'Data', 'Operations'] as const
+
 function App() {
-  const [selectedModule, setSelectedModule] = useState('Dashboard')
+  const [selectedModule, setSelectedModule] =
+    useState<string>('Dashboard')
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [assistantPanelOpen, setAssistantPanelOpen] = useState(true)
+  const [commandSearch, setCommandSearch] = useState('')
 
   const [assistantMode, setAssistantMode] =
     useState<AssistantMode>('knowledge')
 
-  const [selectedDepartment, setSelectedDepartment] =
-    useState('')
+  const [selectedDepartment, setSelectedDepartment] = useState('')
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
       content:
-        'I am your local Enterprise AI Assistant. Company Knowledge mode searches your indexed SOPs. General Local AI mode uses Gemma without searching company documents.',
+        'I am your local Enterprise AI Assistant. Use Company Knowledge mode for indexed SOPs or General Local AI for broader assistance.',
     },
   ])
 
@@ -125,6 +158,33 @@ function App() {
     useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const assistantPanelEndRef = useRef<HTMLDivElement | null>(null)
+
+  const currentModule = useMemo(() => {
+    return (
+      modules.find((module) => module.title === selectedModule) ??
+      modules[0]
+    )
+  }, [selectedModule])
+
+  const commandMatches = useMemo(() => {
+    const search = commandSearch.trim().toLowerCase()
+
+    if (!search) {
+      return []
+    }
+
+    return modules.filter((module) => {
+      return (
+        module.title.toLowerCase().includes(search) ||
+        module.shortTitle.toLowerCase().includes(search) ||
+        module.description.toLowerCase().includes(search)
+      )
+    })
+  }, [commandSearch])
+
+  const systemReady =
+    knowledgeStatus?.ready === true && indexStatus?.running !== true
 
   async function loadKnowledgeStatus() {
     setIsRefreshingKnowledge(true)
@@ -132,10 +192,8 @@ function App() {
 
     try {
       const [knowledgeResponse, jobResponse] = await Promise.all([
-        fetch('http://127.0.0.1:8000/knowledge/status'),
-        fetch(
-          'http://127.0.0.1:8000/knowledge/reindex/status',
-        ),
+        fetch(`${API_BASE}/knowledge/status`),
+        fetch(`${API_BASE}/knowledge/reindex/status`),
       ])
 
       if (!knowledgeResponse.ok || !jobResponse.ok) {
@@ -147,8 +205,7 @@ function App() {
       const knowledgeData: KnowledgeStatus =
         await knowledgeResponse.json()
 
-      const jobData: IndexJobStatus =
-        await jobResponse.json()
+      const jobData: IndexJobStatus = await jobResponse.json()
 
       setKnowledgeStatus(knowledgeData)
       setIndexStatus(jobData)
@@ -189,8 +246,8 @@ function App() {
     try {
       const endpoint =
         assistantMode === 'knowledge'
-          ? 'http://127.0.0.1:8000/knowledge/chat'
-          : 'http://127.0.0.1:8000/chat'
+          ? `${API_BASE}/knowledge/chat`
+          : `${API_BASE}/chat`
 
       const requestBody =
         assistantMode === 'knowledge'
@@ -217,74 +274,35 @@ function App() {
         body: JSON.stringify(requestBody),
       })
 
-      if (!response.ok) {
-        const errorData = await response
-          .json()
-          .catch(() => null)
+      const responseBody = await response.json().catch(() => null)
 
+      if (!response.ok) {
         throw new Error(
-          errorData?.detail ??
+          responseBody?.detail ??
             `Backend request failed: ${response.status}`,
         )
       }
 
-      if (assistantMode === 'knowledge') {
-        const data: {
-          response: string
-          model: string
-          search_mode: string
-          sources: ChatSource[]
-        } = await response.json()
-
-        setMessages((currentMessages) => [
-          ...currentMessages,
-          {
-            role: 'assistant',
-            content: data.response,
-            sources: data.sources,
-          },
-        ])
-      } else {
-        const data: {
-          response: string
-          model: string
-        } = await response.json()
-
-        setMessages((currentMessages) => [
-          ...currentMessages,
-          {
-            role: 'assistant',
-            content: data.response,
-          },
-        ])
-      }
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          role: 'assistant',
+          content: responseBody.response,
+          sources:
+            assistantMode === 'knowledge'
+              ? responseBody.sources
+              : undefined,
+        },
+      ])
     } catch (requestError) {
-      const message =
+      setError(
         requestError instanceof Error
           ? requestError.message
-          : 'Unable to reach the local AI backend.'
-
-      setError(message)
+          : 'Unable to reach the local AI backend.',
+      )
     } finally {
       setIsLoading(false)
     }
-  }
-
-  function clearChat() {
-    const openingMessage =
-      assistantMode === 'knowledge'
-        ? 'Chat cleared. I am ready to search your local company SOPs.'
-        : 'Chat cleared. I am ready to help using the local Gemma model.'
-
-    setMessages([
-      {
-        role: 'assistant',
-        content: openingMessage,
-      },
-    ])
-
-    setError('')
-    setCopiedMessageIndex(null)
   }
 
   function changeAssistantMode(mode: AssistantMode) {
@@ -301,26 +319,25 @@ function App() {
         role: 'assistant',
         content:
           mode === 'knowledge'
-            ? 'Company Knowledge mode is active. I will answer using only your indexed local SOPs and display supporting sources.'
-            : 'General Local AI mode is active. I will answer using Gemma running locally without searching company SOPs.',
+            ? 'Company Knowledge mode is active. I will search your indexed local SOPs and show supporting sources.'
+            : 'General Local AI mode is active. I will use Gemma locally without searching company documents.',
       },
     ])
   }
 
-  async function copyAnswer(
-    content: string,
-    messageIndex: number,
-  ) {
-    try {
-      await navigator.clipboard.writeText(content)
-      setCopiedMessageIndex(messageIndex)
+  function clearChat() {
+    setMessages([
+      {
+        role: 'assistant',
+        content:
+          assistantMode === 'knowledge'
+            ? 'Chat cleared. I am ready to search your local company knowledge.'
+            : 'Chat cleared. I am ready to help using the local Gemma model.',
+      },
+    ])
 
-      window.setTimeout(() => {
-        setCopiedMessageIndex(null)
-      }, 2000)
-    } catch {
-      setError('Unable to copy the answer.')
-    }
+    setError('')
+    setCopiedMessageIndex(null)
   }
 
   function handleChatKeyDown(
@@ -336,25 +353,38 @@ function App() {
     }
   }
 
+  async function copyAnswer(
+    content: string,
+    messageIndex: number,
+  ) {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopiedMessageIndex(messageIndex)
+
+      window.setTimeout(() => {
+        setCopiedMessageIndex(null)
+      }, 1800)
+    } catch {
+      setError('Unable to copy the answer.')
+    }
+  }
+
   async function updateAllSops() {
     setKnowledgeError('')
 
     try {
       const response = await fetch(
-        'http://127.0.0.1:8000/knowledge/reindex',
+        `${API_BASE}/knowledge/reindex`,
         {
           method: 'POST',
         },
       )
 
-      if (!response.ok) {
-        const errorData = await response
-          .json()
-          .catch(() => null)
+      const body = await response.json().catch(() => null)
 
+      if (!response.ok) {
         throw new Error(
-          errorData?.detail ??
-            'Unable to start local SOP indexing.',
+          body?.detail ?? 'Unable to start SOP indexing.',
         )
       }
 
@@ -363,21 +393,19 @@ function App() {
       setKnowledgeError(
         updateError instanceof Error
           ? updateError.message
-          : 'Unable to start local SOP indexing.',
+          : 'Unable to start SOP indexing.',
       )
     }
   }
 
-  useEffect(() => {
-    if (
-      selectedModule !== 'SOP Search' &&
-      selectedModule !== 'AI Assistant'
-    ) {
-      return
-    }
+  function openModule(moduleName: string) {
+    setSelectedModule(moduleName)
+    setCommandSearch('')
+  }
 
+  useEffect(() => {
     void loadKnowledgeStatus()
-  }, [selectedModule])
+  }, [])
 
   useEffect(() => {
     if (!indexStatus?.running) {
@@ -395,212 +423,392 @@ function App() {
     messagesEndRef.current?.scrollIntoView({
       behavior: 'smooth',
     })
+
+    assistantPanelEndRef.current?.scrollIntoView({
+      behavior: 'smooth',
+    })
   }, [messages, isLoading])
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-icon">AI</div>
-
-          <div>
-            <h1>Enterprise AI</h1>
-            <p>Workbench</p>
-          </div>
-        </div>
-
-        <nav className="navigation">
+    <div
+      className={[
+        'desktop-app',
+        sidebarCollapsed ? 'sidebar-collapsed' : '',
+        assistantPanelOpen ? 'assistant-open' : 'assistant-closed',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      <header className="desktop-titlebar">
+        <div className="titlebar-left">
           <button
-            className={
-              selectedModule === 'Dashboard'
-                ? 'nav-item active'
-                : 'nav-item'
+            type="button"
+            className="icon-command-button"
+            onClick={() =>
+              setSidebarCollapsed((current) => !current)
             }
-            onClick={() => setSelectedModule('Dashboard')}
+            aria-label="Toggle navigation"
+            title="Toggle navigation"
           >
-            <span>🏠</span>
-            Dashboard
+            ☰
           </button>
 
-          {modules.map((module) => (
-            <button
-              key={module.title}
-              className={
-                selectedModule === module.title
-                  ? 'nav-item active'
-                  : 'nav-item'
-              }
-              onClick={() =>
-                setSelectedModule(module.title)
-              }
-            >
-              <span>{module.icon}</span>
-              {module.title}
-            </button>
-          ))}
-        </nav>
+          <div className="desktop-brand-mark">AI</div>
 
-        <div className="sidebar-footer">
-          <div className="system-status">
-            <span className="status-dot" />
-
-            <div>
-              <strong>Local System</strong>
-              <p>127.0.0.1 only</p>
-            </div>
+          <div className="desktop-brand-copy">
+            <strong>Enterprise AI Workbench</strong>
+            <span>Local Operations Platform</span>
           </div>
         </div>
-      </aside>
 
-      <main className="main-content">
-        <header className="top-bar">
-          <div>
-            <p className="eyebrow">
-              LOCAL ENTERPRISE PLATFORM
-            </p>
-            <h2>{selectedModule}</h2>
+        <div className="command-center">
+          <span className="command-search-icon">⌕</span>
+
+          <input
+            value={commandSearch}
+            onChange={(event) =>
+              setCommandSearch(event.target.value)
+            }
+            placeholder="Search modules and commands..."
+          />
+
+          <kbd>Ctrl K</kbd>
+
+          {commandMatches.length > 0 && (
+            <div className="command-results">
+              {commandMatches.map((module) => (
+                <button
+                  type="button"
+                  key={module.title}
+                  onClick={() => openModule(module.title)}
+                >
+                  <span className="command-result-icon">
+                    {module.icon}
+                  </span>
+
+                  <span>
+                    <strong>{module.shortTitle}</strong>
+                    <small>{module.description}</small>
+                  </span>
+
+                  <em>{module.status}</em>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="titlebar-right">
+          <div
+            className={
+              systemReady
+                ? 'connection-pill connected'
+                : 'connection-pill'
+            }
+          >
+            <span className="status-dot" />
+            Local System
           </div>
 
-          <div className="user-card">
-            <div className="user-avatar">JC</div>
+          <button
+            type="button"
+            className={
+              assistantPanelOpen
+                ? 'icon-command-button active'
+                : 'icon-command-button'
+            }
+            onClick={() =>
+              setAssistantPanelOpen((current) => !current)
+            }
+            aria-label="Toggle AI assistant"
+            title="Toggle AI assistant"
+          >
+            ✦
+          </button>
+
+          <div className="desktop-user">
+            <div className="desktop-user-avatar">JC</div>
 
             <div>
               <strong>Josh Corbit</strong>
-              <p>Administrator</p>
+              <span>Administrator</span>
             </div>
           </div>
-        </header>
+        </div>
+      </header>
 
-        {selectedModule === 'Dashboard' && (
-          <>
-            <section className="hero">
-              <div>
-                <span className="hero-label">
-                  Enterprise AI Workbench
-                </span>
+      <aside className="desktop-sidebar">
+        <div className="sidebar-workspace-label">
+          <span>Workspace</span>
 
-                <h3>
-                  Your local command center for AI, reporting,
-                  and automation.
-                </h3>
+          {!sidebarCollapsed && (
+            <strong>Enterprise Operations</strong>
+          )}
+        </div>
 
-                <p>
-                  Search company knowledge, generate SQL,
-                  manage reports, build internal tools, and
-                  automate repetitive work from one secure local
-                  platform.
-                </p>
+        <nav className="desktop-navigation">
+          {navigationGroups.map((group) => (
+            <div className="navigation-group" key={group}>
+              {!sidebarCollapsed && (
+                <div className="navigation-group-title">
+                  {group}
+                </div>
+              )}
 
-                <button
-                  className="primary-button"
-                  onClick={() =>
-                    setSelectedModule('AI Assistant')
-                  }
-                >
-                  Open AI Assistant
-                </button>
-              </div>
-
-              <div className="hero-stat">
-                <span>Privacy status</span>
-                <strong>Local Only</strong>
-
-                <p>
-                  React, FastAPI, SQLite, document embeddings,
-                  and Ollama are configured for local access.
-                </p>
-              </div>
-            </section>
-
-            <section className="section-heading">
-              <div>
-                <p className="eyebrow">WORKSPACE</p>
-                <h3>Applications</h3>
-              </div>
-
-              <span>{modules.length} modules</span>
-            </section>
-
-            <section className="module-grid">
-              {modules.map((module) => (
-                <button
-                  className="module-card"
-                  key={module.title}
-                  onClick={() =>
-                    setSelectedModule(module.title)
-                  }
-                >
-                  <div className="module-card-header">
-                    <div className="module-icon">
+              {modules
+                .filter((module) => module.group === group)
+                .map((module) => (
+                  <button
+                    type="button"
+                    key={module.title}
+                    className={
+                      selectedModule === module.title
+                        ? 'desktop-nav-item active'
+                        : 'desktop-nav-item'
+                    }
+                    onClick={() => openModule(module.title)}
+                    title={module.shortTitle}
+                  >
+                    <span className="desktop-nav-icon">
                       {module.icon}
-                    </div>
+                    </span>
 
-                    <span
-                      className={
-                        module.status === 'Ready'
-                          ? 'module-status ready'
-                          : 'module-status'
+                    {!sidebarCollapsed && (
+                      <>
+                        <span className="desktop-nav-copy">
+                          <strong>{module.shortTitle}</strong>
+
+                          {module.status === 'Coming Soon' && (
+                            <small>Coming soon</small>
+                          )}
+                        </span>
+
+                        {selectedModule === module.title && (
+                          <span className="nav-active-marker" />
+                        )}
+                      </>
+                    )}
+                  </button>
+                ))}
+            </div>
+          ))}
+        </nav>
+
+        <div className="sidebar-system-card">
+          <span className="status-dot" />
+
+          {!sidebarCollapsed && (
+            <div>
+              <strong>Local Mode</strong>
+              <span>127.0.0.1 only</span>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <main className="desktop-workspace">
+        <div className="workspace-toolbar">
+          <div className="workspace-breadcrumbs">
+            <span>Enterprise AI</span>
+            <b>/</b>
+            <strong>{currentModule.shortTitle}</strong>
+          </div>
+
+          <div className="workspace-toolbar-actions">
+            <button
+              type="button"
+              onClick={() => openModule('Dashboard')}
+            >
+              Home
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openModule('SQL Workspace')}
+            >
+              SQL Studio
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openModule('AI Assistant')}
+            >
+              Full Assistant
+            </button>
+          </div>
+        </div>
+
+        <div className="workspace-content">
+          {selectedModule === 'Dashboard' && (
+            <section className="desktop-dashboard">
+              <div className="desktop-hero">
+                <div className="desktop-hero-copy">
+                  <span className="workspace-label">
+                    ENTERPRISE OPERATIONS WORKBENCH
+                  </span>
+
+                  <h1>
+                    One local workspace for data, AI, reporting,
+                    and process improvement.
+                  </h1>
+
+                  <p>
+                    Run read-only SQL, search company knowledge,
+                    build reports, manage automations, and use
+                    local AI without sending company information
+                    to a cloud AI service.
+                  </p>
+
+                  <div className="desktop-hero-actions">
+                    <button
+                      type="button"
+                      className="desktop-primary-button"
+                      onClick={() =>
+                        openModule('SQL Workspace')
                       }
                     >
-                      {module.status}
-                    </span>
+                      Open SQL Studio
+                    </button>
+
+                    <button
+                      type="button"
+                      className="desktop-secondary-button"
+                      onClick={() =>
+                        openModule('AI Assistant')
+                      }
+                    >
+                      Open AI Assistant
+                    </button>
+                  </div>
+                </div>
+
+                <div className="system-overview-card">
+                  <div className="system-overview-header">
+                    <span>System status</span>
+                    <strong>
+                      {systemReady ? 'Operational' : 'Checking'}
+                    </strong>
                   </div>
 
-                  <h4>{module.title}</h4>
-                  <p>{module.description}</p>
+                  <div className="system-overview-grid">
+                    <div>
+                      <span>AI Model</span>
+                      <strong>Gemma 3:12B</strong>
+                    </div>
 
-                  <div className="module-link">
-                    Open module <span>→</span>
+                    <div>
+                      <span>Knowledge Documents</span>
+                      <strong>
+                        {knowledgeStatus?.documents ?? '—'}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>Searchable Chunks</span>
+                      <strong>
+                        {knowledgeStatus?.chunks ?? '—'}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>Data Access</span>
+                      <strong>Read Only</strong>
+                    </div>
                   </div>
-                </button>
-              ))}
-            </section>
-          </>
-        )}
-
-        {selectedModule === 'AI Assistant' && (
-          <section className="chat-page">
-            <div className="chat-header">
-              <div>
-                <p className="eyebrow">
-                  LOCAL AI INTELLIGENCE
-                </p>
-
-                <h3>Enterprise AI Assistant</h3>
-
-                <p>
-                  Model: gemma3:12b · Connection:
-                  127.0.0.1
-                </p>
+                </div>
               </div>
 
-              <button
-                className="secondary-button"
-                onClick={clearChat}
-              >
-                Clear chat
-              </button>
-            </div>
+              <div className="dashboard-section-heading">
+                <div>
+                  <span className="workspace-label">
+                    APPLICATIONS
+                  </span>
+                  <h2>Enterprise modules</h2>
+                </div>
 
-            <div className="assistant-controls">
-              <div className="assistant-mode-group">
-                <span className="control-label">
-                  Assistant mode
-                </span>
+                <span>{modules.length - 1} available modules</span>
+              </div>
 
-                <div className="mode-selector">
+              <div className="desktop-module-grid">
+                {modules
+                  .filter((module) => module.title !== 'Dashboard')
+                  .map((module) => (
+                    <button
+                      type="button"
+                      className="desktop-module-card"
+                      key={module.title}
+                      onClick={() => openModule(module.title)}
+                    >
+                      <div className="desktop-module-card-top">
+                        <div className="desktop-module-icon">
+                          {module.icon}
+                        </div>
+
+                        <span
+                          className={
+                            module.status === 'Ready'
+                              ? 'desktop-module-status ready'
+                              : 'desktop-module-status'
+                          }
+                        >
+                          {module.status}
+                        </span>
+                      </div>
+
+                      <strong>{module.shortTitle}</strong>
+                      <p>{module.description}</p>
+
+                      <span className="desktop-module-open">
+                        Open workspace →
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            </section>
+          )}
+
+          {selectedModule === 'SQL Workspace' && (
+            <SqlWorkspace />
+          )}
+
+          {selectedModule === 'AI Assistant' && (
+            <section className="full-assistant-page">
+              <div className="page-section-header">
+                <div>
+                  <span className="workspace-label">
+                    LOCAL AI INTELLIGENCE
+                  </span>
+
+                  <h1>Enterprise AI Assistant</h1>
+
+                  <p>
+                    Search company knowledge or work directly
+                    with the local Gemma model.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  className="desktop-secondary-button"
+                  onClick={clearChat}
+                >
+                  Clear conversation
+                </button>
+              </div>
+
+              <div className="full-assistant-controls">
+                <div className="desktop-segmented-control">
                   <button
                     type="button"
                     className={
                       assistantMode === 'knowledge'
-                        ? 'mode-button active'
-                        : 'mode-button'
+                        ? 'active'
+                        : ''
                     }
                     onClick={() =>
                       changeAssistantMode('knowledge')
                     }
                   >
-                    <span>📚</span>
                     Company Knowledge
                   </button>
 
@@ -608,25 +816,18 @@ function App() {
                     type="button"
                     className={
                       assistantMode === 'general'
-                        ? 'mode-button active'
-                        : 'mode-button'
+                        ? 'active'
+                        : ''
                     }
                     onClick={() =>
                       changeAssistantMode('general')
                     }
                   >
-                    <span>🤖</span>
                     General Local AI
                   </button>
                 </div>
-              </div>
 
-              {assistantMode === 'knowledge' && (
-                <label className="department-filter">
-                  <span className="control-label">
-                    Department
-                  </span>
-
+                {assistantMode === 'knowledge' && (
                   <select
                     value={selectedDepartment}
                     onChange={(event) =>
@@ -650,369 +851,513 @@ function App() {
                       ),
                     )}
                   </select>
-                </label>
-              )}
-            </div>
+                )}
+              </div>
 
-            <div
-              className={
-                assistantMode === 'knowledge'
-                  ? 'assistant-mode-notice knowledge'
-                  : 'assistant-mode-notice general'
-              }
-            >
-              <strong>
-                {assistantMode === 'knowledge'
-                  ? 'Company Knowledge mode'
-                  : 'General Local AI mode'}
-              </strong>
+              <div className="full-chat-surface">
+                <div className="full-chat-messages">
+                  {messages.map((message, index) => (
+                    <div
+                      className={`desktop-chat-message ${message.role}`}
+                      key={`${message.role}-${index}`}
+                    >
+                      <div className="desktop-chat-avatar">
+                        {message.role === 'user' ? 'JC' : 'AI'}
+                      </div>
 
-              <span>
-                {assistantMode === 'knowledge'
-                  ? selectedDepartment
-                    ? `Searching only the ${selectedDepartment} SOP index.`
-                    : 'Searching all indexed company SOP departments.'
-                  : 'Using the local Gemma model without searching company SOPs.'}
-              </span>
-            </div>
+                      <div className="desktop-chat-content">
+                        <div className="desktop-chat-heading">
+                          <strong>
+                            {message.role === 'user'
+                              ? 'You'
+                              : 'Local Assistant'}
+                          </strong>
 
-            <div className="chat-messages">
-              {messages.map((message, index) => (
-                <div
-                  className={`chat-row ${message.role}`}
-                  key={`${message.role}-${index}`}
-                >
-                  <div className="chat-avatar">
-                    {message.role === 'user' ? 'JC' : 'AI'}
-                  </div>
-
-                  <div className="chat-bubble">
-                    <div className="chat-bubble-header">
-                      <strong>
-                        {message.role === 'user'
-                          ? 'You'
-                          : 'Local Assistant'}
-                      </strong>
-
-                      {message.role === 'assistant' && (
-                        <button
-                          type="button"
-                          className="copy-answer-button"
-                          onClick={() =>
-                            void copyAnswer(
-                              message.content,
-                              index,
-                            )
-                          }
-                        >
-                          {copiedMessageIndex === index
-                            ? 'Copied'
-                            : 'Copy'}
-                        </button>
-                      )}
-                    </div>
-
-                    <p>{message.content}</p>
-
-                    {message.sources &&
-                      message.sources.length > 0 && (
-                        <div className="source-list">
-                          <strong>Local sources</strong>
-
-                          {message.sources.map(
-                            (source, sourceIndex) => (
-                              <details
-                                className="source-item source-details"
-                                key={`${source.file_path}-${source.chunk_number}-${sourceIndex}`}
-                              >
-                                <summary>
-                                  <span>
-                                    [{sourceIndex + 1}]{' '}
-                                    {source.file_path}
-                                    {source.page_number !== null
-                                      ? ` · Page ${source.page_number}`
-                                      : ''}
-                                  </span>
-
-                                  <small>
-                                    Match:{' '}
-                                    {(
-                                      source.similarity * 100
-                                    ).toFixed(1)}
-                                    %
-                                  </small>
-                                </summary>
-
-                                <p>{source.excerpt}</p>
-                              </details>
-                            ),
+                          {message.role === 'assistant' && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void copyAnswer(
+                                  message.content,
+                                  index,
+                                )
+                              }
+                            >
+                              {copiedMessageIndex === index
+                                ? 'Copied'
+                                : 'Copy'}
+                            </button>
                           )}
                         </div>
-                      )}
-                  </div>
+
+                        <p>{message.content}</p>
+
+                        {message.sources &&
+                          message.sources.length > 0 && (
+                            <div className="desktop-source-list">
+                              <strong>Supporting sources</strong>
+
+                              {message.sources.map(
+                                (source, sourceIndex) => (
+                                  <details
+                                    key={`${source.file_path}-${source.chunk_number}-${sourceIndex}`}
+                                  >
+                                    <summary>
+                                      [{sourceIndex + 1}]{' '}
+                                      {source.file_name}
+                                      {source.page_number !== null
+                                        ? ` · Page ${source.page_number}`
+                                        : ''}
+                                    </summary>
+
+                                    <p>{source.excerpt}</p>
+                                  </details>
+                                ),
+                              )}
+                            </div>
+                          )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {isLoading && (
+                    <div className="desktop-chat-message assistant">
+                      <div className="desktop-chat-avatar">
+                        AI
+                      </div>
+
+                      <div className="desktop-chat-content">
+                        <strong>Local Assistant</strong>
+                        <p>Thinking locally…</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div ref={messagesEndRef} />
                 </div>
-              ))}
 
-              {isLoading && (
-                <div className="chat-row assistant">
-                  <div className="chat-avatar">AI</div>
-
-                  <div className="chat-bubble">
-                    <strong>Local Assistant</strong>
-
-                    <p>
-                      {assistantMode === 'knowledge'
-                        ? 'Searching local SOPs and thinking…'
-                        : 'Thinking locally…'}
-                    </p>
+                {error && (
+                  <div className="desktop-error-banner">
+                    {error}
                   </div>
+                )}
+
+                <form
+                  className="full-chat-composer"
+                  onSubmit={sendMessage}
+                >
+                  <textarea
+                    value={input}
+                    onChange={(event) =>
+                      setInput(event.target.value)
+                    }
+                    onKeyDown={handleChatKeyDown}
+                    placeholder={
+                      assistantMode === 'knowledge'
+                        ? 'Ask about company SOPs, processes, or policies...'
+                        : 'Ask the local AI assistant anything...'
+                    }
+                    disabled={isLoading}
+                  />
+
+                  <button
+                    type="submit"
+                    disabled={isLoading || !input.trim()}
+                  >
+                    {isLoading ? 'Generating…' : 'Send'}
+                  </button>
+                </form>
+              </div>
+            </section>
+          )}
+
+          {selectedModule === 'SOP Search' && (
+            <section className="knowledge-desktop-page">
+              <div className="page-section-header">
+                <div>
+                  <span className="workspace-label">
+                    LOCAL DOCUMENT INTELLIGENCE
+                  </span>
+
+                  <h1>Knowledge Base</h1>
+
+                  <p>
+                    Manage the indexed SOP library used by the
+                    local assistant.
+                  </p>
+                </div>
+
+                <div className="page-header-actions">
+                  <button
+                    type="button"
+                    className="desktop-secondary-button"
+                    onClick={() =>
+                      void loadKnowledgeStatus()
+                    }
+                    disabled={isRefreshingKnowledge}
+                  >
+                    {isRefreshingKnowledge
+                      ? 'Refreshing…'
+                      : 'Refresh Status'}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="desktop-primary-button"
+                    onClick={() => void updateAllSops()}
+                    disabled={indexStatus?.running === true}
+                  >
+                    {indexStatus?.running
+                      ? 'Indexing SOPs…'
+                      : 'Update All SOPs'}
+                  </button>
+                </div>
+              </div>
+
+              {knowledgeError && (
+                <div className="desktop-error-banner">
+                  {knowledgeError}
                 </div>
               )}
 
-              <div ref={messagesEndRef} />
+              <div className="knowledge-metric-grid">
+                <div>
+                  <span>Documents</span>
+                  <strong>
+                    {knowledgeStatus?.documents ?? '—'}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Searchable Chunks</span>
+                  <strong>
+                    {knowledgeStatus?.chunks ?? '—'}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Departments</span>
+                  <strong>
+                    {knowledgeStatus?.departments?.length ??
+                      '—'}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Index Status</span>
+                  <strong>
+                    {indexStatus?.running
+                      ? 'Updating'
+                      : knowledgeStatus?.ready
+                        ? 'Ready'
+                        : 'Not Ready'}
+                  </strong>
+                </div>
+              </div>
+
+              <div className="knowledge-desktop-grid">
+                <div className="desktop-panel-card">
+                  <div className="desktop-panel-heading">
+                    <div>
+                      <strong>Indexing status</strong>
+                      <span>
+                        Current local document index state
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    className={`desktop-index-status ${
+                      indexStatus?.status ?? 'idle'
+                    }`}
+                  >
+                    <span className="status-dot" />
+
+                    <div>
+                      <strong>
+                        {indexStatus?.status ?? 'Idle'}
+                      </strong>
+                      <p>
+                        {indexStatus?.message ??
+                          'No indexing task is currently running.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <dl className="desktop-details-list">
+                    <div>
+                      <dt>Started</dt>
+                      <dd>
+                        {indexStatus?.started_at ?? '—'}
+                      </dd>
+                    </div>
+
+                    <div>
+                      <dt>Completed</dt>
+                      <dd>
+                        {indexStatus?.completed_at ?? '—'}
+                      </dd>
+                    </div>
+
+                    <div>
+                      <dt>Database</dt>
+                      <dd>
+                        {knowledgeStatus?.database ?? '—'}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+
+                <div className="desktop-panel-card">
+                  <div className="desktop-panel-heading">
+                    <div>
+                      <strong>Indexed departments</strong>
+                      <span>
+                        Available department filters
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="desktop-department-grid">
+                    {knowledgeStatus?.departments?.length ? (
+                      knowledgeStatus.departments.map(
+                        (department) => (
+                          <button
+                            type="button"
+                            key={department}
+                            onClick={() => {
+                              setSelectedDepartment(department)
+                              setAssistantMode('knowledge')
+                              openModule('AI Assistant')
+                            }}
+                          >
+                            <span>▤</span>
+                            {department}
+                          </button>
+                        ),
+                      )
+                    ) : (
+                      <p>No departments were found.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {indexStatus?.output && (
+                <details className="desktop-log-panel">
+                  <summary>View latest indexing log</summary>
+                  <pre>{indexStatus.output}</pre>
+                </details>
+              )}
+            </section>
+          )}
+
+          {selectedModule !== 'Dashboard' &&
+            selectedModule !== 'AI Assistant' &&
+            selectedModule !== 'SQL Workspace' &&
+            selectedModule !== 'SOP Search' && (
+              <section className="desktop-coming-soon">
+                <div className="coming-soon-icon">
+                  {currentModule.icon}
+                </div>
+
+                <span className="workspace-label">
+                  MODULE ROADMAP
+                </span>
+
+                <h1>{currentModule.shortTitle}</h1>
+                <p>{currentModule.description}</p>
+
+                <div className="coming-soon-banner">
+                  This workspace is included in the application
+                  architecture and will be built in a future
+                  development phase.
+                </div>
+
+                <button
+                  type="button"
+                  className="desktop-primary-button"
+                  onClick={() => openModule('Dashboard')}
+                >
+                  Return to Dashboard
+                </button>
+              </section>
+            )}
+        </div>
+      </main>
+
+      {assistantPanelOpen && (
+        <aside className="desktop-assistant-panel">
+          <div className="assistant-panel-header">
+            <div>
+              <span className="assistant-panel-icon">✦</span>
+
+              <div>
+                <strong>Local AI Assistant</strong>
+                <span>Gemma 3:12B</span>
+              </div>
             </div>
 
-            {error && (
-              <div className="chat-error">{error}</div>
+            <button
+              type="button"
+              onClick={() => setAssistantPanelOpen(false)}
+              aria-label="Close assistant"
+            >
+              ×
+            </button>
+          </div>
+
+          <div className="assistant-panel-context">
+            <span>Current workspace</span>
+            <strong>{currentModule.shortTitle}</strong>
+          </div>
+
+          <div className="assistant-panel-mode">
+            <button
+              type="button"
+              className={
+                assistantMode === 'knowledge' ? 'active' : ''
+              }
+              onClick={() =>
+                changeAssistantMode('knowledge')
+              }
+            >
+              Knowledge
+            </button>
+
+            <button
+              type="button"
+              className={
+                assistantMode === 'general' ? 'active' : ''
+              }
+              onClick={() =>
+                changeAssistantMode('general')
+              }
+            >
+              General
+            </button>
+          </div>
+
+          {assistantMode === 'knowledge' && (
+            <div className="assistant-panel-department">
+              <select
+                value={selectedDepartment}
+                onChange={(event) =>
+                  setSelectedDepartment(event.target.value)
+                }
+              >
+                <option value="">All departments</option>
+
+                {knowledgeStatus?.departments?.map(
+                  (department) => (
+                    <option
+                      key={department}
+                      value={department}
+                    >
+                      {department}
+                    </option>
+                  ),
+                )}
+              </select>
+            </div>
+          )}
+
+          <div className="assistant-panel-messages">
+            {messages.slice(-8).map((message, index) => (
+              <div
+                className={`assistant-panel-message ${message.role}`}
+                key={`${message.role}-${index}`}
+              >
+                <strong>
+                  {message.role === 'user' ? 'You' : 'AI'}
+                </strong>
+                <p>{message.content}</p>
+              </div>
+            ))}
+
+            {isLoading && (
+              <div className="assistant-panel-message assistant">
+                <strong>AI</strong>
+                <p>Thinking locally…</p>
+              </div>
             )}
 
-            <form
-              className="chat-form"
-              onSubmit={sendMessage}
-            >
-              <textarea
-                value={input}
-                onChange={(event) =>
-                  setInput(event.target.value)
-                }
-                onKeyDown={handleChatKeyDown}
-                placeholder={
-                  assistantMode === 'knowledge'
-                    ? 'Ask a question about your company SOPs...'
-                    : 'Ask the local Gemma model anything...'
-                }
-                rows={3}
-                disabled={isLoading}
-              />
+            <div ref={assistantPanelEndRef} />
+          </div>
+
+          {error && (
+            <div className="assistant-panel-error">
+              {error}
+            </div>
+          )}
+
+          <form
+            className="assistant-panel-composer"
+            onSubmit={sendMessage}
+          >
+            <textarea
+              value={input}
+              onChange={(event) =>
+                setInput(event.target.value)
+              }
+              onKeyDown={handleChatKeyDown}
+              placeholder="Ask the local assistant..."
+              disabled={isLoading}
+            />
+
+            <div>
+              <span>Enter to send</span>
 
               <button
-                className="send-button"
                 type="submit"
                 disabled={isLoading || !input.trim()}
               >
-                {isLoading ? 'Generating…' : 'Send'}
+                Send
               </button>
-            </form>
-
-            <p className="chat-keyboard-note">
-              Press Enter to send. Press Shift + Enter for a
-              new line.
-            </p>
-
-            <p className="privacy-note">
-              {assistantMode === 'knowledge'
-                ? 'Local path: Browser → FastAPI → SQLite SOP index → Ollama.'
-                : 'Local path: Browser → FastAPI → Ollama.'}{' '}
-              No cloud AI API is configured.
-            </p>
-          </section>
-        )}
-
-        {selectedModule === 'SOP Search' && (
-          <section className="knowledge-page">
-            <div className="knowledge-header">
-              <div>
-                <p className="eyebrow">
-                  LOCAL DOCUMENT INTELLIGENCE
-                </p>
-
-                <h3>Knowledge Base</h3>
-
-                <p>
-                  Manage the company SOP index stored locally on
-                  this computer.
-                </p>
-              </div>
-
-              <div className="knowledge-actions">
-                <button
-                  className="secondary-button"
-                  onClick={() =>
-                    void loadKnowledgeStatus()
-                  }
-                  disabled={isRefreshingKnowledge}
-                >
-                  {isRefreshingKnowledge
-                    ? 'Refreshing…'
-                    : 'Refresh Status'}
-                </button>
-
-                <button
-                  className="primary-button"
-                  onClick={() => void updateAllSops()}
-                  disabled={indexStatus?.running === true}
-                >
-                  {indexStatus?.running
-                    ? 'Indexing SOPs…'
-                    : 'Update All SOPs'}
-                </button>
-              </div>
             </div>
+          </form>
 
-            {knowledgeError && (
-              <div className="chat-error">
-                {knowledgeError}
-              </div>
-            )}
+          <button
+            type="button"
+            className="open-full-assistant-button"
+            onClick={() => openModule('AI Assistant')}
+          >
+            Open full assistant
+          </button>
+        </aside>
+      )}
 
-            <div className="knowledge-stats">
-              <div className="knowledge-stat-card">
-                <span>Documents</span>
-                <strong>
-                  {knowledgeStatus?.documents ?? '—'}
-                </strong>
-              </div>
+      <footer className="desktop-statusbar">
+        <div>
+          <span className="status-dot" />
+          Connected locally
+        </div>
 
-              <div className="knowledge-stat-card">
-                <span>Searchable chunks</span>
-                <strong>
-                  {knowledgeStatus?.chunks ?? '—'}
-                </strong>
-              </div>
+        <div>
+          <span>Database</span>
+          <strong>Read Only</strong>
+        </div>
 
-              <div className="knowledge-stat-card">
-                <span>Departments</span>
-                <strong>
-                  {knowledgeStatus?.departments?.length ??
-                    '—'}
-                </strong>
-              </div>
+        <div>
+          <span>AI</span>
+          <strong>Gemma 3:12B</strong>
+        </div>
 
-              <div className="knowledge-stat-card">
-                <span>Status</span>
-                <strong>
-                  {indexStatus?.running
-                    ? 'Updating'
-                    : knowledgeStatus?.ready
-                      ? 'Ready'
-                      : 'Not Ready'}
-                </strong>
-              </div>
-            </div>
+        <div>
+          <span>Knowledge</span>
+          <strong>
+            {knowledgeStatus?.chunks
+              ? `${knowledgeStatus.chunks.toLocaleString()} chunks`
+              : 'Checking'}
+          </strong>
+        </div>
 
-            <div className="knowledge-grid">
-              <div className="knowledge-panel">
-                <h4>Indexing status</h4>
+        <div className="statusbar-spacer" />
 
-                <div
-                  className={`index-status ${
-                    indexStatus?.status ?? 'idle'
-                  }`}
-                >
-                  <span className="status-dot" />
-
-                  <div>
-                    <strong>
-                      {indexStatus?.status ?? 'Idle'}
-                    </strong>
-
-                    <p>
-                      {indexStatus?.message ??
-                        'Load the current indexing status.'}
-                    </p>
-                  </div>
-                </div>
-
-                <dl className="knowledge-details">
-                  <div>
-                    <dt>Started</dt>
-                    <dd>
-                      {indexStatus?.started_at ?? '—'}
-                    </dd>
-                  </div>
-
-                  <div>
-                    <dt>Completed</dt>
-                    <dd>
-                      {indexStatus?.completed_at ?? '—'}
-                    </dd>
-                  </div>
-
-                  <div>
-                    <dt>Database</dt>
-                    <dd>
-                      {knowledgeStatus?.database ?? '—'}
-                    </dd>
-                  </div>
-                </dl>
-              </div>
-
-              <div className="knowledge-panel">
-                <h4>Indexed departments</h4>
-
-                <div className="department-list">
-                  {knowledgeStatus?.departments?.length ? (
-                    knowledgeStatus.departments.map(
-                      (department) => (
-                        <span key={department}>
-                          {department}
-                        </span>
-                      ),
-                    )
-                  ) : (
-                    <p>
-                      No indexed departments were found.
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {indexStatus?.output && (
-              <details className="index-output">
-                <summary>
-                  View latest indexing log
-                </summary>
-
-                <pre>{indexStatus.output}</pre>
-              </details>
-            )}
-          </section>
-        )}
-
-        {selectedModule !== 'Dashboard' &&
-          selectedModule !== 'AI Assistant' &&
-          selectedModule !== 'SOP Search' && (
-            <section className="module-page">
-              <div className="large-icon">
-                {
-                  modules.find(
-                    (module) =>
-                      module.title === selectedModule,
-                  )?.icon
-                }
-              </div>
-
-              <p className="eyebrow">MODULE</p>
-              <h3>{selectedModule}</h3>
-
-              <p>
-                This module has been added to the application
-                shell. Its working functionality will be built
-                in a later phase.
-              </p>
-
-              <button
-                className="secondary-button"
-                onClick={() =>
-                  setSelectedModule('Dashboard')
-                }
-              >
-                Return to dashboard
-              </button>
-            </section>
-          )}
-      </main>
+        <div>
+          <strong>Local Enterprise Platform</strong>
+        </div>
+      </footer>
     </div>
   )
 }

@@ -8,11 +8,12 @@ import sqlite3
 from pathlib import Path
 from typing import Literal
 
+
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-
+from sql_workspace import router as sql_workspace_router
 
 # ---------------------------------------------------------
 # Local-only configuration
@@ -60,6 +61,7 @@ app = FastAPI(
     version="0.2.0",
 )
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -70,7 +72,7 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
-
+app.include_router(sql_workspace_router)
 
 # ---------------------------------------------------------
 # Request and response models
