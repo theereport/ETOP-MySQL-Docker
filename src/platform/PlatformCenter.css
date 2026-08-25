@@ -1,0 +1,217 @@
+.platform-center-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: start center;
+  padding-top: 74px;
+  background: rgba(5, 12, 24, 0.68);
+  backdrop-filter: blur(5px);
+}
+
+.platform-center {
+  width: min(860px, calc(100vw - 36px));
+  max-height: calc(100vh - 110px);
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 16px;
+  background: #0f172a;
+  color: #e5edf8;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.45);
+}
+
+.platform-center > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.platform-center > header span {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: #7dd3fc;
+}
+
+.platform-center > header h2 {
+  margin: 4px 0 0;
+  font-size: 22px;
+}
+
+.platform-center > header button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.1);
+  color: #f8fafc;
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.platform-search-box {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  margin: 18px 20px 8px;
+  padding: 13px 15px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.platform-search-box input {
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: #f8fafc;
+  font: inherit;
+  font-size: 16px;
+}
+
+.platform-search-box kbd {
+  padding: 3px 7px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 5px;
+  color: #94a3b8;
+}
+
+.platform-center-content {
+  max-height: calc(100vh - 245px);
+  overflow: auto;
+  padding: 12px 20px 22px;
+}
+
+.platform-result-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px 10px;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.platform-result-summary span {
+  color: #7f93ad;
+}
+
+.platform-empty {
+  padding: 42px 24px;
+  text-align: center;
+  color: #94a3b8;
+}
+
+.platform-empty strong {
+  display: block;
+  margin-bottom: 7px;
+  color: #e2e8f0;
+}
+
+.platform-result-list,
+.platform-card-list {
+  display: grid;
+  gap: 8px;
+}
+
+.platform-result-list > button,
+.platform-item {
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.72);
+  color: inherit;
+  text-align: left;
+}
+
+.platform-result-list > button {
+  cursor: pointer;
+}
+
+.platform-result-list > button:hover {
+  border-color: rgba(56, 189, 248, 0.6);
+  background: rgba(30, 41, 59, 0.96);
+}
+
+.platform-result-list > button:focus-visible {
+  border-color: #38bdf8;
+  outline: 2px solid rgba(56, 189, 248, 0.34);
+  outline-offset: 2px;
+}
+
+.result-type,
+.result-module,
+.platform-item small {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.result-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.result-copy small,
+.platform-item p {
+  color: #aebed2;
+}
+
+.platform-item {
+  grid-template-columns: auto 1fr;
+}
+
+.platform-item p {
+  margin: 4px 0;
+}
+
+.platform-item.read {
+  opacity: 0.58;
+}
+
+.platform-item.task {
+  cursor: pointer;
+}
+
+.severity {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #60a5fa;
+}
+
+.severity.success { background: #34d399; }
+.severity.warning { background: #fbbf24; }
+.severity.critical { background: #fb7185; }
+
+.task-check {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+}
+
+.platform-actions-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  color: #94a3b8;
+}
+
+.platform-actions-row button {
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 7px;
+  padding: 7px 10px;
+  background: rgba(56, 189, 248, 0.08);
+  color: #bae6fd;
+  cursor: pointer;
+}

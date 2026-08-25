@@ -1,0 +1,129 @@
+.context-work-panel {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #cfe0e5;
+  border-radius: 12px;
+  color: #17384d;
+  background: #f8fbfc;
+}
+
+.context-work-heading,
+.context-work-list article > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.context-work-heading span {
+  color: #087f79;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.context-work-heading h3 {
+  margin: 4px 0;
+}
+
+.context-work-heading > strong {
+  color: #087f79;
+}
+
+.context-work-boundary {
+  padding: 12px;
+  border-left: 4px solid #d49b26;
+  border-radius: 7px;
+  background: #fff9ea;
+}
+
+.context-work-boundary p,
+.context-work-session,
+.context-work-list p,
+.context-work-list small {
+  margin: 4px 0 0;
+  color: #667987;
+  font-size: 0.77rem;
+}
+
+.context-work-list {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0;
+}
+
+.context-work-list article {
+  padding: 9px 11px;
+  border: 1px solid #dce7eb;
+  border-radius: 8px;
+  background: white;
+}
+
+.context-work-list article span {
+  color: #607583;
+  font-size: 0.72rem;
+}
+
+.context-work-panel form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 9px;
+  padding-top: 12px;
+  border-top: 1px solid #dce7eb;
+}
+
+.context-work-panel label {
+  display: grid;
+  gap: 5px;
+  color: #607583;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.context-work-panel input,
+.context-work-panel select,
+.context-work-panel textarea {
+  padding: 8px 10px;
+  border: 1px solid #cbd9df;
+  border-radius: 7px;
+  background: white;
+  font: inherit;
+}
+
+.context-work-panel textarea {
+  min-height: 65px;
+  resize: vertical;
+}
+
+.context-work-wide {
+  grid-column: 1 / -1;
+}
+
+.context-work-check {
+  display: flex !important;
+  align-items: center;
+  gap: 7px !important;
+}
+
+.context-work-check input {
+  width: auto;
+}
+
+.context-work-panel button {
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 7px;
+  color: white;
+  background: #087f79;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.context-work-error { color: #a12d2d; }
+.context-work-success { color: #19704d; }
+
+@media (max-width: 760px) {
+  .context-work-panel form { grid-template-columns: 1fr; }
+  .context-work-wide { grid-column: auto; }
+}

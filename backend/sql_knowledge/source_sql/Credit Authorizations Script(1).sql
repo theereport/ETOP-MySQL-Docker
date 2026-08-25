@@ -1,0 +1,36 @@
+SELECT
+    CUNUMBER AS 'Customer Number',
+    ar.TARONUMINV AS 'Invoice Number',
+    ar.TARODTE AS 'Invoice Date',
+    TIHADATRQ AS 'Date Requested',
+    TIHADATAU AS 'Date Granted',
+    CUNAME AS 'Customer Name',
+    CUCRLIMIT AS 'Credit Limit',
+    CUBALANCE AS 'Current Balance',
+    CULYRSALES AS 'LY Sales',
+    CUYTDSALES AS 'YTD Sales',
+    CURVCPM30 AS '30-Day Past Due',
+    CURVCPM60 AS '60-Day Past Due',
+    CURVCPM90 AS '90-Day Past Due',
+    CURVCPM120 AS '120-Day Past Due',
+    CUTERMS AS 'Payment Terms'
+FROM DTA273.TMCUST
+LEFT JOIN DTA273.TMIHSA
+    ON CUNUMBER = TIHANUMCST
+LEFT JOIN (
+    SELECT
+        TARONUMINV,
+        MAX(TARODTE) AS TARODTE
+    FROM DTA273.TMAROP
+    WHERE TARODTE >= DATE_FORMAT(
+            DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) + 8 DAY),
+            '%Y%m%d')
+      AND TARODTE <= DATE_FORMAT(
+            DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) + 2 DAY),
+            '%Y%m%d')
+    GROUP BY TARONUMINV
+) ar
+    ON ar.TARONUMINV = TIHANUMINV
+WHERE CUYTDSALES > 0
+AND TIHADATAU <> '00000000'
+  AND ar.TARONUMINV IS NOT NULL

@@ -1606,3 +1606,4 @@ button {
     width: 100%;
   }
 }
+.platform-badge-button{position:relative}.platform-badge-button>span{position:absolute;right:-4px;top:-5px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#d94a4a;color:#fff;font-size:10px;font-weight:800;display:grid;place-items:center;border:2px solid #16283a}

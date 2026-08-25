@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import process from 'node:process'
+
+const root = process.cwd()
+const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8')
+
+const main = read('backend/main.py')
+const api = read('backend/modules/workflow_foundation/api.py')
+const repository = read('backend/modules/workflow_foundation/repository.py')
+const schemas = read('backend/modules/workflow_foundation/schemas.py')
+const service = read('backend/modules/workflow_foundation/service.py')
+const workspace = read('src/features/workflow-foundation/WorkflowFoundationWorkspace.tsx')
+const contextPanel = read('src/features/workflow-foundation/ContextWorkPanel.tsx')
+const app = read('src/App.tsx')
+const platformCenter = read('src/platform/PlatformCenter.tsx')
+const credit = read('src/features/credit-risk/OrderDecisionPreparationPanel.tsx')
+const ap = read('src/features/accounts-payable/APExceptionOperationsCenter.tsx')
+
+assert.match(main, /workflow_foundation_router/)
+assert.match(api, /prefix="\/api\/v1\/workflow-foundation"/)
+assert.match(api, /\/tasks\/\{task_id\}\/assignments/)
+assert.match(api, /\/tasks\/\{task_id\}\/transitions/)
+assert.match(api, /\/audit\/integrity/)
+assert.match(repository, /scrypt-n16384-r8-p1-v1/)
+assert.match(repository, /WF-WORK-FOLLOW-UP/)
+assert.match(repository, /request_sha256/)
+assert.match(repository, /Workflow assignments are append-only/)
+assert.match(repository, /Workflow task events are append-only/)
+assert.match(repository, /sha256_hash_chain/)
+assert.match(schemas, /assignment_effect: Literal\["work_ownership_only"\]/)
+assert.match(schemas, /authority_effect: Literal\["none"\]/)
+assert.match(schemas, /execution_effect: Literal\["none"\]/)
+assert.match(service, /credentials authenticate an account to this local ETOP instance only/i)
+assert.match(service, /do not grant credit, invoice, payment, posting, order/i)
+
+assert.match(app, /Work Management/)
+assert.match(workspace, /Stable local identities/)
+assert.match(workspace, /Personal and role queues/)
+assert.match(workspace, /Assignment ≠ authority/)
+assert.match(contextPanel, /assignment establishes work ownership only/i)
+assert.match(platformCenter, /verified durable assignments/)
+assert.match(platformCenter, /Browser-local legacy tasks/)
+assert.match(credit, /ContextWorkPanel/)
+assert.match(credit, /contextType="credit_customer"/)
+assert.match(ap, /ContextWorkPanel/)
+assert.match(ap, /contextType="ap_invoice"/)
+assert.doesNotMatch(workspace, /Approve invoice|Authorize payment|Release order|Post to ERP/)
+
+console.log('Platform Foundation Increment 1 passed: local identity, operational roles, versioned queues, verified assignment, durable notification, append-only audit, exact Credit/AP links, and no-authority/no-execution boundaries are present.')

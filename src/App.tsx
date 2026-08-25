@@ -6,21 +6,75 @@ import {
   useRef,
   useState,
 } from 'react'
+import type { ReactNode } from 'react'
+
 
 import './App.css'
 import './DesktopShell.css'
 import SqlWorkspace from './components/SqlWorkspace'
+import CashApplication from './components/CashApplication/CashApplication'
+import ReportBuilder from './components/ReportBuilder/ReportBuilder'
+import AutomationCenter from './components/AutomationCenter/AutomationCenter'
+import WorkspaceErrorBoundary from './components/WorkspaceErrorBoundary'
+import Customer360 from "./features/customer360/Customer360";
+import CreditRiskWorkspace from './features/credit-risk'
+import VendorIntelligenceWorkspace from './features/vendor-intelligence'
+import ARCollectionsWorkspace from './features/ar-collections'
+import FreightLogisticsWorkspace from './features/freight-logistics'
+import InventoryPurchasingWorkspace from './features/inventory-purchasing'
+import TaxComplianceWorkspace from './features/tax-compliance'
+import SalesOrderVisibilityWorkspace from './features/sales-order-visibility'
+import PricingContractsWorkspace from './features/pricing-contracts'
+import GeneralLedgerWorkspace from './features/general-ledger'
+import AccountsPayableWorkspace from './features/accounts-payable'
+import FinancialCloseWorkspace from './features/financial-close'
+import PaymentNotesWorkspace from './features/payment-notes'
+import WorkflowFoundationWorkspace from './features/workflow-foundation'
+import {
+  SecurityAccessWorkspace,
+  useAccess,
+} from './features/security-access'
+import type { ETOPModuleId } from './features/workflow-foundation/types'
+import {
+  getWorkflowNotifications,
+  getWorkflowTasks,
+  getWorkflowToken,
+  WORKFLOW_SESSION_EVENT,
+} from './features/workflow-foundation'
+import EnterpriseDashboard from "./features/enterprise-dashboard/EnterpriseDashboard";
+import EnterpriseDocuments from './modules/document-intelligence'
+import {
+  PlatformCenter,
+  getNotifications,
+  getTasks,
+  type SearchResult,
+} from "./platform";
+import { moduleManifests } from './platform/registry/manifests'
 
-type ModuleStatus = 'Ready' | 'Coming Soon'
 type AssistantMode = 'knowledge' | 'general'
+type CustomerWorkspaceView = 'search' | 'risk-review'
+
+type ModuleStatus =
+  | 'Ready'
+  | 'Coming Soon'
+
+type ModuleGroup =
+  | 'Overview'
+  | 'Workspaces'
+  | 'Tools'
+  | 'System'
 
 type WorkbenchModule = {
+  moduleId?: ETOPModuleId
   title: string
   shortTitle: string
   description: string
-  icon: string
+  hint: string
+  group: ModuleGroup
+  category?: string
   status: ModuleStatus
-  group: 'Core' | 'Data' | 'Operations'
+  icon: ReactNode
+  showInSidebar?: boolean
 }
 
 type ChatSource = {
@@ -59,74 +113,44 @@ type IndexJobStatus = {
 
 const API_BASE = 'http://127.0.0.1:8000'
 
-const modules: WorkbenchModule[] = [
-  {
-    title: 'Dashboard',
-    shortTitle: 'Dashboard',
-    description: 'Enterprise command center and system overview.',
-    icon: '⌂',
-    status: 'Ready',
-    group: 'Core',
-  },
-  {
-    title: 'AI Assistant',
-    shortTitle: 'AI Assistant',
-    description: 'Use local AI and indexed company knowledge.',
-    icon: '✦',
-    status: 'Ready',
-    group: 'Core',
-  },
-  {
-    title: 'SQL Workspace',
-    shortTitle: 'SQL Studio',
-    description: 'Create, execute, save, and organize SQL queries.',
-    icon: '⌘',
-    status: 'Ready',
-    group: 'Data',
-  },
-  {
-    title: 'SOP Search',
-    shortTitle: 'Knowledge Base',
-    description: 'Manage and search indexed company procedures.',
-    icon: '▤',
-    status: 'Ready',
-    group: 'Data',
-  },
-  {
-    title: 'Report Builder',
-    shortTitle: 'Report Builder',
-    description: 'Create accounting and operational reports.',
-    icon: '▥',
-    status: 'Coming Soon',
-    group: 'Data',
-  },
-  {
-    title: 'Automation Center',
-    shortTitle: 'Automation',
-    description: 'Manage PowerShell and Python automations.',
-    icon: '⚙',
-    status: 'Coming Soon',
-    group: 'Operations',
-  },
-  {
-    title: 'Project Tracker',
-    shortTitle: 'Projects',
-    description: 'Track transformation and technology projects.',
-    icon: '◇',
-    status: 'Coming Soon',
-    group: 'Operations',
-  },
-]
+// Sourced from each module's own manifest.ts (see src/platform/registry/manifests.ts)
+// instead of one hand-maintained literal — adding a module means adding its
+// manifest, not editing this file.
+const modules: WorkbenchModule[] = moduleManifests.map((entry) => ({
+  moduleId: entry.moduleId as ETOPModuleId | undefined,
+  title: entry.title,
+  shortTitle: entry.shortTitle,
+  description: entry.description,
+  hint: entry.hint,
+  group: entry.group,
+  category: entry.category,
+  status: entry.status,
+  icon: entry.icon,
+  showInSidebar: entry.showInSidebar,
+}))
 
-const navigationGroups = ['Core', 'Data', 'Operations'] as const
+const navigationGroups = ['Overview', 'Workspaces', 'Tools', 'System'] as const
 
 function App() {
+  const { session, canAccess, signOut } = useAccess()
   const [selectedModule, setSelectedModule] =
     useState<string>('Dashboard')
+  const [customerWorkspaceView, setCustomerWorkspaceView] =
+    useState<CustomerWorkspaceView>('search')
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [assistantPanelOpen, setAssistantPanelOpen] = useState(true)
+  const [collapsedCategories, setCollapsedCategories] =
+    useState<Record<string, boolean>>({})
+  const [assistantPanelOpen, setAssistantPanelOpen] = useState(false)
   const [commandSearch, setCommandSearch] = useState('')
+  const [platformCenterMode, setPlatformCenterMode] = useState<'search' | 'notifications' | 'tasks' | 'timeline' | null>(null)
+  const [platformRefresh, setPlatformRefresh] = useState(0)
+  const [durableBadgeCounts, setDurableBadgeCounts] = useState<{
+    notifications: number
+    tasks: number
+  } | null>(null)
+  const [enterpriseSearchTarget, setEnterpriseSearchTarget] =
+    useState<SearchResult | null>(null)
 
   const [assistantMode, setAssistantMode] =
     useState<AssistantMode>('knowledge')
@@ -160,12 +184,19 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const assistantPanelEndRef = useRef<HTMLDivElement | null>(null)
 
+  const availableModules = useMemo(
+    () => modules.filter((module) => (
+      module.moduleId ? canAccess(module.moduleId) : false
+    )),
+    [canAccess],
+  )
+
   const currentModule = useMemo(() => {
     return (
-      modules.find((module) => module.title === selectedModule) ??
-      modules[0]
+      availableModules.find((module) => module.title === selectedModule) ??
+      availableModules[0] ?? modules[0]
     )
-  }, [selectedModule])
+  }, [availableModules, selectedModule])
 
   const commandMatches = useMemo(() => {
     const search = commandSearch.trim().toLowerCase()
@@ -174,14 +205,14 @@ function App() {
       return []
     }
 
-    return modules.filter((module) => {
+    return availableModules.filter((module) => {
       return (
         module.title.toLowerCase().includes(search) ||
         module.shortTitle.toLowerCase().includes(search) ||
         module.description.toLowerCase().includes(search)
       )
     })
-  }, [commandSearch])
+  }, [availableModules, commandSearch])
 
   const systemReady =
     knowledgeStatus?.ready === true && indexStatus?.running !== true
@@ -398,14 +429,61 @@ function App() {
     }
   }
 
-  function openModule(moduleName: string) {
+  function openModule(
+    moduleName: string,
+    targetOrOptions?:
+      | SearchResult
+      | { customerView?: 'risk-review' },
+  ) {
+    const requestedModule = modules.find((module) => module.title === moduleName)
+    if (!requestedModule?.moduleId || !canAccess(requestedModule.moduleId)) {
+      return
+    }
+    const searchTarget =
+      targetOrOptions && 'type' in targetOrOptions
+        ? targetOrOptions
+        : null
+
+    const customerView =
+      targetOrOptions && !('type' in targetOrOptions)
+        ? targetOrOptions.customerView
+        : undefined
+
+    if (moduleName === 'Customer 360') {
+      setCustomerWorkspaceView(customerView ?? 'search')
+    }
+
+    setAssistantPanelOpen(false)
     setSelectedModule(moduleName)
     setCommandSearch('')
+    setEnterpriseSearchTarget(searchTarget)
   }
 
   useEffect(() => {
-    void loadKnowledgeStatus()
-  }, [])
+    if (!availableModules.some((module) => module.title === selectedModule)) {
+      const fallbackModule = availableModules[0]?.title ?? 'Dashboard'
+      const timeoutId = window.setTimeout(() => {
+        setAssistantPanelOpen(false)
+        setSelectedModule(fallbackModule)
+      }, 0)
+      return () => window.clearTimeout(timeoutId)
+    }
+    return undefined
+  }, [availableModules, selectedModule])
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      if (
+        canAccess('dashboard')
+        || canAccess('knowledge_base')
+        || canAccess('ai_assistant')
+      ) {
+        void loadKnowledgeStatus()
+      }
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [canAccess])
 
   useEffect(() => {
     if (!indexStatus?.running) {
@@ -428,6 +506,106 @@ function App() {
       behavior: 'smooth',
     })
   }, [messages, isLoading])
+
+  useEffect(() => {
+    function handlePlatformShortcut(event: globalThis.KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setPlatformCenterMode('search')
+      }
+      if (event.key === 'Escape') {
+        setPlatformCenterMode(null)
+      }
+    }
+    window.addEventListener('keydown', handlePlatformShortcut)
+    return () => window.removeEventListener('keydown', handlePlatformShortcut)
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    async function loadDurableBadges() {
+      if (!getWorkflowToken() || !canAccess('work_management')) {
+        if (active) setDurableBadgeCounts(null)
+        return
+      }
+      try {
+        const [notificationResult, taskResult] = await Promise.all([
+          getWorkflowNotifications(),
+          getWorkflowTasks({ mine: true }),
+        ])
+        if (active) {
+          setDurableBadgeCounts({
+            notifications: notificationResult.unread_count,
+            tasks: taskResult.items.filter((task) => (
+              task.state !== 'completed' && task.state !== 'cancelled'
+            )).length,
+          })
+        }
+      } catch {
+        if (active) setDurableBadgeCounts(null)
+      }
+    }
+    void loadDurableBadges()
+    window.addEventListener(WORKFLOW_SESSION_EVENT, loadDurableBadges)
+    return () => {
+      active = false
+      window.removeEventListener(WORKFLOW_SESSION_EVENT, loadDurableBadges)
+    }
+  }, [canAccess, platformRefresh])
+
+  const unreadNotificationCount = durableBadgeCounts?.notifications ?? getNotifications().filter(
+    (item) => !item.read,
+  ).length
+  const openTaskCount = durableBadgeCounts?.tasks ?? getTasks().filter(
+    (item) => item.status !== 'Completed',
+  ).length
+  const userInitials = session.user.display_name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('') || 'ET'
+
+  function closePlatformCenter() {
+    setPlatformCenterMode(null)
+    setPlatformRefresh((value) => value + 1)
+  }
+
+  function renderModuleButton(module: WorkbenchModule) {
+    return (
+      <button
+        type="button"
+        key={module.title}
+        className={
+          selectedModule === module.title
+            ? 'desktop-nav-item active'
+            : 'desktop-nav-item'
+        }
+        onClick={() => openModule(module.title)}
+        title={module.shortTitle}
+      >
+        <span className="desktop-nav-icon">{module.icon}</span>
+
+        {!sidebarCollapsed && (
+          <>
+            <span className="desktop-nav-copy">
+              <strong>{module.shortTitle}</strong>
+
+              <small>
+                {module.status === 'Coming Soon'
+                  ? 'Coming soon'
+                  : module.hint}
+              </small>
+            </span>
+
+            {selectedModule === module.title && (
+              <span className="nav-active-marker" />
+            )}
+          </>
+        )}
+      </button>
+    )
+  }
 
   return (
     <div
@@ -453,11 +631,11 @@ function App() {
             ☰
           </button>
 
-          <div className="desktop-brand-mark">AI</div>
+          <div className="desktop-brand-mark">E</div>
 
           <div className="desktop-brand-copy">
-            <strong>Enterprise AI Workbench</strong>
-            <span>Local Operations Platform</span>
+            <strong>ETOP</strong>
+            <span>Enterprise Operations Platform</span>
           </div>
         </div>
 
@@ -466,10 +644,10 @@ function App() {
 
           <input
             value={commandSearch}
-            onChange={(event) =>
-              setCommandSearch(event.target.value)
-            }
-            placeholder="Search modules and commands..."
+            onChange={(event) => setCommandSearch(event.target.value)}
+            onFocus={() => setPlatformCenterMode('search')}
+            onClick={() => setPlatformCenterMode('search')}
+            placeholder="Search ETOP..."
           />
 
           <kbd>Ctrl K</kbd>
@@ -510,7 +688,13 @@ function App() {
             Local System
           </div>
 
-          <button
+          {canAccess('dashboard') && <button type="button" className="icon-command-button platform-badge-button" onClick={() => setPlatformCenterMode('timeline')} title="Enterprise timeline" aria-label="Enterprise timeline">↻</button>}
+
+          {canAccess('work_management') && <button type="button" className="icon-command-button platform-badge-button" onClick={() => setPlatformCenterMode('tasks')} title="My tasks" aria-label="My tasks">✓{openTaskCount > 0 && <span>{openTaskCount}</span>}</button>}
+
+          {canAccess('work_management') && <button type="button" className="icon-command-button platform-badge-button" onClick={() => setPlatformCenterMode('notifications')} title="Notifications" aria-label="Notifications">♢{unreadNotificationCount > 0 && <span>{unreadNotificationCount}</span>}</button>}
+
+          {canAccess('ai_assistant') && <button
             type="button"
             className={
               assistantPanelOpen
@@ -524,15 +708,16 @@ function App() {
             title="Toggle AI assistant"
           >
             ✦
-          </button>
+          </button>}
 
           <div className="desktop-user">
-            <div className="desktop-user-avatar">JC</div>
+            <div className="desktop-user-avatar">{userInitials}</div>
 
             <div>
-              <strong>Josh Corbit</strong>
-              <span>Administrator</span>
+              <strong>{session.user.display_name}</strong>
+              <span>{session.user.roles.some((role) => role.role_id === 'workflow_coordinator') ? 'Administrator' : 'ETOP User'}</span>
             </div>
+            <button type="button" className="desktop-user-signout" onClick={() => void signOut()}>Sign out</button>
           </div>
         </div>
       </header>
@@ -547,51 +732,84 @@ function App() {
         </div>
 
         <nav className="desktop-navigation">
-          {navigationGroups.map((group) => (
-            <div className="navigation-group" key={group}>
-              {!sidebarCollapsed && (
-                <div className="navigation-group-title">
-                  {group}
-                </div>
-              )}
+          {navigationGroups.map((group) => {
+            const groupModules = availableModules.filter(
+              (module) =>
+                module.group === group && module.showInSidebar !== false,
+            )
+            const uncategorized: WorkbenchModule[] = []
+            const categoryOrder: string[] = []
+            const byCategory = new Map<string, WorkbenchModule[]>()
+            for (const module of groupModules) {
+              if (!module.category) {
+                uncategorized.push(module)
+                continue
+              }
+              if (!byCategory.has(module.category)) {
+                byCategory.set(module.category, [])
+                categoryOrder.push(module.category)
+              }
+              byCategory.get(module.category)?.push(module)
+            }
 
-              {modules
-                .filter((module) => module.group === group)
-                .map((module) => (
-                  <button
-                    type="button"
-                    key={module.title}
-                    className={
-                      selectedModule === module.title
-                        ? 'desktop-nav-item active'
-                        : 'desktop-nav-item'
-                    }
-                    onClick={() => openModule(module.title)}
-                    title={module.shortTitle}
-                  >
-                    <span className="desktop-nav-icon">
-                      {module.icon}
-                    </span>
+            return (
+              <div className="navigation-group" key={group}>
+                {!sidebarCollapsed && (
+                  <div className="navigation-group-title">
+                    {group}
+                  </div>
+                )}
 
-                    {!sidebarCollapsed && (
-                      <>
-                        <span className="desktop-nav-copy">
-                          <strong>{module.shortTitle}</strong>
+                {uncategorized.map((module) => renderModuleButton(module))}
 
-                          {module.status === 'Coming Soon' && (
-                            <small>Coming soon</small>
-                          )}
-                        </span>
+                {categoryOrder.map((category) => {
+                  const categoryModules = byCategory.get(category) ?? []
+                  const isCollapsed = collapsedCategories[category] === true
 
-                        {selectedModule === module.title && (
-                          <span className="nav-active-marker" />
-                        )}
-                      </>
-                    )}
-                  </button>
-                ))}
-            </div>
-          ))}
+                  return (
+                    <div className="navigation-category" key={category}>
+                      {!sidebarCollapsed && (
+                        <button
+                          type="button"
+                          className="navigation-category-header"
+                          aria-expanded={!isCollapsed}
+                          onClick={() =>
+                            setCollapsedCategories((current) => ({
+                              ...current,
+                              [category]: !isCollapsed,
+                            }))
+                          }
+                        >
+                          <span
+                            className={
+                              isCollapsed
+                                ? 'navigation-category-chevron collapsed'
+                                : 'navigation-category-chevron'
+                            }
+                          >
+                            ▾
+                          </span>
+                          <span className="navigation-category-label">
+                            {category}
+                          </span>
+                          <span className="navigation-category-count">
+                            {categoryModules.length}
+                          </span>
+                        </button>
+                      )}
+
+                      {(sidebarCollapsed || !isCollapsed) && (
+                        <div className="navigation-category-items">
+                          {categoryModules.map((module) =>
+                            renderModuleButton(module))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })}
         </nav>
 
         <div className="sidebar-system-card">
@@ -608,167 +826,188 @@ function App() {
 
       <main className="desktop-workspace">
         <div className="workspace-toolbar">
-          <div className="workspace-breadcrumbs">
-            <span>Enterprise AI</span>
-            <b>/</b>
-            <strong>{currentModule.shortTitle}</strong>
+          <div className="workspace-context">
+            <div className="workspace-breadcrumbs">
+              <span>{currentModule.group}</span>
+              <b>/</b>
+              <strong>{currentModule.shortTitle}</strong>
+            </div>
+            <small>{currentModule.description}</small>
           </div>
 
           <div className="workspace-toolbar-actions">
-            <button
+            {canAccess('dashboard') && <button
               type="button"
               onClick={() => openModule('Dashboard')}
             >
               Home
-            </button>
+            </button>}
 
-            <button
+            {canAccess('lockbox') && <button
               type="button"
-              onClick={() => openModule('SQL Workspace')}
+              onClick={() => openModule('Lockbox Automation')}
             >
-              SQL Studio
-            </button>
+              Lockbox
+            </button>}
 
-            <button
+            {canAccess('ai_assistant') && <button
               type="button"
               onClick={() => openModule('AI Assistant')}
             >
-              Full Assistant
-            </button>
+              Ask AI
+            </button>}
           </div>
         </div>
 
         <div className="workspace-content">
+          <WorkspaceErrorBoundary
+            key={selectedModule}
+            workspaceName={currentModule.shortTitle}
+            onReturnHome={() => openModule('Dashboard')}
+          >
           {selectedModule === 'Dashboard' && (
-            <section className="desktop-dashboard">
-              <div className="desktop-hero">
-                <div className="desktop-hero-copy">
-                  <span className="workspace-label">
-                    ENTERPRISE OPERATIONS WORKBENCH
-                  </span>
-
-                  <h1>
-                    One local workspace for data, AI, reporting,
-                    and process improvement.
-                  </h1>
-
-                  <p>
-                    Run read-only SQL, search company knowledge,
-                    build reports, manage automations, and use
-                    local AI without sending company information
-                    to a cloud AI service.
-                  </p>
-
-                  <div className="desktop-hero-actions">
-                    <button
-                      type="button"
-                      className="desktop-primary-button"
-                      onClick={() =>
-                        openModule('SQL Workspace')
-                      }
-                    >
-                      Open SQL Studio
-                    </button>
-
-                    <button
-                      type="button"
-                      className="desktop-secondary-button"
-                      onClick={() =>
-                        openModule('AI Assistant')
-                      }
-                    >
-                      Open AI Assistant
-                    </button>
-                  </div>
-                </div>
-
-                <div className="system-overview-card">
-                  <div className="system-overview-header">
-                    <span>System status</span>
-                    <strong>
-                      {systemReady ? 'Operational' : 'Checking'}
-                    </strong>
-                  </div>
-
-                  <div className="system-overview-grid">
-                    <div>
-                      <span>AI Model</span>
-                      <strong>Gemma 3:12B</strong>
-                    </div>
-
-                    <div>
-                      <span>Knowledge Documents</span>
-                      <strong>
-                        {knowledgeStatus?.documents ?? '—'}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <span>Searchable Chunks</span>
-                      <strong>
-                        {knowledgeStatus?.chunks ?? '—'}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <span>Data Access</span>
-                      <strong>Read Only</strong>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="dashboard-section-heading">
-                <div>
-                  <span className="workspace-label">
-                    APPLICATIONS
-                  </span>
-                  <h2>Enterprise modules</h2>
-                </div>
-
-                <span>{modules.length - 1} available modules</span>
-              </div>
-
-              <div className="desktop-module-grid">
-                {modules
-                  .filter((module) => module.title !== 'Dashboard')
-                  .map((module) => (
-                    <button
-                      type="button"
-                      className="desktop-module-card"
-                      key={module.title}
-                      onClick={() => openModule(module.title)}
-                    >
-                      <div className="desktop-module-card-top">
-                        <div className="desktop-module-icon">
-                          {module.icon}
-                        </div>
-
-                        <span
-                          className={
-                            module.status === 'Ready'
-                              ? 'desktop-module-status ready'
-                              : 'desktop-module-status'
-                          }
-                        >
-                          {module.status}
-                        </span>
-                      </div>
-
-                      <strong>{module.shortTitle}</strong>
-                      <p>{module.description}</p>
-
-                      <span className="desktop-module-open">
-                        Open workspace →
-                      </span>
-                    </button>
-                  ))}
-              </div>
-            </section>
+            <EnterpriseDashboard
+              displayName={session.user.display_name}
+              systemReady={systemReady}
+              knowledgeDocuments={knowledgeStatus?.documents ?? null}
+              searchableChunks={knowledgeStatus?.chunks ?? null}
+              moduleCount={availableModules.filter(
+                (module) =>
+                  module.title !== 'Dashboard' &&
+                  module.status === 'Ready',
+              ).length}
+              onOpenModule={openModule}
+              canOpenModule={(moduleName) => {
+                const module = modules.find((item) => item.title === moduleName)
+                return Boolean(module?.moduleId && canAccess(module.moduleId))
+              }}
+            />
           )}
 
           {selectedModule === 'SQL Workspace' && (
             <SqlWorkspace />
+          )}
+         {selectedModule === 'Cash Application' && (
+            <CashApplication />
+          )} 
+
+          {selectedModule === 'Payment Notes' && (
+            <PaymentNotesWorkspace />
+          )}
+
+          {selectedModule === 'Customer 360' && (
+            <Customer360
+              key={`${customerWorkspaceView}:${
+                enterpriseSearchTarget?.type === 'Customer'
+                  ? String(
+                      enterpriseSearchTarget.metadata
+                        ?.customerNumber ?? '',
+                    )
+                  : ''
+              }`}
+              initialView={customerWorkspaceView}
+              initialCustomerNumber={
+                enterpriseSearchTarget?.type === 'Customer'
+                  ? String(
+                      enterpriseSearchTarget.metadata
+                        ?.customerNumber ?? '',
+                    )
+                  : undefined
+              }
+            />
+          )}
+
+          {selectedModule === 'Credit Risk' && (
+            <CreditRiskWorkspace />
+          )}
+
+          {selectedModule === 'Accounts Payable' && (
+            <AccountsPayableWorkspace />
+          )}
+
+          {selectedModule === 'Vendor Intelligence' && (
+            <VendorIntelligenceWorkspace />
+          )}
+
+          {selectedModule === 'AR Collections' && (
+            <ARCollectionsWorkspace />
+          )}
+
+          {selectedModule === 'Freight & Logistics' && (
+            <FreightLogisticsWorkspace />
+          )}
+
+          {selectedModule === 'Inventory & Purchasing' && (
+            <InventoryPurchasingWorkspace />
+          )}
+
+          {selectedModule === 'Tax Compliance' && (
+            <TaxComplianceWorkspace />
+          )}
+
+          {selectedModule === 'Sales Order Visibility' && (
+            <SalesOrderVisibilityWorkspace />
+          )}
+
+          {selectedModule === 'Pricing & Contracts' && (
+            <PricingContractsWorkspace />
+          )}
+
+          {selectedModule === 'General Ledger' && (
+            <GeneralLedgerWorkspace />
+          )}
+
+          {selectedModule === 'Financial Close' && (
+            <FinancialCloseWorkspace
+              onOpenWorkManagement={() => openModule('Work Management')}
+            />
+          )}
+
+          {selectedModule === 'Report Builder' && (
+            <ReportBuilder
+              initialReportId={
+                enterpriseSearchTarget?.type === 'Report'
+                  ? String(
+                      enterpriseSearchTarget.metadata
+                        ?.reportId ?? '',
+                    )
+                  : undefined
+              }
+            />
+          )}
+
+          {selectedModule === 'Automation Center' && (
+            <AutomationCenter />
+          )}
+
+          {selectedModule === 'Work Management' && (
+            <WorkflowFoundationWorkspace />
+          )}
+
+          {selectedModule === 'Security & Access' && (
+            <SecurityAccessWorkspace />
+          )}
+
+          {selectedModule === 'Document Intelligence' && (
+            <EnterpriseDocuments
+              workspace="documents"
+              initialJobId={
+                enterpriseSearchTarget?.type === 'Document'
+                  ? String(
+                      enterpriseSearchTarget.metadata?.jobId ??
+                        '',
+                    )
+                  : undefined
+              }
+            />
+          )}
+
+          {selectedModule === 'Lockbox Automation' && (
+            <EnterpriseDocuments workspace="lockbox" />
+          )}
+
+          {selectedModule === 'Document AI Studio' && (
+            <EnterpriseDocuments workspace="studio" />
           )}
 
           {selectedModule === 'AI Assistant' && (
@@ -1152,41 +1391,39 @@ function App() {
             </section>
           )}
 
-          {selectedModule !== 'Dashboard' &&
-            selectedModule !== 'AI Assistant' &&
-            selectedModule !== 'SQL Workspace' &&
-            selectedModule !== 'SOP Search' && (
-              <section className="desktop-coming-soon">
-                <div className="coming-soon-icon">
-                  {currentModule.icon}
-                </div>
+          {currentModule.status === 'Coming Soon' && (
+            <section className="desktop-coming-soon">
+              <div className="coming-soon-icon">
+                {currentModule.icon}
+              </div>
 
-                <span className="workspace-label">
-                  MODULE ROADMAP
-                </span>
+              <span className="workspace-label">
+                MODULE ROADMAP
+              </span>
 
-                <h1>{currentModule.shortTitle}</h1>
-                <p>{currentModule.description}</p>
+              <h1>{currentModule.shortTitle}</h1>
+              <p>{currentModule.description}</p>
 
-                <div className="coming-soon-banner">
-                  This workspace is included in the application
-                  architecture and will be built in a future
-                  development phase.
-                </div>
+              <div className="coming-soon-banner">
+                This workspace is included in the application
+                architecture and will be built in a future
+                development phase.
+              </div>
 
-                <button
-                  type="button"
-                  className="desktop-primary-button"
-                  onClick={() => openModule('Dashboard')}
-                >
-                  Return to Dashboard
-                </button>
-              </section>
-            )}
+              <button
+                type="button"
+                className="desktop-primary-button"
+                onClick={() => openModule('Dashboard')}
+              >
+                Return to Dashboard
+              </button>
+            </section>
+          )}
+          </WorkspaceErrorBoundary>
         </div>
       </main>
 
-      {assistantPanelOpen && (
+      {assistantPanelOpen && canAccess('ai_assistant') && (
         <aside className="desktop-assistant-panel">
           <div className="assistant-panel-header">
             <div>
@@ -1325,6 +1562,14 @@ function App() {
             Open full assistant
           </button>
         </aside>
+      )}
+
+      {platformCenterMode && canAccess('dashboard') && (
+        <PlatformCenter
+          mode={platformCenterMode}
+          onClose={closePlatformCenter}
+          onOpenModule={openModule}
+        />
       )}
 
       <footer className="desktop-statusbar">

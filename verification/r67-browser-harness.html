@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ETOP R6.7 Browser Regression</title>
+  </head>
+  <body data-r67-status="running">
+    <script>
+      window.__etopR67UnexpectedErrors = []
+      window.addEventListener('error', (event) => {
+        if (event.error?.message === 'R67_EXPECTED_BOUNDARY_THROW') return
+        window.__etopR67UnexpectedErrors.push('window-error')
+      })
+      window.addEventListener('unhandledrejection', () => {
+        window.__etopR67UnexpectedErrors.push('unhandled-rejection')
+      })
+    </script>
+    <script type="module" src="/src/verification/R67BrowserHarness.tsx"></script>
+  </body>
+</html>

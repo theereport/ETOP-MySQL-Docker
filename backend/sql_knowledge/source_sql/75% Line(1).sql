@@ -1,0 +1,24 @@
+SELECT
+    CUNUMBER AS 'Customer Number',
+    CUNAME AS 'Customer Name',
+    CUCRLIMIT AS 'Credit Limit',
+    CUBALANCE AS 'Current Balance',
+    ROUND((CUBALANCE / NULLIF(CUCRLIMIT,0)) * 100, 2) AS 'Utilization %',
+    ROUND((CUBALANCE - CUCRLIMIT), 2) AS '$ Amount Over',
+    CASE
+        WHEN (CURVCPM30 + CURVCPM60 + CURVCPM90 + CURVCPM120) > 0
+        THEN 'Yes'
+        ELSE 'No'
+    END AS 'Past Due?',
+    CUTERMS AS 'Payment Terms'
+FROM DTA273.TMCUST
+WHERE CUBALANCE >= (CUCRLIMIT * 0.75)
+AND CUEXFLAG4 <> 'X'
+AND CUCRLIMIT <> '100.00'
+AND CUCRLIMIT <> '0.00'
+ORDER BY
+    CASE
+        WHEN (CURVCPM30 + CURVCPM60 + CURVCPM90 + CURVCPM120) > 0 THEN 1
+        ELSE 0
+    END DESC,
+    (CUBALANCE / NULLIF(CUCRLIMIT,0)) DESC;

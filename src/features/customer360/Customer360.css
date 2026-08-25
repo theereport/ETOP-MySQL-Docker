@@ -1,0 +1,635 @@
+.customer360-shell {
+  min-height: 100%;
+  padding: 24px;
+  background: #f3f5f8;
+  color: #172033;
+}
+
+.customer360-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.customer360-header h1,
+.customer360-header h2,
+.customer360-header p {
+  margin: 0;
+}
+
+.customer360-header h1 {
+  font-size: 30px;
+}
+
+.customer360-header > div > p:last-child {
+  margin-top: 6px;
+  color: #687386;
+}
+
+.customer360-eyebrow {
+  margin-bottom: 5px !important;
+  color: #3d67d8;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.customer360-search {
+  display: flex;
+  width: min(620px, 100%);
+  gap: 10px;
+}
+
+.customer360-search input {
+  flex: 1;
+  min-width: 250px;
+  padding: 12px 14px;
+  border: 1px solid #cfd6e2;
+  border-radius: 8px;
+  background: white;
+  font: inherit;
+}
+
+.customer360-search button,
+.customer360-tabs button {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.customer360-search button {
+  padding: 12px 18px;
+  border-radius: 8px;
+  background: #244db8;
+  color: white;
+  font-weight: 700;
+}
+
+.customer360-search button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.customer360-error {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #efb5b5;
+  border-radius: 8px;
+  background: #fff0f0;
+  color: #8f1c1c;
+}
+
+.customer360-layout {
+  display: grid;
+  grid-template-columns: 390px minmax(0, 1fr);
+  min-height: 700px;
+  overflow: hidden;
+  border: 1px solid #dce1e8;
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 8px 30px rgba(22, 35, 61, 0.07);
+}
+
+.customer360-results {
+  border-right: 1px solid #e1e5eb;
+  background: #f9fafc;
+}
+
+.customer360-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px;
+  border-bottom: 1px solid #e1e5eb;
+}
+
+.customer360-section-heading h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.customer360-section-heading small {
+  display: block;
+  margin-top: 4px;
+  color: #778195;
+  font-size: 11px;
+}
+
+.customer360-section-heading span {
+  min-width: 28px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #e8edf8;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.customer360-review-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e1e5eb;
+  background: #fff7f7;
+}
+
+.customer360-review-summary strong,
+.customer360-review-summary span {
+  display: block;
+}
+
+.customer360-review-summary strong {
+  color: #8f1c1c;
+  font-size: 12px;
+}
+
+.customer360-review-summary span {
+  margin-top: 3px;
+  color: #7d6670;
+  font-size: 10px;
+}
+
+.customer360-review-summary button {
+  flex: none;
+  padding: 7px 9px;
+  border: 1px solid #e4b8b8;
+  border-radius: 7px;
+  background: #fff;
+  color: #912727;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.customer360-review-summary button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.customer360-result-list {
+  max-height: 760px;
+  overflow-y: auto;
+}
+
+.customer360-result {
+  display: block;
+  width: 100%;
+  padding: 15px 18px;
+  border: 0;
+  border-bottom: 1px solid #e7eaf0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.customer360-result:hover,
+.customer360-result--selected {
+  background: #edf3ff;
+}
+
+.customer360-result--selected {
+  box-shadow: inset 4px 0 #315ed0;
+}
+
+.customer360-result > div:first-child,
+.customer360-result-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.customer360-result strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customer360-result span,
+.customer360-result small {
+  color: #687386;
+}
+
+.customer360-result small {
+  display: block;
+  margin-top: 5px;
+}
+
+.customer360-result-status {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.customer360-risk-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.customer360-risk-line b {
+  color: #49556a;
+  font-size: 11px;
+}
+
+.customer360-risk-priority {
+  display: inline-flex;
+  width: fit-content;
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.customer360-risk-priority--critical {
+  color: #8d1f1f !important;
+  background: #fde2e2;
+}
+
+.customer360-risk-priority--high {
+  color: #a44919 !important;
+  background: #ffebdc;
+}
+
+.customer360-risk-priority--elevated {
+  color: #7a5a0d !important;
+  background: #fff1c9;
+}
+
+.customer360-risk-reason {
+  margin: 8px 0 0;
+  overflow: hidden;
+  color: #4f5c70;
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customer360-past-due {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 10px;
+}
+
+.customer360-past-due span:last-child {
+  text-align: right;
+}
+
+.customer360-result-status .danger {
+  color: #bd2828;
+}
+
+.customer360-result-status .good {
+  color: #19733a;
+}
+
+.customer360-main {
+  min-width: 0;
+  padding: 22px;
+}
+
+.customer360-empty {
+  padding: 24px;
+  color: #778195;
+  text-align: center;
+}
+
+.customer360-empty--large {
+  display: grid;
+  min-height: 550px;
+  place-items: center;
+}
+
+.customer360-account-header,
+.customer360-title-line,
+.customer360-account-meta {
+  display: flex;
+  align-items: center;
+}
+
+.customer360-account-header {
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.customer360-account-header h2,
+.customer360-account-header p {
+  margin: 0;
+}
+
+.customer360-account-header p {
+  margin-top: 5px;
+  color: #697488;
+}
+
+.customer360-title-line {
+  gap: 10px;
+}
+
+.customer360-title-line h2 {
+  font-size: 24px;
+}
+
+.status-active,
+.status-inactive {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.status-active {
+  background: #e2f5e8;
+  color: #176b34;
+}
+
+.status-inactive {
+  background: #f4e5e5;
+  color: #992f2f;
+}
+
+.customer360-account-meta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.customer360-account-meta span {
+  padding: 8px 10px;
+  border: 1px solid #dce1e8;
+  border-radius: 7px;
+  color: #687386;
+  font-size: 12px;
+}
+
+.customer360-account-meta strong {
+  color: #172033;
+}
+
+.customer360-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.customer360-metric {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #dde2e9;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.customer360-metric span,
+.customer360-metric small {
+  display: block;
+  color: #707b8f;
+}
+
+.customer360-metric strong {
+  display: block;
+  margin: 7px 0 3px;
+  font-size: 20px;
+}
+
+.customer360-metric--good {
+  border-left: 4px solid #2a9b55;
+}
+
+.customer360-metric--warning {
+  border-left: 4px solid #d59519;
+}
+
+.customer360-metric--danger {
+  border-left: 4px solid #cf3d3d;
+}
+
+.customer360-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid #dfe4eb;
+}
+
+.customer360-tabs button {
+  padding: 10px 14px;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: #697488;
+  font-weight: 700;
+}
+
+.customer360-tabs button.active {
+  border-bottom-color: #315ed0;
+  color: #2349aa;
+}
+
+.customer360-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.customer360-panel {
+  padding: 18px;
+  border: 1px solid #dfe4eb;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.customer360-panel--wide {
+  grid-column: 1 / -1;
+}
+
+.customer360-panel h3 {
+  margin: 0 0 16px;
+  font-size: 16px;
+}
+
+.customer360-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.customer360-field {
+  min-width: 0;
+}
+
+.customer360-field span,
+.customer360-field strong {
+  display: block;
+}
+
+.customer360-field span {
+  margin-bottom: 4px;
+  color: #748095;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.customer360-field strong {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+
+.customer360-utilization > div:first-child {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.customer360-utilization strong {
+  font-size: 28px;
+}
+
+.customer360-utilization span {
+  color: #748095;
+  font-size: 13px;
+}
+
+.customer360-utilization-track,
+.customer360-aging-track {
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8ecf2;
+}
+
+.customer360-utilization-track {
+  height: 12px;
+  margin-top: 14px;
+}
+
+.customer360-utilization-fill,
+.customer360-aging-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 180ms ease;
+}
+
+.customer360-utilization-fill--neutral {
+  background: #6680bc;
+}
+
+.customer360-utilization-fill--good {
+  background: #2c9b58;
+}
+
+.customer360-utilization-fill--warning {
+  background: #d5961b;
+}
+
+.customer360-utilization-fill--danger {
+  background: #cf3d3d;
+}
+
+.customer360-warning {
+  margin: 12px 0 0;
+  color: #b22b2b;
+  font-weight: 700;
+}
+
+.customer360-aging {
+  display: grid;
+  gap: 13px;
+}
+
+.customer360-aging-row > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 5px;
+  font-size: 13px;
+}
+
+.customer360-aging-track {
+  height: 8px;
+}
+
+.customer360-aging-fill {
+  background: #5474c8;
+}
+
+@media (max-width: 1150px) {
+  .customer360-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .customer360-search {
+    width: 100%;
+  }
+
+  .customer360-metrics {
+    grid-template-columns: repeat(3, minmax(140px, 1fr));
+  }
+}
+
+@media (max-width: 850px) {
+  .customer360-shell {
+    padding: 14px;
+  }
+
+  .customer360-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .customer360-results {
+    border-right: 0;
+    border-bottom: 1px solid #e1e5eb;
+  }
+
+  .customer360-result-list {
+    max-height: 300px;
+  }
+
+  .customer360-account-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .customer360-account-meta {
+    justify-content: flex-start;
+  }
+
+  .customer360-metrics,
+  .customer360-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .customer360-panel--wide {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .customer360-search {
+    flex-direction: column;
+  }
+
+  .customer360-search input {
+    min-width: 0;
+  }
+
+  .customer360-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.customer360-health-hero{padding:16px;border-radius:10px;background:#172033;color:#fff;display:grid;grid-template-columns:1fr auto;align-items:center}.customer360-health-hero span{grid-column:1/-1;font-size:12px;opacity:.75}.customer360-health-hero strong{font-size:34px}.customer360-health-hero b{font-size:13px}.customer360-score-list,.customer360-recommendations{display:grid;gap:10px}.customer360-score-list>div,.customer360-recommendations>div{padding:12px;border:1px solid #e1e5eb;border-radius:8px}.customer360-score-list>div{display:grid;grid-template-columns:1fr auto;gap:4px}.customer360-score-list small{grid-column:1/-1;color:#687386}.customer360-recommendations p{margin:8px 0;color:#687386}.customer360-recommendations button,.customer360-ai button{border:0;border-radius:7px;padding:8px 10px;background:#244db8;color:#fff;font-weight:700;cursor:pointer}.impact{float:right;padding:3px 7px;border-radius:999px;font-size:11px}.impact--high{background:#fde4e4;color:#a22121}.impact--medium{background:#fff0cd;color:#8a5a00}.impact--low{background:#e3f4e8;color:#1d6b38}.customer360-ai{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.customer360-ai p{margin:0;line-height:1.6;color:#39445a}.customer360-timeline{display:grid;gap:16px}.customer360-timeline>div{display:flex;gap:12px}.customer360-timeline i{width:10px;height:10px;border-radius:50%;background:#315ed0;margin-top:5px}.customer360-timeline b,.customer360-timeline span{display:block}.customer360-timeline b{text-transform:capitalize}.customer360-timeline span{margin-top:3px;color:#687386}
+@media(max-width:1100px){.customer360-layout{grid-template-columns:1fr}.customer360-results{border-right:0;border-bottom:1px solid #e1e5eb}.customer360-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.customer360-header{align-items:stretch;flex-direction:column}.customer360-search{width:100%}}

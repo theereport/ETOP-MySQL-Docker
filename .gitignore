@@ -26,4 +26,22 @@ dist-ssr
 backend/.env
 *.db
 __pycache__/
+.pytest_cache/
 .venv/
+
+# Backup / release snapshot artifacts (should live outside the repo)
+*.zip
+.etop-backups/
+.etop-rollback/
+.etop-promotions/
+.sprint4a-backup/
+sprint4a_payload/
+
+# Runtime document-intelligence data: real customer checks, lockbox
+# extraction results, and PNC exports. Never committed - local disk only.
+/data/uploads/
+/data/modules/
+backend/data/modules/
+backend/data/automation_outputs/
+backend/modules/document_intelligence/lockbox_exports/
+backend/modules/document_intelligence/lockbox_results/

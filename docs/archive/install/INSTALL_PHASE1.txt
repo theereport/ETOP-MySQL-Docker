@@ -1,0 +1,36 @@
+DOCUMENT INTELLIGENCE PHASE 1 INSTALLATION
+
+1. Extract this package into:
+   C:\Users\Josh.Corbit\vite-project
+
+2. Allow Windows to replace the existing files inside:
+   backend\modules\document_intelligence
+
+3. Install the FastAPI upload dependency inside the backend virtual environment:
+
+   cd C:\Users\Josh.Corbit\vite-project\backend
+   .venv\Scripts\activate
+   python -m pip install python-multipart
+
+4. Restart the backend:
+
+   python -m uvicorn main:app --reload
+
+5. Open Swagger:
+
+   http://127.0.0.1:8000/docs
+
+6. Test POST /api/v1/documents/upload:
+   - Click Try it out
+   - Choose a PDF
+   - Click Execute
+
+7. Verify:
+   http://127.0.0.1:8000/api/v1/documents/health
+   http://127.0.0.1:8000/api/v1/documents/jobs
+
+Created files are stored under:
+C:\Users\Josh.Corbit\vite-project\data\uploads\document_intelligence
+
+Job data is stored in:
+C:\Users\Josh.Corbit\vite-project\data\modules\document_intelligence\document_intelligence.db

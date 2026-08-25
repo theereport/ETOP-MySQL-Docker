@@ -1,0 +1,5 @@
+import {useCallback,useEffect,useState} from 'react'
+import {getLearningExamples,getLearningSummary} from '../api'
+import type {LearningExample,LearningSummary} from '../types'
+const EMPTY:LearningSummary={total_examples:0,unique_documents:0,unique_fields:0,field_counts:{},document_type_counts:{},recent_examples:[]}
+export function useLearningData(){const[summary,setSummary]=useState(EMPTY);const[examples,setExamples]=useState<LearningExample[]>([]);const[isLoading,setIsLoading]=useState(false);const[errorMessage,setErrorMessage]=useState('');const refreshLearning=useCallback(async()=>{setIsLoading(true);setErrorMessage('');try{const[s,e]=await Promise.all([getLearningSummary(),getLearningExamples(200)]);setSummary(s.summary);setExamples(e.examples)}catch(err){setErrorMessage(err instanceof Error?err.message:'Unable to load learning data.')}finally{setIsLoading(false)}},[]);useEffect(()=>{void refreshLearning()},[refreshLearning]);return{summary,examples,isLoading,errorMessage,refreshLearning}}

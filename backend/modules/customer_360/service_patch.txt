@@ -1,0 +1,32 @@
+In service.py, inside the search loop, keep these calculations:
+
+raw_on_order = round(on_order + on_order_ar, 2)
+credit_on_order = max(raw_on_order, 0.0)
+exposure = round(balance + credit_on_order, 2)
+available_credit = round(credit_limit - exposure, 2)
+amount_over_limit = round(max(exposure - credit_limit, 0.0), 2)
+
+Then return these fields in each search result:
+
+"credit_limit": round(credit_limit, 2),
+"balance": round(balance, 2),
+"on_order": raw_on_order,
+"credit_on_order": credit_on_order,
+"exposure": exposure,
+"available_credit": available_credit,
+"amount_over_limit": amount_over_limit,
+"utilization_percent": _safe_percent(exposure, credit_limit),
+"past_due_amount": past_due,
+"is_over_limit": exposure > credit_limit if credit_limit > 0 else exposure > 0,
+"is_past_due": past_due > 0,
+
+In summary(), add:
+
+available_credit = round(credit_limit - exposure, 2)
+amount_over_limit = round(max(exposure - credit_limit, 0.0), 2)
+
+Then add these fields under the "credit" object:
+
+"available_credit": available_credit,
+"amount_over_limit": amount_over_limit,
+"is_over_limit": exposure > credit_limit if credit_limit > 0 else exposure > 0,

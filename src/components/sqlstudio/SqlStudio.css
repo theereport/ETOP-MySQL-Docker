@@ -1296,4 +1296,164 @@
   .sql-row-limit-control {
     display: none;
   }
+}/* Phase 2 SQL AI panel additions */
+
+.sql-ai-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 100%;
+}
+
+.sql-ai-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sql-ai-panel-header p {
+  margin: 6px 0 0;
+  color: #8fa0b7;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sql-ai-local-badge {
+  flex: 0 0 auto;
+  border: 1px solid #3b4a61;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #9ed6a5;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.sql-ai-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.sql-ai-prompt > span {
+  color: #aebbd0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sql-ai-prompt textarea {
+  width: 100%;
+  resize: vertical;
+  box-sizing: border-box;
+  border: 1px solid #263349;
+  border-radius: 8px;
+  background: #0d1522;
+  color: #d9e4f2;
+  padding: 10px;
+  font: inherit;
+  line-height: 1.5;
+  outline: none;
+}
+
+.sql-ai-prompt textarea:focus {
+  border-color: #6f65db;
+  box-shadow: 0 0 0 2px #6f65db33;
+}
+
+.sql-ai-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sql-ai-actions > span {
+  color: #728197;
+  font-size: 11px;
+}
+
+.sql-ai-generate-button {
+  border: 1px solid #756be2;
+  border-radius: 7px;
+  background: #5d54c7;
+  color: #ffffff;
+  padding: 8px 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sql-ai-generate-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sql-ai-status,
+.sql-ai-catalog-summary,
+.sql-ai-generation-details {
+  border: 1px solid #263349;
+  border-radius: 8px;
+  background: #0b1320;
+  padding: 10px;
+}
+
+.sql-ai-status {
+  margin: 0;
+  color: #8fa0b7;
+  font-size: 12px;
+}
+
+.sql-ai-catalog-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: #8fa0b7;
+  font-size: 11px;
+}
+
+.sql-ai-catalog-summary strong {
+  width: 100%;
+  color: #d9e4f2;
+  font-size: 12px;
+}
+
+.sql-ai-generation-details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sql-ai-generation-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sql-ai-generation-heading span {
+  color: #728197;
+  font-size: 11px;
+}
+
+.sql-ai-explanation {
+  white-space: pre-wrap;
+  color: #b8c4d4;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sql-ai-schema-objects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sql-ai-schema-chip {
+  border: 1px solid #35435a;
+  border-radius: 999px;
+  background: #121d2d;
+  color: #aebbd0;
+  padding: 4px 7px;
+  font-size: 10px;
+  line-height: 1;
 }

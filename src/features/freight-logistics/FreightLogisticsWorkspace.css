@@ -1,0 +1,405 @@
+.fl-shell {
+  min-height: 100%;
+  padding: 26px;
+  background:
+    radial-gradient(circle at top right, rgba(28, 125, 95, 0.09), transparent 32%),
+    #f3f6fa;
+  color: #152238;
+  display: grid;
+  gap: 18px;
+}
+
+.fl-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.fl-kicker {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #2c8066;
+}
+
+.fl-header h2 {
+  margin: 4px 0;
+}
+
+.fl-header p {
+  margin: 0;
+  color: #536174;
+  max-width: 60ch;
+}
+
+.fl-search {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #536174;
+}
+
+.fl-search input {
+  min-width: 280px;
+  padding: 8px 10px;
+  border: 1px solid #ccd5df;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.fl-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.fl-results {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.fl-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.fl-result {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #f7f9fc;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fl-result span {
+  color: #718094;
+  font-size: 11px;
+}
+
+.fl-result--active {
+  border-color: #2c8066;
+  background: #eaf6f1;
+}
+
+.fl-tag {
+  align-self: flex-start;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.fl-tag--inactive {
+  background: #fff1f1;
+  color: #8b3434;
+}
+
+.fl-detail {
+  min-width: 0;
+}
+
+.fl-empty-state,
+.fl-loading,
+.fl-message {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 24px;
+  text-align: center;
+  color: #536174;
+}
+
+.fl-message--error {
+  border-color: #e3aaaa;
+  background: #fff1f1;
+  color: #8b3434;
+}
+
+.fl-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ccd5df;
+  border-top-color: #2c8066;
+  border-radius: 50%;
+  animation: fl-spin 0.8s linear infinite;
+  margin-right: 8px;
+}
+
+@keyframes fl-spin {
+  to { transform: rotate(360deg); }
+}
+
+.fl-evidence {
+  display: grid;
+  gap: 16px;
+}
+
+.fl-identity-card {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 16px;
+}
+
+.fl-identity-card h3 {
+  margin: 0;
+}
+
+.fl-identity-card > div > span {
+  color: #718094;
+  font-size: 12px;
+}
+
+.fl-identity-card dl {
+  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+}
+
+.fl-identity-card dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px dashed #e0e6ed;
+  padding-bottom: 4px;
+}
+
+.fl-identity-card dt {
+  color: #718094;
+  font-size: 12px;
+}
+
+.fl-identity-card dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+}
+
+.fl-schedule {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.fl-schedule-day {
+  border: 1px solid #e0e6ed;
+  border-radius: 8px;
+  padding: 8px 4px;
+  text-align: center;
+  background: #f7f9fc;
+  color: #a3aebc;
+}
+
+.fl-schedule-day span {
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.fl-schedule-day strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+}
+
+.fl-schedule-day--on {
+  background: #eaf6f1;
+  border-color: #2c8066;
+  color: #1d5c47;
+}
+
+.fl-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.fl-metric-grid article {
+  border: 1px solid #e0e6ed;
+  border-radius: 9px;
+  padding: 11px;
+  background: #fafbfd;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fl-metric-grid span {
+  color: #718094;
+  font-size: 11px;
+}
+
+.fl-metric-grid strong {
+  font-size: 16px;
+}
+
+.fl-section {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 16px;
+}
+
+.fl-section h4 {
+  margin: 0 0 4px;
+}
+
+.fl-section-note {
+  margin: 0 0 10px;
+  color: #718094;
+  font-size: 12px;
+}
+
+.fl-section-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.fl-table-wrap {
+  overflow-x: auto;
+}
+
+.fl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.fl-table th,
+.fl-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #eef1f5;
+  white-space: nowrap;
+}
+
+.fl-total {
+  margin: 8px 0 0;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.fl-empty {
+  color: #718094;
+  font-size: 13px;
+}
+
+.fl-gaps {
+  border: 1px solid #e3c487;
+  background: #fff8e8;
+  color: #795a1d;
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.fl-gaps ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.fl-notes {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.fl-note-form {
+  display: grid;
+  gap: 8px;
+}
+
+.fl-note-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #536174;
+}
+
+.fl-note-form input,
+.fl-note-form textarea {
+  padding: 8px 10px;
+  border: 1px solid #ccd5df;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.fl-note-form button {
+  justify-self: start;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #217a5c;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.fl-note-form button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.fl-form-error {
+  color: #8b3434;
+  font-size: 12px;
+}
+
+.fl-form-success {
+  color: #176449;
+  font-size: 12px;
+}
+
+.fl-note-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.fl-note-list li {
+  border-top: 1px solid #eef1f5;
+  padding-top: 8px;
+}
+
+.fl-note-list > li > div {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #718094;
+}
+
+.fl-note-list p {
+  margin: 4px 0 0;
+}

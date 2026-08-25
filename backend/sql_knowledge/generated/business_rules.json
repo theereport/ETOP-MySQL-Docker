@@ -1,0 +1,42 @@
+{
+  "rule_count": 2,
+  "rules": [
+    {
+      "name": "credit utilization",
+      "description": "Current customer balance divided by approved credit limit.",
+      "formula": "CUBALANCE / NULLIF(CUCRLIMIT, 0)",
+      "tables": [
+        "DTA273.TMCUST"
+      ],
+      "columns": [
+        "CUBALANCE",
+        "CUCRLIMIT"
+      ],
+      "keywords": [
+        "credit utilization",
+        "credit usage",
+        "percent of credit line",
+        "75% credit line"
+      ]
+    },
+    {
+      "name": "past due balance",
+      "description": "Total customer balance in the 30, 60, 90, and 120 day aging buckets.",
+      "formula": "COALESCE(CURVCPM30, 0) + COALESCE(CURVCPM60, 0) + COALESCE(CURVCPM90, 0) + COALESCE(CURVCPM120, 0)",
+      "tables": [
+        "DTA273.TMCUST"
+      ],
+      "columns": [
+        "CURVCPM30",
+        "CURVCPM60",
+        "CURVCPM90",
+        "CURVCPM120"
+      ],
+      "keywords": [
+        "past due",
+        "aging",
+        "delinquent balance"
+      ]
+    }
+  ]
+}

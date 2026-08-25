@@ -412,11 +412,62 @@ button {
   text-transform: uppercase;
 }
 
+.navigation-category {
+  margin-bottom: 2px;
+}
+
+.navigation-category-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 5px;
+  border: none;
+  background: transparent;
+  color: var(--desktop-faint);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.navigation-category-header:hover {
+  color: var(--desktop-muted);
+}
+
+.navigation-category-chevron {
+  display: inline-block;
+  font-size: 9px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.navigation-category-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.navigation-category-label {
+  flex: 1;
+  text-align: left;
+}
+
+.navigation-category-count {
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--desktop-faint);
+  opacity: 0.7;
+}
+
+.navigation-category-items .desktop-nav-item {
+  padding-left: 17px;
+}
+
 .desktop-nav-item {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 38px;
+  min-height: 46px;
   align-items: center;
   gap: 10px;
   padding: 6px 9px;
@@ -454,6 +505,19 @@ button {
   min-width: 0;
   flex: 1;
   flex-direction: column;
+  gap: 2px;
+}
+
+.desktop-user-signout {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--desktop-border, #34485f);
+  border-radius: 6px;
+  color: #c9d8e9;
+  background: #122235;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .desktop-nav-copy strong {
@@ -466,6 +530,7 @@ button {
 .desktop-nav-copy small {
   color: var(--desktop-faint);
   font-size: 7px;
+  line-height: 1.25;
 }
 
 .nav-active-marker {
@@ -536,7 +601,7 @@ button {
 
 .workspace-toolbar {
   display: flex;
-  height: 42px;
+  min-height: 52px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
@@ -544,6 +609,23 @@ button {
   padding: 0 14px;
   border-bottom: 1px solid var(--desktop-border);
   background: #101827;
+}
+
+.workspace-context {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.workspace-context > small {
+  overflow: hidden;
+  max-width: min(54vw, 700px);
+  color: var(--desktop-faint);
+  font-size: 8px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace-breadcrumbs {

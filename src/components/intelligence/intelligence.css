@@ -1,0 +1,182 @@
+.entity-workspace {
+  display: grid;
+  gap: 18px;
+}
+
+.entity-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.entity-header > div:first-child > span,
+.intelligence-card > header span {
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+
+.entity-header h1 {
+  margin: 5px 0;
+  font-size: 28px;
+}
+
+.entity-header p {
+  margin: 0;
+  color: #64748b;
+}
+
+.entity-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.entity-header-actions em {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, .12);
+  color: #059669;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.entity-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid rgba(148, 163, 184, .25);
+}
+
+.entity-tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 10px 12px;
+  background: transparent;
+  color: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.entity-tabs button.active {
+  border-bottom-color: #0ea5e9;
+  color: #0284c7;
+  font-weight: 700;
+}
+
+.intelligence-card {
+  border: 1px solid rgba(148, 163, 184, .22);
+  border-radius: 12px;
+  background: rgba(255,255,255,.76);
+  overflow: hidden;
+}
+
+.intelligence-card > header {
+  display: flex;
+  justify-content: space-between;
+  padding: 15px 17px;
+  border-bottom: 1px solid rgba(148, 163, 184, .18);
+}
+
+.intelligence-card h3 {
+  margin: 3px 0 0;
+}
+
+.intelligence-card-body {
+  padding: 17px;
+}
+
+.intelligence-metric {
+  display: grid;
+  gap: 5px;
+  min-width: 160px;
+  padding: 15px;
+  border: 1px solid rgba(148, 163, 184, .2);
+  border-radius: 10px;
+}
+
+.intelligence-metric span,
+.intelligence-metric small {
+  color: #64748b;
+}
+
+.intelligence-metric strong {
+  font-size: 24px;
+}
+
+.health-gauge {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  color: #0ea5e9;
+}
+
+.health-gauge-ring {
+  display: grid;
+  place-items: center;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+}
+
+.health-gauge-ring > div {
+  display: grid;
+  place-items: center;
+  width: 104px;
+  height: 104px;
+  border-radius: 50%;
+  background: white;
+  color: #0f172a;
+}
+
+.health-gauge-ring strong {
+  font-size: 32px;
+}
+
+.health-gauge-ring span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.health-gauge ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #475569;
+}
+
+.recommendation-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  border-left: 4px solid #0ea5e9;
+  border-radius: 8px;
+  background: rgba(14, 165, 233, .07);
+}
+
+.recommendation-card span {
+  display: block;
+  margin-bottom: 4px;
+  color: #0284c7;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.recommendation-card p {
+  margin: 4px 0 0;
+  color: #64748b;
+}
+
+@media (prefers-color-scheme: dark) {
+  .intelligence-card {
+    background: rgba(15, 23, 42, .76);
+  }
+
+  .health-gauge-ring > div {
+    background: #0f172a;
+    color: #e2e8f0;
+  }
+}

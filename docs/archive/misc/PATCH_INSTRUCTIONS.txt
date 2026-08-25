@@ -1,0 +1,37 @@
+DOCUMENT INTELLIGENCE PHASE 2.1 PATCH
+
+Reason:
+The PDF is clearly a Pittsburgh lockbox output report, but the original
+classifier expected the literal word "PNC". This patch recognizes the actual
+document signals present in the PDF:
+
+- PGH-###### lockbox identifier
+- Transactions for Output
+- Transaction Level Details
+- Reported Amount
+- Transit and Check Number
+- G-####### transaction IDs
+- Envelope and Check Image
+
+Install:
+
+1. Extract into:
+   C:\Users\Josh.Corbit\vite-project
+
+2. Replace the existing files.
+
+3. Restart the backend:
+   cd C:\Users\Josh.Corbit\vite-project\backend
+   .venv\Scripts\activate
+   python -m uvicorn main:app --reload
+
+4. Reprocess the existing job:
+   POST /api/v1/documents/jobs/2849e1e4-cc2d-49c1-a80e-b4b138506f55/process
+
+Expected:
+- document_type = pnc_lockbox
+- classifier = rule_based_v2
+- parser = pnc_lockbox_parser
+- transaction_count = 18
+- total_reported_amount = 143905.39
+- image-heavy pages are flagged for OCR

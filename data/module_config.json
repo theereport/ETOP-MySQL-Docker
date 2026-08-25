@@ -1,0 +1,21 @@
+{
+  "accounts_payable": true,
+  "ar_collections": true,
+  "automations": true,
+  "credit_risk": true,
+  "customer_360": true,
+  "document_intelligence": true,
+  "erp_evidence": true,
+  "financial_close": true,
+  "freight_logistics": true,
+  "general_ledger": true,
+  "inventory_purchasing": true,
+  "payment_notes": true,
+  "platform_search": true,
+  "pricing_contracts": true,
+  "reports": true,
+  "sales_order_visibility": true,
+  "tax_compliance": true,
+  "vendor_intelligence": true,
+  "workflow_foundation": true
+}

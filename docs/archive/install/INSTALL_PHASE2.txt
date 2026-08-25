@@ -1,0 +1,37 @@
+DOCUMENT INTELLIGENCE PHASE 2
+
+1. Extract into:
+   C:\Users\Josh.Corbit\vite-project
+
+2. Replace files under:
+   backend\modules\document_intelligence
+
+3. Install dependency:
+
+   cd C:\Users\Josh.Corbit\vite-project\backend
+   .venv\Scripts\activate
+   python -m pip install pymupdf
+
+4. Restart:
+
+   python -m uvicorn main:app --reload
+
+5. Open:
+   http://127.0.0.1:8000/docs
+
+6. Upload a PDF using:
+   POST /api/v1/documents/upload
+
+7. Copy the returned job_id.
+
+8. Run:
+   POST /api/v1/documents/jobs/{job_id}/process
+
+9. Review:
+   GET /api/v1/documents/jobs/{job_id}/result
+
+EXPECTED RESULT:
+- document_type should be based on PDF content, not only filename
+- extraction contains page text and character counts
+- parsed contains the selected parser output
+- pages with little text show requires_ocr=true

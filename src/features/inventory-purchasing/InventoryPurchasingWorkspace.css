@@ -1,0 +1,367 @@
+.ip-shell {
+  min-height: 100%;
+  padding: 26px;
+  background:
+    radial-gradient(circle at top right, rgba(28, 95, 125, 0.09), transparent 32%),
+    #f3f6fa;
+  color: #152238;
+  display: grid;
+  gap: 18px;
+}
+
+.ip-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.ip-kicker {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #4d6fa8;
+}
+
+.ip-header h2 {
+  margin: 4px 0;
+}
+
+.ip-header p {
+  margin: 0;
+  color: #536174;
+  max-width: 60ch;
+}
+
+.ip-search {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #536174;
+}
+
+.ip-search input {
+  min-width: 280px;
+  padding: 8px 10px;
+  border: 1px solid #ccd5df;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.ip-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.ip-results {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.ip-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.ip-result {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #f7f9fc;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ip-result span {
+  color: #718094;
+  font-size: 11px;
+}
+
+.ip-result--active {
+  border-color: #4d6fa8;
+  background: #eaf1fb;
+}
+
+.ip-tag {
+  align-self: flex-start;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.ip-tag--inactive {
+  background: #fff1f1;
+  color: #8b3434;
+}
+
+.ip-detail {
+  min-width: 0;
+}
+
+.ip-empty-state,
+.ip-loading,
+.ip-message {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 24px;
+  text-align: center;
+  color: #536174;
+}
+
+.ip-message--error {
+  border-color: #e3aaaa;
+  background: #fff1f1;
+  color: #8b3434;
+}
+
+.ip-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ccd5df;
+  border-top-color: #4d6fa8;
+  border-radius: 50%;
+  animation: ip-spin 0.8s linear infinite;
+  margin-right: 8px;
+}
+
+@keyframes ip-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ip-evidence {
+  display: grid;
+  gap: 16px;
+}
+
+.ip-identity-card {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 16px;
+}
+
+.ip-identity-card h3 {
+  margin: 0;
+}
+
+.ip-identity-card > div > span {
+  color: #718094;
+  font-size: 12px;
+}
+
+.ip-identity-card dl {
+  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+}
+
+.ip-identity-card dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px dashed #e0e6ed;
+  padding-bottom: 4px;
+}
+
+.ip-identity-card dt {
+  color: #718094;
+  font-size: 12px;
+}
+
+.ip-identity-card dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+}
+
+.ip-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ip-metric-grid article {
+  border: 1px solid #e0e6ed;
+  border-radius: 9px;
+  padding: 11px;
+  background: #fafbfd;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ip-metric-grid span {
+  color: #718094;
+  font-size: 11px;
+}
+
+.ip-metric-grid strong {
+  font-size: 16px;
+}
+
+.ip-section {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 16px;
+}
+
+.ip-section h4 {
+  margin: 0 0 4px;
+}
+
+.ip-section-note {
+  margin: 0 0 10px;
+  color: #718094;
+  font-size: 12px;
+}
+
+.ip-section .ip-metric-grid {
+  margin-top: 4px;
+}
+
+.ip-table-wrap {
+  overflow-x: auto;
+}
+
+.ip-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ip-table th,
+.ip-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #eef1f5;
+  white-space: nowrap;
+}
+
+.ip-total {
+  margin: 8px 0 0;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.ip-empty {
+  color: #718094;
+  font-size: 13px;
+}
+
+.ip-gaps {
+  border: 1px solid #e3c487;
+  background: #fff8e8;
+  color: #795a1d;
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.ip-gaps ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.ip-notes {
+  border: 1px solid #e0e6ed;
+  border-radius: 10px;
+  background: #fff;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.ip-note-form {
+  display: grid;
+  gap: 8px;
+}
+
+.ip-note-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #536174;
+}
+
+.ip-note-form input,
+.ip-note-form textarea {
+  padding: 8px 10px;
+  border: 1px solid #ccd5df;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.ip-note-form button {
+  justify-self: start;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #2c5aa0;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ip-note-form button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.ip-form-error {
+  color: #8b3434;
+  font-size: 12px;
+}
+
+.ip-form-success {
+  color: #176449;
+  font-size: 12px;
+}
+
+.ip-note-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.ip-note-list li {
+  border-top: 1px solid #eef1f5;
+  padding-top: 8px;
+}
+
+.ip-note-list > li > div {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #718094;
+}
+
+.ip-note-list p {
+  margin: 4px 0 0;
+}

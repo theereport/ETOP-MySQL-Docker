@@ -1,0 +1,4184 @@
+{
+  "source_file": "Route Codes Lookup.xlsx",
+  "route_count": 671,
+  "routes": [
+    {
+      "route_code": "1A",
+      "store": "1"
+    },
+    {
+      "route_code": "1B",
+      "store": "1"
+    },
+    {
+      "route_code": "1C",
+      "store": "1"
+    },
+    {
+      "route_code": "1D",
+      "store": "1"
+    },
+    {
+      "route_code": "1E",
+      "store": "1"
+    },
+    {
+      "route_code": "1F",
+      "store": "1"
+    },
+    {
+      "route_code": "1G",
+      "store": "1"
+    },
+    {
+      "route_code": "1H",
+      "store": "1"
+    },
+    {
+      "route_code": "1J",
+      "store": "1"
+    },
+    {
+      "route_code": "1K",
+      "store": "1"
+    },
+    {
+      "route_code": "1L",
+      "store": "1"
+    },
+    {
+      "route_code": "1M",
+      "store": "1"
+    },
+    {
+      "route_code": "1N",
+      "store": "1"
+    },
+    {
+      "route_code": "1P",
+      "store": "1"
+    },
+    {
+      "route_code": "1R",
+      "store": "1"
+    },
+    {
+      "route_code": "1T",
+      "store": "1"
+    },
+    {
+      "route_code": "1V",
+      "store": "1"
+    },
+    {
+      "route_code": "1W",
+      "store": "1"
+    },
+    {
+      "route_code": "1X",
+      "store": "1"
+    },
+    {
+      "route_code": "1Y",
+      "store": "1"
+    },
+    {
+      "route_code": "2A",
+      "store": "2"
+    },
+    {
+      "route_code": "2B",
+      "store": "2"
+    },
+    {
+      "route_code": "2C",
+      "store": "2"
+    },
+    {
+      "route_code": "2E",
+      "store": "2"
+    },
+    {
+      "route_code": "2G",
+      "store": "2"
+    },
+    {
+      "route_code": "2H",
+      "store": "2"
+    },
+    {
+      "route_code": "3A",
+      "store": "3"
+    },
+    {
+      "route_code": "3B",
+      "store": "3"
+    },
+    {
+      "route_code": "3C",
+      "store": "3"
+    },
+    {
+      "route_code": "3D",
+      "store": "3"
+    },
+    {
+      "route_code": "3E",
+      "store": "3"
+    },
+    {
+      "route_code": "3F",
+      "store": "3"
+    },
+    {
+      "route_code": "3G",
+      "store": "3"
+    },
+    {
+      "route_code": "3H",
+      "store": "3"
+    },
+    {
+      "route_code": "3I",
+      "store": "3"
+    },
+    {
+      "route_code": "3J",
+      "store": "3"
+    },
+    {
+      "route_code": "3K",
+      "store": "3"
+    },
+    {
+      "route_code": "3L",
+      "store": "3"
+    },
+    {
+      "route_code": "3M",
+      "store": "3"
+    },
+    {
+      "route_code": "3N",
+      "store": "3"
+    },
+    {
+      "route_code": "ZA",
+      "store": "4"
+    },
+    {
+      "route_code": "ZB",
+      "store": "4"
+    },
+    {
+      "route_code": "ZC",
+      "store": "4"
+    },
+    {
+      "route_code": "ZD",
+      "store": "4"
+    },
+    {
+      "route_code": "ZE",
+      "store": "4"
+    },
+    {
+      "route_code": "ZF",
+      "store": "4"
+    },
+    {
+      "route_code": "ZG",
+      "store": "4"
+    },
+    {
+      "route_code": "ZH",
+      "store": "4"
+    },
+    {
+      "route_code": "ZI",
+      "store": "4"
+    },
+    {
+      "route_code": "ZJ",
+      "store": "4"
+    },
+    {
+      "route_code": "ZK",
+      "store": "4"
+    },
+    {
+      "route_code": "ZL",
+      "store": "4"
+    },
+    {
+      "route_code": "ZM",
+      "store": "4"
+    },
+    {
+      "route_code": "ZN",
+      "store": "4"
+    },
+    {
+      "route_code": "ZS",
+      "store": "4"
+    },
+    {
+      "route_code": "ZT",
+      "store": "4"
+    },
+    {
+      "route_code": "ZU",
+      "store": "4"
+    },
+    {
+      "route_code": "ZV",
+      "store": "4"
+    },
+    {
+      "route_code": "ZW",
+      "store": "4"
+    },
+    {
+      "route_code": "ZX",
+      "store": "4"
+    },
+    {
+      "route_code": "ZY",
+      "store": "4"
+    },
+    {
+      "route_code": "ZZ",
+      "store": "4"
+    },
+    {
+      "route_code": "Z1",
+      "store": "4"
+    },
+    {
+      "route_code": "Z2",
+      "store": "4"
+    },
+    {
+      "route_code": "Z3",
+      "store": "4"
+    },
+    {
+      "route_code": "Z4",
+      "store": "4"
+    },
+    {
+      "route_code": "Z5",
+      "store": "4"
+    },
+    {
+      "route_code": "Z6",
+      "store": "4"
+    },
+    {
+      "route_code": "6A",
+      "store": "6"
+    },
+    {
+      "route_code": "6B",
+      "store": "6"
+    },
+    {
+      "route_code": "6C",
+      "store": "6"
+    },
+    {
+      "route_code": "6D",
+      "store": "6"
+    },
+    {
+      "route_code": "6E",
+      "store": "6"
+    },
+    {
+      "route_code": "6F",
+      "store": "6"
+    },
+    {
+      "route_code": "6G",
+      "store": "6"
+    },
+    {
+      "route_code": "6H",
+      "store": "6"
+    },
+    {
+      "route_code": "6I",
+      "store": "6"
+    },
+    {
+      "route_code": "6J",
+      "store": "6"
+    },
+    {
+      "route_code": "7A",
+      "store": "7"
+    },
+    {
+      "route_code": "7B",
+      "store": "7"
+    },
+    {
+      "route_code": "7C",
+      "store": "7"
+    },
+    {
+      "route_code": "7D",
+      "store": "7"
+    },
+    {
+      "route_code": "7F",
+      "store": "7"
+    },
+    {
+      "route_code": "7G",
+      "store": "7"
+    },
+    {
+      "route_code": "7H",
+      "store": "7"
+    },
+    {
+      "route_code": "7I",
+      "store": "7"
+    },
+    {
+      "route_code": "7J",
+      "store": "7"
+    },
+    {
+      "route_code": "7K",
+      "store": "7"
+    },
+    {
+      "route_code": "KO",
+      "store": "8"
+    },
+    {
+      "route_code": "KP",
+      "store": "8"
+    },
+    {
+      "route_code": "KS",
+      "store": "8"
+    },
+    {
+      "route_code": "KT",
+      "store": "8"
+    },
+    {
+      "route_code": "KV",
+      "store": "8"
+    },
+    {
+      "route_code": "KW",
+      "store": "8"
+    },
+    {
+      "route_code": "HT",
+      "store": "14"
+    },
+    {
+      "route_code": "HU",
+      "store": "14"
+    },
+    {
+      "route_code": "HV",
+      "store": "14"
+    },
+    {
+      "route_code": "HW",
+      "store": "14"
+    },
+    {
+      "route_code": "UA",
+      "store": "15"
+    },
+    {
+      "route_code": "UB",
+      "store": "15"
+    },
+    {
+      "route_code": "UC",
+      "store": "15"
+    },
+    {
+      "route_code": "UD",
+      "store": "15"
+    },
+    {
+      "route_code": "UE",
+      "store": "15"
+    },
+    {
+      "route_code": "UF",
+      "store": "15"
+    },
+    {
+      "route_code": "UG",
+      "store": "15"
+    },
+    {
+      "route_code": "UH",
+      "store": "15"
+    },
+    {
+      "route_code": "UI",
+      "store": "15"
+    },
+    {
+      "route_code": "UJ",
+      "store": "15"
+    },
+    {
+      "route_code": "UK",
+      "store": "15"
+    },
+    {
+      "route_code": "UM",
+      "store": "15"
+    },
+    {
+      "route_code": "UN",
+      "store": "15"
+    },
+    {
+      "route_code": "LL",
+      "store": "17"
+    },
+    {
+      "route_code": "LM",
+      "store": "17"
+    },
+    {
+      "route_code": "LN",
+      "store": "17"
+    },
+    {
+      "route_code": "LP",
+      "store": "17"
+    },
+    {
+      "route_code": "LQ",
+      "store": "17"
+    },
+    {
+      "route_code": "LR",
+      "store": "17"
+    },
+    {
+      "route_code": "LS",
+      "store": "17"
+    },
+    {
+      "route_code": "LT",
+      "store": "17"
+    },
+    {
+      "route_code": "LU",
+      "store": "17"
+    },
+    {
+      "route_code": "LW",
+      "store": "17"
+    },
+    {
+      "route_code": "FL",
+      "store": "18"
+    },
+    {
+      "route_code": "FM",
+      "store": "18"
+    },
+    {
+      "route_code": "FN",
+      "store": "18"
+    },
+    {
+      "route_code": "FP",
+      "store": "18"
+    },
+    {
+      "route_code": "FQ",
+      "store": "18"
+    },
+    {
+      "route_code": "FR",
+      "store": "18"
+    },
+    {
+      "route_code": "FS",
+      "store": "18"
+    },
+    {
+      "route_code": "FT",
+      "store": "18"
+    },
+    {
+      "route_code": "FV",
+      "store": "18"
+    },
+    {
+      "route_code": "FW",
+      "store": "18"
+    },
+    {
+      "route_code": "FX",
+      "store": "18"
+    },
+    {
+      "route_code": "F5",
+      "store": "20"
+    },
+    {
+      "route_code": "F6",
+      "store": "20"
+    },
+    {
+      "route_code": "F7",
+      "store": "20"
+    },
+    {
+      "route_code": "F8",
+      "store": "20"
+    },
+    {
+      "route_code": "RL",
+      "store": "21"
+    },
+    {
+      "route_code": "RM",
+      "store": "21"
+    },
+    {
+      "route_code": "RN",
+      "store": "21"
+    },
+    {
+      "route_code": "RO",
+      "store": "21"
+    },
+    {
+      "route_code": "RR",
+      "store": "21"
+    },
+    {
+      "route_code": "RS",
+      "store": "21"
+    },
+    {
+      "route_code": "RT",
+      "store": "21"
+    },
+    {
+      "route_code": "RU",
+      "store": "21"
+    },
+    {
+      "route_code": "RV",
+      "store": "21"
+    },
+    {
+      "route_code": "RW",
+      "store": "21"
+    },
+    {
+      "route_code": "YA",
+      "store": "22"
+    },
+    {
+      "route_code": "YB",
+      "store": "22"
+    },
+    {
+      "route_code": "YC",
+      "store": "22"
+    },
+    {
+      "route_code": "YD",
+      "store": "22"
+    },
+    {
+      "route_code": "YE",
+      "store": "22"
+    },
+    {
+      "route_code": "YF",
+      "store": "22"
+    },
+    {
+      "route_code": "YG",
+      "store": "22"
+    },
+    {
+      "route_code": "YH",
+      "store": "22"
+    },
+    {
+      "route_code": "YK",
+      "store": "22"
+    },
+    {
+      "route_code": "YL",
+      "store": "22"
+    },
+    {
+      "route_code": "QA",
+      "store": "24"
+    },
+    {
+      "route_code": "QB",
+      "store": "24"
+    },
+    {
+      "route_code": "QC",
+      "store": "24"
+    },
+    {
+      "route_code": "QD",
+      "store": "24"
+    },
+    {
+      "route_code": "QE",
+      "store": "24"
+    },
+    {
+      "route_code": "QF",
+      "store": "24"
+    },
+    {
+      "route_code": "QG",
+      "store": "24"
+    },
+    {
+      "route_code": "QH",
+      "store": "24"
+    },
+    {
+      "route_code": "QI",
+      "store": "24"
+    },
+    {
+      "route_code": "QJ",
+      "store": "24"
+    },
+    {
+      "route_code": "QK",
+      "store": "24"
+    },
+    {
+      "route_code": "QL",
+      "store": "24"
+    },
+    {
+      "route_code": "QM",
+      "store": "24"
+    },
+    {
+      "route_code": "QN",
+      "store": "24"
+    },
+    {
+      "route_code": "K6",
+      "store": "25"
+    },
+    {
+      "route_code": "K7",
+      "store": "25"
+    },
+    {
+      "route_code": "K8",
+      "store": "25"
+    },
+    {
+      "route_code": "K9",
+      "store": "25"
+    },
+    {
+      "route_code": "DU",
+      "store": "27"
+    },
+    {
+      "route_code": "DV",
+      "store": "27"
+    },
+    {
+      "route_code": "DW",
+      "store": "27"
+    },
+    {
+      "route_code": "DX",
+      "store": "27"
+    },
+    {
+      "route_code": "DY",
+      "store": "27"
+    },
+    {
+      "route_code": "8O",
+      "store": "31"
+    },
+    {
+      "route_code": "8P",
+      "store": "31"
+    },
+    {
+      "route_code": "8Q",
+      "store": "31"
+    },
+    {
+      "route_code": "8R",
+      "store": "31"
+    },
+    {
+      "route_code": "8S",
+      "store": "31"
+    },
+    {
+      "route_code": "8T",
+      "store": "31"
+    },
+    {
+      "route_code": "8U",
+      "store": "31"
+    },
+    {
+      "route_code": "8V",
+      "store": "31"
+    },
+    {
+      "route_code": "8W",
+      "store": "31"
+    },
+    {
+      "route_code": "MA",
+      "store": "33"
+    },
+    {
+      "route_code": "MB",
+      "store": "33"
+    },
+    {
+      "route_code": "MC",
+      "store": "33"
+    },
+    {
+      "route_code": "MD",
+      "store": "33"
+    },
+    {
+      "route_code": "ME",
+      "store": "33"
+    },
+    {
+      "route_code": "MF",
+      "store": "33"
+    },
+    {
+      "route_code": "MG",
+      "store": "33"
+    },
+    {
+      "route_code": "MH",
+      "store": "33"
+    },
+    {
+      "route_code": "MI",
+      "store": "33"
+    },
+    {
+      "route_code": "MJ",
+      "store": "33"
+    },
+    {
+      "route_code": "MK",
+      "store": "33"
+    },
+    {
+      "route_code": "B1",
+      "store": "34"
+    },
+    {
+      "route_code": "B2",
+      "store": "34"
+    },
+    {
+      "route_code": "B3",
+      "store": "34"
+    },
+    {
+      "route_code": "B5",
+      "store": "34"
+    },
+    {
+      "route_code": "B6",
+      "store": "34"
+    },
+    {
+      "route_code": "B7",
+      "store": "34"
+    },
+    {
+      "route_code": "B8",
+      "store": "34"
+    },
+    {
+      "route_code": "B9",
+      "store": "34"
+    },
+    {
+      "route_code": "P1",
+      "store": "35"
+    },
+    {
+      "route_code": "P2",
+      "store": "35"
+    },
+    {
+      "route_code": "P3",
+      "store": "35"
+    },
+    {
+      "route_code": "P4",
+      "store": "35"
+    },
+    {
+      "route_code": "P5",
+      "store": "35"
+    },
+    {
+      "route_code": "P6",
+      "store": "35"
+    },
+    {
+      "route_code": "P7",
+      "store": "35"
+    },
+    {
+      "route_code": "P8",
+      "store": "35"
+    },
+    {
+      "route_code": "G1",
+      "store": "37"
+    },
+    {
+      "route_code": "G3",
+      "store": "37"
+    },
+    {
+      "route_code": "G4",
+      "store": "37"
+    },
+    {
+      "route_code": "G5",
+      "store": "37"
+    },
+    {
+      "route_code": "G6",
+      "store": "37"
+    },
+    {
+      "route_code": "G7",
+      "store": "37"
+    },
+    {
+      "route_code": "G8",
+      "store": "37"
+    },
+    {
+      "route_code": "G9",
+      "store": "37"
+    },
+    {
+      "route_code": "GT",
+      "store": "37"
+    },
+    {
+      "route_code": "GU",
+      "store": "37"
+    },
+    {
+      "route_code": "GV",
+      "store": "37"
+    },
+    {
+      "route_code": "OA",
+      "store": "41"
+    },
+    {
+      "route_code": "OB",
+      "store": "41"
+    },
+    {
+      "route_code": "OC",
+      "store": "41"
+    },
+    {
+      "route_code": "OD",
+      "store": "41"
+    },
+    {
+      "route_code": "OE",
+      "store": "41"
+    },
+    {
+      "route_code": "OF",
+      "store": "41"
+    },
+    {
+      "route_code": "OG",
+      "store": "41"
+    },
+    {
+      "route_code": "OH",
+      "store": "41"
+    },
+    {
+      "route_code": "OI",
+      "store": "41"
+    },
+    {
+      "route_code": "CB",
+      "store": "42"
+    },
+    {
+      "route_code": "CD",
+      "store": "42"
+    },
+    {
+      "route_code": "CH",
+      "store": "42"
+    },
+    {
+      "route_code": "CI",
+      "store": "42"
+    },
+    {
+      "route_code": "CK",
+      "store": "42"
+    },
+    {
+      "route_code": "CL",
+      "store": "42"
+    },
+    {
+      "route_code": "CM",
+      "store": "42"
+    },
+    {
+      "route_code": "CN",
+      "store": "42"
+    },
+    {
+      "route_code": "CO",
+      "store": "42"
+    },
+    {
+      "route_code": "CP",
+      "store": "42"
+    },
+    {
+      "route_code": "CQ",
+      "store": "42"
+    },
+    {
+      "route_code": "CS",
+      "store": "42"
+    },
+    {
+      "route_code": "CT",
+      "store": "42"
+    },
+    {
+      "route_code": "CU",
+      "store": "42"
+    },
+    {
+      "route_code": "CV",
+      "store": "42"
+    },
+    {
+      "route_code": "CW",
+      "store": "42"
+    },
+    {
+      "route_code": "CX",
+      "store": "42"
+    },
+    {
+      "route_code": "CY",
+      "store": "42"
+    },
+    {
+      "route_code": "IA",
+      "store": "43"
+    },
+    {
+      "route_code": "IB",
+      "store": "43"
+    },
+    {
+      "route_code": "IC",
+      "store": "43"
+    },
+    {
+      "route_code": "ID",
+      "store": "43"
+    },
+    {
+      "route_code": "IE",
+      "store": "43"
+    },
+    {
+      "route_code": "IF",
+      "store": "43"
+    },
+    {
+      "route_code": "IG",
+      "store": "43"
+    },
+    {
+      "route_code": "IH",
+      "store": "43"
+    },
+    {
+      "route_code": "II",
+      "store": "43"
+    },
+    {
+      "route_code": "IJ",
+      "store": "43"
+    },
+    {
+      "route_code": "IK",
+      "store": "43"
+    },
+    {
+      "route_code": "IM",
+      "store": "43"
+    },
+    {
+      "route_code": "IP",
+      "store": "43"
+    },
+    {
+      "route_code": "IQ",
+      "store": "43"
+    },
+    {
+      "route_code": "IS",
+      "store": "43"
+    },
+    {
+      "route_code": "XA",
+      "store": "47"
+    },
+    {
+      "route_code": "XB",
+      "store": "47"
+    },
+    {
+      "route_code": "XD",
+      "store": "47"
+    },
+    {
+      "route_code": "XE",
+      "store": "47"
+    },
+    {
+      "route_code": "XF",
+      "store": "47"
+    },
+    {
+      "route_code": "XG",
+      "store": "47"
+    },
+    {
+      "route_code": "XH",
+      "store": "47"
+    },
+    {
+      "route_code": "XI",
+      "store": "47"
+    },
+    {
+      "route_code": "XJ",
+      "store": "47"
+    },
+    {
+      "route_code": "XK",
+      "store": "47"
+    },
+    {
+      "route_code": "XL",
+      "store": "47"
+    },
+    {
+      "route_code": "XM",
+      "store": "47"
+    },
+    {
+      "route_code": "XN",
+      "store": "47"
+    },
+    {
+      "route_code": "XP",
+      "store": "47"
+    },
+    {
+      "route_code": "XQ",
+      "store": "47"
+    },
+    {
+      "route_code": "RA",
+      "store": "49"
+    },
+    {
+      "route_code": "RB",
+      "store": "49"
+    },
+    {
+      "route_code": "RC",
+      "store": "49"
+    },
+    {
+      "route_code": "RD",
+      "store": "49"
+    },
+    {
+      "route_code": "RE",
+      "store": "49"
+    },
+    {
+      "route_code": "RF",
+      "store": "49"
+    },
+    {
+      "route_code": "RG",
+      "store": "49"
+    },
+    {
+      "route_code": "EA",
+      "store": "51"
+    },
+    {
+      "route_code": "EB",
+      "store": "51"
+    },
+    {
+      "route_code": "EC",
+      "store": "51"
+    },
+    {
+      "route_code": "ED",
+      "store": "51"
+    },
+    {
+      "route_code": "EE",
+      "store": "51"
+    },
+    {
+      "route_code": "EF",
+      "store": "51"
+    },
+    {
+      "route_code": "EG",
+      "store": "51"
+    },
+    {
+      "route_code": "EH",
+      "store": "51"
+    },
+    {
+      "route_code": "EI",
+      "store": "51"
+    },
+    {
+      "route_code": "EJ",
+      "store": "51"
+    },
+    {
+      "route_code": "EK",
+      "store": "51"
+    },
+    {
+      "route_code": "EL",
+      "store": "51"
+    },
+    {
+      "route_code": "EM",
+      "store": "51"
+    },
+    {
+      "route_code": "EN",
+      "store": "51"
+    },
+    {
+      "route_code": "EP",
+      "store": "51"
+    },
+    {
+      "route_code": "EQ",
+      "store": "51"
+    },
+    {
+      "route_code": "ER",
+      "store": "51"
+    },
+    {
+      "route_code": "ES",
+      "store": "51"
+    },
+    {
+      "route_code": "ET",
+      "store": "51"
+    },
+    {
+      "route_code": "FA",
+      "store": "52"
+    },
+    {
+      "route_code": "FB",
+      "store": "52"
+    },
+    {
+      "route_code": "FC",
+      "store": "52"
+    },
+    {
+      "route_code": "FD",
+      "store": "52"
+    },
+    {
+      "route_code": "FE",
+      "store": "52"
+    },
+    {
+      "route_code": "FF",
+      "store": "52"
+    },
+    {
+      "route_code": "FG",
+      "store": "52"
+    },
+    {
+      "route_code": "FH",
+      "store": "52"
+    },
+    {
+      "route_code": "BA",
+      "store": "53"
+    },
+    {
+      "route_code": "BB",
+      "store": "53"
+    },
+    {
+      "route_code": "BC",
+      "store": "53"
+    },
+    {
+      "route_code": "BD",
+      "store": "53"
+    },
+    {
+      "route_code": "BE",
+      "store": "53"
+    },
+    {
+      "route_code": "BF",
+      "store": "53"
+    },
+    {
+      "route_code": "BG",
+      "store": "53"
+    },
+    {
+      "route_code": "BJ",
+      "store": "53"
+    },
+    {
+      "route_code": "YQ",
+      "store": "55"
+    },
+    {
+      "route_code": "YR",
+      "store": "55"
+    },
+    {
+      "route_code": "YT",
+      "store": "55"
+    },
+    {
+      "route_code": "YU",
+      "store": "55"
+    },
+    {
+      "route_code": "YV",
+      "store": "55"
+    },
+    {
+      "route_code": "YW",
+      "store": "55"
+    },
+    {
+      "route_code": "YX",
+      "store": "55"
+    },
+    {
+      "route_code": "YY",
+      "store": "55"
+    },
+    {
+      "route_code": "Y1",
+      "store": "55"
+    },
+    {
+      "route_code": "Y2",
+      "store": "55"
+    },
+    {
+      "route_code": "Y3",
+      "store": "55"
+    },
+    {
+      "route_code": "Y4",
+      "store": "55"
+    },
+    {
+      "route_code": "WA",
+      "store": "57"
+    },
+    {
+      "route_code": "WB",
+      "store": "57"
+    },
+    {
+      "route_code": "WC",
+      "store": "57"
+    },
+    {
+      "route_code": "WD",
+      "store": "57"
+    },
+    {
+      "route_code": "WE",
+      "store": "57"
+    },
+    {
+      "route_code": "WF",
+      "store": "57"
+    },
+    {
+      "route_code": "WG",
+      "store": "57"
+    },
+    {
+      "route_code": "WH",
+      "store": "57"
+    },
+    {
+      "route_code": "WI",
+      "store": "57"
+    },
+    {
+      "route_code": "WJ",
+      "store": "57"
+    },
+    {
+      "route_code": "WK",
+      "store": "57"
+    },
+    {
+      "route_code": "WL",
+      "store": "57"
+    },
+    {
+      "route_code": "WM",
+      "store": "57"
+    },
+    {
+      "route_code": "KA",
+      "store": "59"
+    },
+    {
+      "route_code": "KB",
+      "store": "59"
+    },
+    {
+      "route_code": "KC",
+      "store": "59"
+    },
+    {
+      "route_code": "KD",
+      "store": "59"
+    },
+    {
+      "route_code": "KE",
+      "store": "59"
+    },
+    {
+      "route_code": "KF",
+      "store": "59"
+    },
+    {
+      "route_code": "KG",
+      "store": "59"
+    },
+    {
+      "route_code": "KH",
+      "store": "59"
+    },
+    {
+      "route_code": "KJ",
+      "store": "59"
+    },
+    {
+      "route_code": "KK",
+      "store": "59"
+    },
+    {
+      "route_code": "KL",
+      "store": "59"
+    },
+    {
+      "route_code": "L6",
+      "store": "60"
+    },
+    {
+      "route_code": "L7",
+      "store": "60"
+    },
+    {
+      "route_code": "L8",
+      "store": "60"
+    },
+    {
+      "route_code": "L9",
+      "store": "60"
+    },
+    {
+      "route_code": "QS",
+      "store": "61"
+    },
+    {
+      "route_code": "QT",
+      "store": "61"
+    },
+    {
+      "route_code": "QU",
+      "store": "61"
+    },
+    {
+      "route_code": "QV",
+      "store": "61"
+    },
+    {
+      "route_code": "QW",
+      "store": "61"
+    },
+    {
+      "route_code": "QX",
+      "store": "61"
+    },
+    {
+      "route_code": "QY",
+      "store": "61"
+    },
+    {
+      "route_code": "6Q",
+      "store": "64"
+    },
+    {
+      "route_code": "6R",
+      "store": "64"
+    },
+    {
+      "route_code": "6S",
+      "store": "64"
+    },
+    {
+      "route_code": "6U",
+      "store": "64"
+    },
+    {
+      "route_code": "6V",
+      "store": "64"
+    },
+    {
+      "route_code": "6W",
+      "store": "64"
+    },
+    {
+      "route_code": "6X",
+      "store": "64"
+    },
+    {
+      "route_code": "6Y",
+      "store": "64"
+    },
+    {
+      "route_code": "7N",
+      "store": "65"
+    },
+    {
+      "route_code": "7P",
+      "store": "65"
+    },
+    {
+      "route_code": "7R",
+      "store": "65"
+    },
+    {
+      "route_code": "7S",
+      "store": "65"
+    },
+    {
+      "route_code": "7T",
+      "store": "65"
+    },
+    {
+      "route_code": "GA",
+      "store": "70"
+    },
+    {
+      "route_code": "GB",
+      "store": "70"
+    },
+    {
+      "route_code": "GC",
+      "store": "70"
+    },
+    {
+      "route_code": "GD",
+      "store": "70"
+    },
+    {
+      "route_code": "GE",
+      "store": "70"
+    },
+    {
+      "route_code": "GF",
+      "store": "70"
+    },
+    {
+      "route_code": "GG",
+      "store": "70"
+    },
+    {
+      "route_code": "GI",
+      "store": "70"
+    },
+    {
+      "route_code": "GJ",
+      "store": "70"
+    },
+    {
+      "route_code": "GK",
+      "store": "70"
+    },
+    {
+      "route_code": "GL",
+      "store": "70"
+    },
+    {
+      "route_code": "A2",
+      "store": "71"
+    },
+    {
+      "route_code": "A3",
+      "store": "71"
+    },
+    {
+      "route_code": "A4",
+      "store": "71"
+    },
+    {
+      "route_code": "A5",
+      "store": "71"
+    },
+    {
+      "route_code": "A7",
+      "store": "71"
+    },
+    {
+      "route_code": "A8",
+      "store": "71"
+    },
+    {
+      "route_code": "WN",
+      "store": "72"
+    },
+    {
+      "route_code": "WP",
+      "store": "72"
+    },
+    {
+      "route_code": "WQ",
+      "store": "72"
+    },
+    {
+      "route_code": "WR",
+      "store": "72"
+    },
+    {
+      "route_code": "WS",
+      "store": "72"
+    },
+    {
+      "route_code": "WT",
+      "store": "72"
+    },
+    {
+      "route_code": "WU",
+      "store": "72"
+    },
+    {
+      "route_code": "WV",
+      "store": "72"
+    },
+    {
+      "route_code": "WW",
+      "store": "72"
+    },
+    {
+      "route_code": "WX",
+      "store": "72"
+    },
+    {
+      "route_code": "WY",
+      "store": "72"
+    },
+    {
+      "route_code": "WZ",
+      "store": "72"
+    },
+    {
+      "route_code": "LA",
+      "store": "73"
+    },
+    {
+      "route_code": "LB",
+      "store": "73"
+    },
+    {
+      "route_code": "LC",
+      "store": "73"
+    },
+    {
+      "route_code": "LD",
+      "store": "73"
+    },
+    {
+      "route_code": "LE",
+      "store": "73"
+    },
+    {
+      "route_code": "LF",
+      "store": "73"
+    },
+    {
+      "route_code": "LG",
+      "store": "73"
+    },
+    {
+      "route_code": "LH",
+      "store": "73"
+    },
+    {
+      "route_code": "LI",
+      "store": "73"
+    },
+    {
+      "route_code": "LJ",
+      "store": "73"
+    },
+    {
+      "route_code": "JN",
+      "store": "74"
+    },
+    {
+      "route_code": "JP",
+      "store": "74"
+    },
+    {
+      "route_code": "JQ",
+      "store": "74"
+    },
+    {
+      "route_code": "JR",
+      "store": "74"
+    },
+    {
+      "route_code": "JS",
+      "store": "74"
+    },
+    {
+      "route_code": "JT",
+      "store": "74"
+    },
+    {
+      "route_code": "JU",
+      "store": "74"
+    },
+    {
+      "route_code": "JV",
+      "store": "74"
+    },
+    {
+      "route_code": "JW",
+      "store": "74"
+    },
+    {
+      "route_code": "JX",
+      "store": "74"
+    },
+    {
+      "route_code": "JY",
+      "store": "74"
+    },
+    {
+      "route_code": "JZ",
+      "store": "74"
+    },
+    {
+      "route_code": "J1",
+      "store": "74"
+    },
+    {
+      "route_code": "J2",
+      "store": "74"
+    },
+    {
+      "route_code": "J3",
+      "store": "74"
+    },
+    {
+      "route_code": "N1",
+      "store": "75"
+    },
+    {
+      "route_code": "N2",
+      "store": "75"
+    },
+    {
+      "route_code": "N3",
+      "store": "75"
+    },
+    {
+      "route_code": "N4",
+      "store": "75"
+    },
+    {
+      "route_code": "N6",
+      "store": "75"
+    },
+    {
+      "route_code": "N7",
+      "store": "75"
+    },
+    {
+      "route_code": "H1",
+      "store": "76"
+    },
+    {
+      "route_code": "H2",
+      "store": "76"
+    },
+    {
+      "route_code": "H3",
+      "store": "76"
+    },
+    {
+      "route_code": "H5",
+      "store": "76"
+    },
+    {
+      "route_code": "H6",
+      "store": "76"
+    },
+    {
+      "route_code": "H7",
+      "store": "76"
+    },
+    {
+      "route_code": "H8",
+      "store": "76"
+    },
+    {
+      "route_code": "VN",
+      "store": "77"
+    },
+    {
+      "route_code": "VP",
+      "store": "77"
+    },
+    {
+      "route_code": "VQ",
+      "store": "77"
+    },
+    {
+      "route_code": "VR",
+      "store": "77"
+    },
+    {
+      "route_code": "VS",
+      "store": "77"
+    },
+    {
+      "route_code": "VU",
+      "store": "77"
+    },
+    {
+      "route_code": "VV",
+      "store": "77"
+    },
+    {
+      "route_code": "VW",
+      "store": "77"
+    },
+    {
+      "route_code": "VX",
+      "store": "77"
+    },
+    {
+      "route_code": "VY",
+      "store": "77"
+    },
+    {
+      "route_code": "VZ",
+      "store": "77"
+    },
+    {
+      "route_code": "V1",
+      "store": "77"
+    },
+    {
+      "route_code": "V2",
+      "store": "77"
+    },
+    {
+      "route_code": "AA",
+      "store": "80"
+    },
+    {
+      "route_code": "AB",
+      "store": "80"
+    },
+    {
+      "route_code": "AC",
+      "store": "80"
+    },
+    {
+      "route_code": "AD",
+      "store": "80"
+    },
+    {
+      "route_code": "AE",
+      "store": "80"
+    },
+    {
+      "route_code": "AF",
+      "store": "80"
+    },
+    {
+      "route_code": "AG",
+      "store": "80"
+    },
+    {
+      "route_code": "AH",
+      "store": "80"
+    },
+    {
+      "route_code": "AI",
+      "store": "80"
+    },
+    {
+      "route_code": "AJ",
+      "store": "80"
+    },
+    {
+      "route_code": "AK",
+      "store": "80"
+    },
+    {
+      "route_code": "2Q",
+      "store": "82"
+    },
+    {
+      "route_code": "2R",
+      "store": "82"
+    },
+    {
+      "route_code": "2S",
+      "store": "82"
+    },
+    {
+      "route_code": "2T",
+      "store": "82"
+    },
+    {
+      "route_code": "2U",
+      "store": "82"
+    },
+    {
+      "route_code": "2V",
+      "store": "82"
+    },
+    {
+      "route_code": "2W",
+      "store": "82"
+    },
+    {
+      "route_code": "2X",
+      "store": "82"
+    },
+    {
+      "route_code": "M1",
+      "store": "83"
+    },
+    {
+      "route_code": "M2",
+      "store": "83"
+    },
+    {
+      "route_code": "M3",
+      "store": "83"
+    },
+    {
+      "route_code": "M5",
+      "store": "83"
+    },
+    {
+      "route_code": "M6",
+      "store": "83"
+    },
+    {
+      "route_code": "M7",
+      "store": "83"
+    },
+    {
+      "route_code": "M8",
+      "store": "83"
+    },
+    {
+      "route_code": "DA",
+      "store": "84"
+    },
+    {
+      "route_code": "DB",
+      "store": "84"
+    },
+    {
+      "route_code": "DC",
+      "store": "84"
+    },
+    {
+      "route_code": "DD",
+      "store": "84"
+    },
+    {
+      "route_code": "DE",
+      "store": "84"
+    },
+    {
+      "route_code": "DG",
+      "store": "84"
+    },
+    {
+      "route_code": "DH",
+      "store": "84"
+    },
+    {
+      "route_code": "DI",
+      "store": "84"
+    },
+    {
+      "route_code": "DJ",
+      "store": "84"
+    },
+    {
+      "route_code": "DK",
+      "store": "84"
+    },
+    {
+      "route_code": "DL",
+      "store": "84"
+    },
+    {
+      "route_code": "DM",
+      "store": "84"
+    },
+    {
+      "route_code": "DN",
+      "store": "84"
+    },
+    {
+      "route_code": "DP",
+      "store": "84"
+    },
+    {
+      "route_code": "DQ",
+      "store": "84"
+    },
+    {
+      "route_code": "HA",
+      "store": "86"
+    },
+    {
+      "route_code": "HB",
+      "store": "86"
+    },
+    {
+      "route_code": "HC",
+      "store": "86"
+    },
+    {
+      "route_code": "HD",
+      "store": "86"
+    },
+    {
+      "route_code": "HF",
+      "store": "86"
+    },
+    {
+      "route_code": "HG",
+      "store": "86"
+    },
+    {
+      "route_code": "HH",
+      "store": "86"
+    },
+    {
+      "route_code": "HI",
+      "store": "86"
+    },
+    {
+      "route_code": "HJ",
+      "store": "86"
+    },
+    {
+      "route_code": "HK",
+      "store": "86"
+    },
+    {
+      "route_code": "HL",
+      "store": "86"
+    },
+    {
+      "route_code": "HM",
+      "store": "86"
+    },
+    {
+      "route_code": "HP",
+      "store": "86"
+    },
+    {
+      "route_code": "8A",
+      "store": "88"
+    },
+    {
+      "route_code": "8B",
+      "store": "88"
+    },
+    {
+      "route_code": "8D",
+      "store": "88"
+    },
+    {
+      "route_code": "8E",
+      "store": "88"
+    },
+    {
+      "route_code": "8F",
+      "store": "88"
+    },
+    {
+      "route_code": "8G",
+      "store": "88"
+    },
+    {
+      "route_code": "8H",
+      "store": "88"
+    },
+    {
+      "route_code": "8I",
+      "store": "88"
+    },
+    {
+      "route_code": "8J",
+      "store": "88"
+    },
+    {
+      "route_code": "8K",
+      "store": "88"
+    },
+    {
+      "route_code": "01",
+      "store": "1"
+    },
+    {
+      "route_code": "02",
+      "store": "2"
+    },
+    {
+      "route_code": "03",
+      "store": "3"
+    },
+    {
+      "route_code": "04",
+      "store": "4"
+    },
+    {
+      "route_code": "05",
+      "store": "5"
+    },
+    {
+      "route_code": "06",
+      "store": "6"
+    },
+    {
+      "route_code": "07",
+      "store": "7"
+    },
+    {
+      "route_code": "08",
+      "store": "8"
+    },
+    {
+      "route_code": "14",
+      "store": "14"
+    },
+    {
+      "route_code": "15",
+      "store": "15"
+    },
+    {
+      "route_code": "17",
+      "store": "17"
+    },
+    {
+      "route_code": "18",
+      "store": "18"
+    },
+    {
+      "route_code": "20",
+      "store": "20"
+    },
+    {
+      "route_code": "21",
+      "store": "21"
+    },
+    {
+      "route_code": "22",
+      "store": "22"
+    },
+    {
+      "route_code": "24",
+      "store": "24"
+    },
+    {
+      "route_code": "25",
+      "store": "25"
+    },
+    {
+      "route_code": "27",
+      "store": "27"
+    },
+    {
+      "route_code": "31",
+      "store": "31"
+    },
+    {
+      "route_code": "33",
+      "store": "33"
+    },
+    {
+      "route_code": "34",
+      "store": "34"
+    },
+    {
+      "route_code": "35",
+      "store": "35"
+    },
+    {
+      "route_code": "37",
+      "store": "37"
+    },
+    {
+      "route_code": "41",
+      "store": "41"
+    },
+    {
+      "route_code": "42",
+      "store": "42"
+    },
+    {
+      "route_code": "43",
+      "store": "43"
+    },
+    {
+      "route_code": "47",
+      "store": "47"
+    },
+    {
+      "route_code": "48",
+      "store": "48"
+    },
+    {
+      "route_code": "49",
+      "store": "49"
+    },
+    {
+      "route_code": "50",
+      "store": "50"
+    },
+    {
+      "route_code": "51",
+      "store": "51"
+    },
+    {
+      "route_code": "52",
+      "store": "52"
+    },
+    {
+      "route_code": "53",
+      "store": "53"
+    },
+    {
+      "route_code": "55",
+      "store": "55"
+    },
+    {
+      "route_code": "57",
+      "store": "57"
+    },
+    {
+      "route_code": "59",
+      "store": "59"
+    },
+    {
+      "route_code": "60",
+      "store": "60"
+    },
+    {
+      "route_code": "61",
+      "store": "61"
+    },
+    {
+      "route_code": "64",
+      "store": "64"
+    },
+    {
+      "route_code": "65",
+      "store": "65"
+    },
+    {
+      "route_code": "70",
+      "store": "70"
+    },
+    {
+      "route_code": "71",
+      "store": "71"
+    },
+    {
+      "route_code": "72",
+      "store": "72"
+    },
+    {
+      "route_code": "73",
+      "store": "73"
+    },
+    {
+      "route_code": "74",
+      "store": "74"
+    },
+    {
+      "route_code": "75",
+      "store": "75"
+    },
+    {
+      "route_code": "76",
+      "store": "76"
+    },
+    {
+      "route_code": "77",
+      "store": "77"
+    },
+    {
+      "route_code": "80",
+      "store": "80"
+    },
+    {
+      "route_code": "82",
+      "store": "82"
+    },
+    {
+      "route_code": "83",
+      "store": "83"
+    },
+    {
+      "route_code": "84",
+      "store": "84"
+    },
+    {
+      "route_code": "86",
+      "store": "86"
+    },
+    {
+      "route_code": "88",
+      "store": "88"
+    },
+    {
+      "route_code": "5D",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5F",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5G",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5H",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5J",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5K",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5M",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5P",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5R",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5T",
+      "store": "LTL"
+    },
+    {
+      "route_code": "5W",
+      "store": "LTL"
+    },
+    {
+      "route_code": "S0",
+      "store": "18"
+    },
+    {
+      "route_code": "S1",
+      "store": "1"
+    },
+    {
+      "route_code": "S2",
+      "store": "2"
+    },
+    {
+      "route_code": "S3",
+      "store": "3"
+    },
+    {
+      "route_code": "S4",
+      "store": "4"
+    },
+    {
+      "route_code": "S5",
+      "store": "5"
+    },
+    {
+      "route_code": "S6",
+      "store": "6"
+    },
+    {
+      "route_code": "S7",
+      "store": "7"
+    },
+    {
+      "route_code": "S8",
+      "store": "88"
+    },
+    {
+      "route_code": "S9",
+      "store": "9"
+    },
+    {
+      "route_code": "SA",
+      "store": "80"
+    },
+    {
+      "route_code": "SB",
+      "store": "53"
+    },
+    {
+      "route_code": "SC",
+      "store": "42"
+    },
+    {
+      "route_code": "SE",
+      "store": "51"
+    },
+    {
+      "route_code": "SF",
+      "store": "52"
+    },
+    {
+      "route_code": "SG",
+      "store": "61"
+    },
+    {
+      "route_code": "SH",
+      "store": "86"
+    },
+    {
+      "route_code": "SI",
+      "store": "43"
+    },
+    {
+      "route_code": "SJ",
+      "store": "27"
+    },
+    {
+      "route_code": "SK",
+      "store": "59"
+    },
+    {
+      "route_code": "SL",
+      "store": "82"
+    },
+    {
+      "route_code": "SM",
+      "store": "33"
+    },
+    {
+      "route_code": "SN",
+      "store": "55"
+    },
+    {
+      "route_code": "SP",
+      "store": "31"
+    },
+    {
+      "route_code": "SQ",
+      "store": "24"
+    },
+    {
+      "route_code": "SR",
+      "store": "49"
+    },
+    {
+      "route_code": "ST",
+      "store": "88"
+    },
+    {
+      "route_code": "SU",
+      "store": "15"
+    },
+    {
+      "route_code": "SV",
+      "store": "83"
+    },
+    {
+      "route_code": "SW",
+      "store": "57"
+    },
+    {
+      "route_code": "SX",
+      "store": "47"
+    },
+    {
+      "route_code": "SY",
+      "store": "22"
+    },
+    {
+      "route_code": "SZ",
+      "store": "64"
+    },
+    {
+      "route_code": "TB",
+      "store": "20"
+    },
+    {
+      "route_code": "TC",
+      "store": "25"
+    },
+    {
+      "route_code": "TD",
+      "store": "65"
+    },
+    {
+      "route_code": "TE",
+      "store": "34"
+    },
+    {
+      "route_code": "TF",
+      "store": "71"
+    },
+    {
+      "route_code": "TG",
+      "store": "35"
+    },
+    {
+      "route_code": "TH",
+      "store": "14"
+    },
+    {
+      "route_code": "TI",
+      "store": "73"
+    },
+    {
+      "route_code": "TK",
+      "store": "8"
+    },
+    {
+      "route_code": "TL",
+      "store": "17"
+    },
+    {
+      "route_code": "TM",
+      "store": "70"
+    },
+    {
+      "route_code": "TN",
+      "store": "60"
+    },
+    {
+      "route_code": "TO",
+      "store": "41"
+    },
+    {
+      "route_code": "TP",
+      "store": "74"
+    },
+    {
+      "route_code": "TQ",
+      "store": "N/A"
+    },
+    {
+      "route_code": "TR",
+      "store": "21"
+    },
+    {
+      "route_code": "TS",
+      "store": "72"
+    },
+    {
+      "route_code": "TT",
+      "store": "37"
+    },
+    {
+      "route_code": "TU",
+      "store": "76"
+    },
+    {
+      "route_code": "TV",
+      "store": "77"
+    },
+    {
+      "route_code": "TW",
+      "store": "75"
+    },
+    {
+      "route_code": "TZ",
+      "store": "ZT"
+    },
+    {
+      "route_code": "19",
+      "store": "UPS"
+    },
+    {
+      "route_code": "50",
+      "store": "50"
+    },
+    {
+      "route_code": "78",
+      "store": "22"
+    },
+    {
+      "route_code": "79",
+      "store": "53"
+    },
+    {
+      "route_code": "89",
+      "store": "83"
+    },
+    {
+      "route_code": "90",
+      "store": "Amazon - 1"
+    },
+    {
+      "route_code": "91",
+      "store": "Amazon - 51"
+    },
+    {
+      "route_code": "92",
+      "store": "Amazon - 84"
+    },
+    {
+      "route_code": "93",
+      "store": "Amazon - 24"
+    },
+    {
+      "route_code": "94",
+      "store": "Amazon - 42"
+    },
+    {
+      "route_code": "95",
+      "store": "Amazon - 48"
+    },
+    {
+      "route_code": "96",
+      "store": "Amazon - 43"
+    },
+    {
+      "route_code": "97",
+      "store": "Amazon - 47"
+    },
+    {
+      "route_code": "98",
+      "store": "Delticom / Simple"
+    },
+    {
+      "route_code": "89",
+      "store": "Canadian Custoemrs"
+    },
+    {
+      "route_code": "9A",
+      "store": "Walmart- Loc 1"
+    },
+    {
+      "route_code": "9B",
+      "store": "Walmart- Loc 51"
+    },
+    {
+      "route_code": "9C",
+      "store": "Walmart- Loc 42"
+    },
+    {
+      "route_code": "9D",
+      "store": "Walmart- Loc 84"
+    },
+    {
+      "route_code": "1O",
+      "store": "Delphos Special"
+    },
+    {
+      "route_code": "1I",
+      "store": "Delphos Special"
+    },
+    {
+      "route_code": "10",
+      "store": "Special Marketing- Dave"
+    }
+  ],
+  "by_route": {
+    "1A": "1",
+    "1B": "1",
+    "1C": "1",
+    "1D": "1",
+    "1E": "1",
+    "1F": "1",
+    "1G": "1",
+    "1H": "1",
+    "1J": "1",
+    "1K": "1",
+    "1L": "1",
+    "1M": "1",
+    "1N": "1",
+    "1P": "1",
+    "1R": "1",
+    "1T": "1",
+    "1V": "1",
+    "1W": "1",
+    "1X": "1",
+    "1Y": "1",
+    "2A": "2",
+    "2B": "2",
+    "2C": "2",
+    "2E": "2",
+    "2G": "2",
+    "2H": "2",
+    "3A": "3",
+    "3B": "3",
+    "3C": "3",
+    "3D": "3",
+    "3E": "3",
+    "3F": "3",
+    "3G": "3",
+    "3H": "3",
+    "3I": "3",
+    "3J": "3",
+    "3K": "3",
+    "3L": "3",
+    "3M": "3",
+    "3N": "3",
+    "ZA": "4",
+    "ZB": "4",
+    "ZC": "4",
+    "ZD": "4",
+    "ZE": "4",
+    "ZF": "4",
+    "ZG": "4",
+    "ZH": "4",
+    "ZI": "4",
+    "ZJ": "4",
+    "ZK": "4",
+    "ZL": "4",
+    "ZM": "4",
+    "ZN": "4",
+    "ZS": "4",
+    "ZT": "4",
+    "ZU": "4",
+    "ZV": "4",
+    "ZW": "4",
+    "ZX": "4",
+    "ZY": "4",
+    "ZZ": "4",
+    "Z1": "4",
+    "Z2": "4",
+    "Z3": "4",
+    "Z4": "4",
+    "Z5": "4",
+    "Z6": "4",
+    "6A": "6",
+    "6B": "6",
+    "6C": "6",
+    "6D": "6",
+    "6E": "6",
+    "6F": "6",
+    "6G": "6",
+    "6H": "6",
+    "6I": "6",
+    "6J": "6",
+    "7A": "7",
+    "7B": "7",
+    "7C": "7",
+    "7D": "7",
+    "7F": "7",
+    "7G": "7",
+    "7H": "7",
+    "7I": "7",
+    "7J": "7",
+    "7K": "7",
+    "KO": "8",
+    "KP": "8",
+    "KS": "8",
+    "KT": "8",
+    "KV": "8",
+    "KW": "8",
+    "HT": "14",
+    "HU": "14",
+    "HV": "14",
+    "HW": "14",
+    "UA": "15",
+    "UB": "15",
+    "UC": "15",
+    "UD": "15",
+    "UE": "15",
+    "UF": "15",
+    "UG": "15",
+    "UH": "15",
+    "UI": "15",
+    "UJ": "15",
+    "UK": "15",
+    "UM": "15",
+    "UN": "15",
+    "LL": "17",
+    "LM": "17",
+    "LN": "17",
+    "LP": "17",
+    "LQ": "17",
+    "LR": "17",
+    "LS": "17",
+    "LT": "17",
+    "LU": "17",
+    "LW": "17",
+    "FL": "18",
+    "FM": "18",
+    "FN": "18",
+    "FP": "18",
+    "FQ": "18",
+    "FR": "18",
+    "FS": "18",
+    "FT": "18",
+    "FV": "18",
+    "FW": "18",
+    "FX": "18",
+    "F5": "20",
+    "F6": "20",
+    "F7": "20",
+    "F8": "20",
+    "RL": "21",
+    "RM": "21",
+    "RN": "21",
+    "RO": "21",
+    "RR": "21",
+    "RS": "21",
+    "RT": "21",
+    "RU": "21",
+    "RV": "21",
+    "RW": "21",
+    "YA": "22",
+    "YB": "22",
+    "YC": "22",
+    "YD": "22",
+    "YE": "22",
+    "YF": "22",
+    "YG": "22",
+    "YH": "22",
+    "YK": "22",
+    "YL": "22",
+    "QA": "24",
+    "QB": "24",
+    "QC": "24",
+    "QD": "24",
+    "QE": "24",
+    "QF": "24",
+    "QG": "24",
+    "QH": "24",
+    "QI": "24",
+    "QJ": "24",
+    "QK": "24",
+    "QL": "24",
+    "QM": "24",
+    "QN": "24",
+    "K6": "25",
+    "K7": "25",
+    "K8": "25",
+    "K9": "25",
+    "DU": "27",
+    "DV": "27",
+    "DW": "27",
+    "DX": "27",
+    "DY": "27",
+    "8O": "31",
+    "8P": "31",
+    "8Q": "31",
+    "8R": "31",
+    "8S": "31",
+    "8T": "31",
+    "8U": "31",
+    "8V": "31",
+    "8W": "31",
+    "MA": "33",
+    "MB": "33",
+    "MC": "33",
+    "MD": "33",
+    "ME": "33",
+    "MF": "33",
+    "MG": "33",
+    "MH": "33",
+    "MI": "33",
+    "MJ": "33",
+    "MK": "33",
+    "B1": "34",
+    "B2": "34",
+    "B3": "34",
+    "B5": "34",
+    "B6": "34",
+    "B7": "34",
+    "B8": "34",
+    "B9": "34",
+    "P1": "35",
+    "P2": "35",
+    "P3": "35",
+    "P4": "35",
+    "P5": "35",
+    "P6": "35",
+    "P7": "35",
+    "P8": "35",
+    "G1": "37",
+    "G3": "37",
+    "G4": "37",
+    "G5": "37",
+    "G6": "37",
+    "G7": "37",
+    "G8": "37",
+    "G9": "37",
+    "GT": "37",
+    "GU": "37",
+    "GV": "37",
+    "OA": "41",
+    "OB": "41",
+    "OC": "41",
+    "OD": "41",
+    "OE": "41",
+    "OF": "41",
+    "OG": "41",
+    "OH": "41",
+    "OI": "41",
+    "CB": "42",
+    "CD": "42",
+    "CH": "42",
+    "CI": "42",
+    "CK": "42",
+    "CL": "42",
+    "CM": "42",
+    "CN": "42",
+    "CO": "42",
+    "CP": "42",
+    "CQ": "42",
+    "CS": "42",
+    "CT": "42",
+    "CU": "42",
+    "CV": "42",
+    "CW": "42",
+    "CX": "42",
+    "CY": "42",
+    "IA": "43",
+    "IB": "43",
+    "IC": "43",
+    "ID": "43",
+    "IE": "43",
+    "IF": "43",
+    "IG": "43",
+    "IH": "43",
+    "II": "43",
+    "IJ": "43",
+    "IK": "43",
+    "IM": "43",
+    "IP": "43",
+    "IQ": "43",
+    "IS": "43",
+    "XA": "47",
+    "XB": "47",
+    "XD": "47",
+    "XE": "47",
+    "XF": "47",
+    "XG": "47",
+    "XH": "47",
+    "XI": "47",
+    "XJ": "47",
+    "XK": "47",
+    "XL": "47",
+    "XM": "47",
+    "XN": "47",
+    "XP": "47",
+    "XQ": "47",
+    "RA": "49",
+    "RB": "49",
+    "RC": "49",
+    "RD": "49",
+    "RE": "49",
+    "RF": "49",
+    "RG": "49",
+    "EA": "51",
+    "EB": "51",
+    "EC": "51",
+    "ED": "51",
+    "EE": "51",
+    "EF": "51",
+    "EG": "51",
+    "EH": "51",
+    "EI": "51",
+    "EJ": "51",
+    "EK": "51",
+    "EL": "51",
+    "EM": "51",
+    "EN": "51",
+    "EP": "51",
+    "EQ": "51",
+    "ER": "51",
+    "ES": "51",
+    "ET": "51",
+    "FA": "52",
+    "FB": "52",
+    "FC": "52",
+    "FD": "52",
+    "FE": "52",
+    "FF": "52",
+    "FG": "52",
+    "FH": "52",
+    "BA": "53",
+    "BB": "53",
+    "BC": "53",
+    "BD": "53",
+    "BE": "53",
+    "BF": "53",
+    "BG": "53",
+    "BJ": "53",
+    "YQ": "55",
+    "YR": "55",
+    "YT": "55",
+    "YU": "55",
+    "YV": "55",
+    "YW": "55",
+    "YX": "55",
+    "YY": "55",
+    "Y1": "55",
+    "Y2": "55",
+    "Y3": "55",
+    "Y4": "55",
+    "WA": "57",
+    "WB": "57",
+    "WC": "57",
+    "WD": "57",
+    "WE": "57",
+    "WF": "57",
+    "WG": "57",
+    "WH": "57",
+    "WI": "57",
+    "WJ": "57",
+    "WK": "57",
+    "WL": "57",
+    "WM": "57",
+    "KA": "59",
+    "KB": "59",
+    "KC": "59",
+    "KD": "59",
+    "KE": "59",
+    "KF": "59",
+    "KG": "59",
+    "KH": "59",
+    "KJ": "59",
+    "KK": "59",
+    "KL": "59",
+    "L6": "60",
+    "L7": "60",
+    "L8": "60",
+    "L9": "60",
+    "QS": "61",
+    "QT": "61",
+    "QU": "61",
+    "QV": "61",
+    "QW": "61",
+    "QX": "61",
+    "QY": "61",
+    "6Q": "64",
+    "6R": "64",
+    "6S": "64",
+    "6U": "64",
+    "6V": "64",
+    "6W": "64",
+    "6X": "64",
+    "6Y": "64",
+    "7N": "65",
+    "7P": "65",
+    "7R": "65",
+    "7S": "65",
+    "7T": "65",
+    "GA": "70",
+    "GB": "70",
+    "GC": "70",
+    "GD": "70",
+    "GE": "70",
+    "GF": "70",
+    "GG": "70",
+    "GI": "70",
+    "GJ": "70",
+    "GK": "70",
+    "GL": "70",
+    "A2": "71",
+    "A3": "71",
+    "A4": "71",
+    "A5": "71",
+    "A7": "71",
+    "A8": "71",
+    "WN": "72",
+    "WP": "72",
+    "WQ": "72",
+    "WR": "72",
+    "WS": "72",
+    "WT": "72",
+    "WU": "72",
+    "WV": "72",
+    "WW": "72",
+    "WX": "72",
+    "WY": "72",
+    "WZ": "72",
+    "LA": "73",
+    "LB": "73",
+    "LC": "73",
+    "LD": "73",
+    "LE": "73",
+    "LF": "73",
+    "LG": "73",
+    "LH": "73",
+    "LI": "73",
+    "LJ": "73",
+    "JN": "74",
+    "JP": "74",
+    "JQ": "74",
+    "JR": "74",
+    "JS": "74",
+    "JT": "74",
+    "JU": "74",
+    "JV": "74",
+    "JW": "74",
+    "JX": "74",
+    "JY": "74",
+    "JZ": "74",
+    "J1": "74",
+    "J2": "74",
+    "J3": "74",
+    "N1": "75",
+    "N2": "75",
+    "N3": "75",
+    "N4": "75",
+    "N6": "75",
+    "N7": "75",
+    "H1": "76",
+    "H2": "76",
+    "H3": "76",
+    "H5": "76",
+    "H6": "76",
+    "H7": "76",
+    "H8": "76",
+    "VN": "77",
+    "VP": "77",
+    "VQ": "77",
+    "VR": "77",
+    "VS": "77",
+    "VU": "77",
+    "VV": "77",
+    "VW": "77",
+    "VX": "77",
+    "VY": "77",
+    "VZ": "77",
+    "V1": "77",
+    "V2": "77",
+    "AA": "80",
+    "AB": "80",
+    "AC": "80",
+    "AD": "80",
+    "AE": "80",
+    "AF": "80",
+    "AG": "80",
+    "AH": "80",
+    "AI": "80",
+    "AJ": "80",
+    "AK": "80",
+    "2Q": "82",
+    "2R": "82",
+    "2S": "82",
+    "2T": "82",
+    "2U": "82",
+    "2V": "82",
+    "2W": "82",
+    "2X": "82",
+    "M1": "83",
+    "M2": "83",
+    "M3": "83",
+    "M5": "83",
+    "M6": "83",
+    "M7": "83",
+    "M8": "83",
+    "DA": "84",
+    "DB": "84",
+    "DC": "84",
+    "DD": "84",
+    "DE": "84",
+    "DG": "84",
+    "DH": "84",
+    "DI": "84",
+    "DJ": "84",
+    "DK": "84",
+    "DL": "84",
+    "DM": "84",
+    "DN": "84",
+    "DP": "84",
+    "DQ": "84",
+    "HA": "86",
+    "HB": "86",
+    "HC": "86",
+    "HD": "86",
+    "HF": "86",
+    "HG": "86",
+    "HH": "86",
+    "HI": "86",
+    "HJ": "86",
+    "HK": "86",
+    "HL": "86",
+    "HM": "86",
+    "HP": "86",
+    "8A": "88",
+    "8B": "88",
+    "8D": "88",
+    "8E": "88",
+    "8F": "88",
+    "8G": "88",
+    "8H": "88",
+    "8I": "88",
+    "8J": "88",
+    "8K": "88",
+    "01": "1",
+    "02": "2",
+    "03": "3",
+    "04": "4",
+    "05": "5",
+    "06": "6",
+    "07": "7",
+    "08": "8",
+    "14": "14",
+    "15": "15",
+    "17": "17",
+    "18": "18",
+    "20": "20",
+    "21": "21",
+    "22": "22",
+    "24": "24",
+    "25": "25",
+    "27": "27",
+    "31": "31",
+    "33": "33",
+    "34": "34",
+    "35": "35",
+    "37": "37",
+    "41": "41",
+    "42": "42",
+    "43": "43",
+    "47": "47",
+    "48": "48",
+    "49": "49",
+    "50": "50",
+    "51": "51",
+    "52": "52",
+    "53": "53",
+    "55": "55",
+    "57": "57",
+    "59": "59",
+    "60": "60",
+    "61": "61",
+    "64": "64",
+    "65": "65",
+    "70": "70",
+    "71": "71",
+    "72": "72",
+    "73": "73",
+    "74": "74",
+    "75": "75",
+    "76": "76",
+    "77": "77",
+    "80": "80",
+    "82": "82",
+    "83": "83",
+    "84": "84",
+    "86": "86",
+    "88": "88",
+    "5D": "LTL",
+    "5F": "LTL",
+    "5G": "LTL",
+    "5H": "LTL",
+    "5J": "LTL",
+    "5K": "LTL",
+    "5M": "LTL",
+    "5P": "LTL",
+    "5R": "LTL",
+    "5T": "LTL",
+    "5W": "LTL",
+    "S0": "18",
+    "S1": "1",
+    "S2": "2",
+    "S3": "3",
+    "S4": "4",
+    "S5": "5",
+    "S6": "6",
+    "S7": "7",
+    "S8": "88",
+    "S9": "9",
+    "SA": "80",
+    "SB": "53",
+    "SC": "42",
+    "SE": "51",
+    "SF": "52",
+    "SG": "61",
+    "SH": "86",
+    "SI": "43",
+    "SJ": "27",
+    "SK": "59",
+    "SL": "82",
+    "SM": "33",
+    "SN": "55",
+    "SP": "31",
+    "SQ": "24",
+    "SR": "49",
+    "ST": "88",
+    "SU": "15",
+    "SV": "83",
+    "SW": "57",
+    "SX": "47",
+    "SY": "22",
+    "SZ": "64",
+    "TB": "20",
+    "TC": "25",
+    "TD": "65",
+    "TE": "34",
+    "TF": "71",
+    "TG": "35",
+    "TH": "14",
+    "TI": "73",
+    "TK": "8",
+    "TL": "17",
+    "TM": "70",
+    "TN": "60",
+    "TO": "41",
+    "TP": "74",
+    "TQ": "N/A",
+    "TR": "21",
+    "TS": "72",
+    "TT": "37",
+    "TU": "76",
+    "TV": "77",
+    "TW": "75",
+    "TZ": "ZT",
+    "19": "UPS",
+    "78": "22",
+    "79": "53",
+    "89": "Canadian Custoemrs",
+    "90": "Amazon - 1",
+    "91": "Amazon - 51",
+    "92": "Amazon - 84",
+    "93": "Amazon - 24",
+    "94": "Amazon - 42",
+    "95": "Amazon - 48",
+    "96": "Amazon - 43",
+    "97": "Amazon - 47",
+    "98": "Delticom / Simple",
+    "9A": "Walmart- Loc 1",
+    "9B": "Walmart- Loc 51",
+    "9C": "Walmart- Loc 42",
+    "9D": "Walmart- Loc 84",
+    "1O": "Delphos Special",
+    "1I": "Delphos Special",
+    "10": "Special Marketing- Dave"
+  },
+  "by_store": {
+    "1": [
+      "1A",
+      "1B",
+      "1C",
+      "1D",
+      "1E",
+      "1F",
+      "1G",
+      "1H",
+      "1J",
+      "1K",
+      "1L",
+      "1M",
+      "1N",
+      "1P",
+      "1R",
+      "1T",
+      "1V",
+      "1W",
+      "1X",
+      "1Y",
+      "01",
+      "S1"
+    ],
+    "14": [
+      "HT",
+      "HU",
+      "HV",
+      "HW",
+      "14",
+      "TH"
+    ],
+    "15": [
+      "UA",
+      "UB",
+      "UC",
+      "UD",
+      "UE",
+      "UF",
+      "UG",
+      "UH",
+      "UI",
+      "UJ",
+      "UK",
+      "UM",
+      "UN",
+      "15",
+      "SU"
+    ],
+    "17": [
+      "LL",
+      "LM",
+      "LN",
+      "LP",
+      "LQ",
+      "LR",
+      "LS",
+      "LT",
+      "LU",
+      "LW",
+      "17",
+      "TL"
+    ],
+    "18": [
+      "FL",
+      "FM",
+      "FN",
+      "FP",
+      "FQ",
+      "FR",
+      "FS",
+      "FT",
+      "FV",
+      "FW",
+      "FX",
+      "18",
+      "S0"
+    ],
+    "2": [
+      "2A",
+      "2B",
+      "2C",
+      "2E",
+      "2G",
+      "2H",
+      "02",
+      "S2"
+    ],
+    "20": [
+      "F5",
+      "F6",
+      "F7",
+      "F8",
+      "20",
+      "TB"
+    ],
+    "21": [
+      "RL",
+      "RM",
+      "RN",
+      "RO",
+      "RR",
+      "RS",
+      "RT",
+      "RU",
+      "RV",
+      "RW",
+      "21",
+      "TR"
+    ],
+    "22": [
+      "YA",
+      "YB",
+      "YC",
+      "YD",
+      "YE",
+      "YF",
+      "YG",
+      "YH",
+      "YK",
+      "YL",
+      "22",
+      "SY",
+      "78"
+    ],
+    "24": [
+      "QA",
+      "QB",
+      "QC",
+      "QD",
+      "QE",
+      "QF",
+      "QG",
+      "QH",
+      "QI",
+      "QJ",
+      "QK",
+      "QL",
+      "QM",
+      "QN",
+      "24",
+      "SQ"
+    ],
+    "25": [
+      "K6",
+      "K7",
+      "K8",
+      "K9",
+      "25",
+      "TC"
+    ],
+    "27": [
+      "DU",
+      "DV",
+      "DW",
+      "DX",
+      "DY",
+      "27",
+      "SJ"
+    ],
+    "3": [
+      "3A",
+      "3B",
+      "3C",
+      "3D",
+      "3E",
+      "3F",
+      "3G",
+      "3H",
+      "3I",
+      "3J",
+      "3K",
+      "3L",
+      "3M",
+      "3N",
+      "03",
+      "S3"
+    ],
+    "31": [
+      "8O",
+      "8P",
+      "8Q",
+      "8R",
+      "8S",
+      "8T",
+      "8U",
+      "8V",
+      "8W",
+      "31",
+      "SP"
+    ],
+    "33": [
+      "MA",
+      "MB",
+      "MC",
+      "MD",
+      "ME",
+      "MF",
+      "MG",
+      "MH",
+      "MI",
+      "MJ",
+      "MK",
+      "33",
+      "SM"
+    ],
+    "34": [
+      "B1",
+      "B2",
+      "B3",
+      "B5",
+      "B6",
+      "B7",
+      "B8",
+      "B9",
+      "34",
+      "TE"
+    ],
+    "35": [
+      "P1",
+      "P2",
+      "P3",
+      "P4",
+      "P5",
+      "P6",
+      "P7",
+      "P8",
+      "35",
+      "TG"
+    ],
+    "37": [
+      "G1",
+      "G3",
+      "G4",
+      "G5",
+      "G6",
+      "G7",
+      "G8",
+      "G9",
+      "GT",
+      "GU",
+      "GV",
+      "37",
+      "TT"
+    ],
+    "4": [
+      "ZA",
+      "ZB",
+      "ZC",
+      "ZD",
+      "ZE",
+      "ZF",
+      "ZG",
+      "ZH",
+      "ZI",
+      "ZJ",
+      "ZK",
+      "ZL",
+      "ZM",
+      "ZN",
+      "ZS",
+      "ZT",
+      "ZU",
+      "ZV",
+      "ZW",
+      "ZX",
+      "ZY",
+      "ZZ",
+      "Z1",
+      "Z2",
+      "Z3",
+      "Z4",
+      "Z5",
+      "Z6",
+      "04",
+      "S4"
+    ],
+    "41": [
+      "OA",
+      "OB",
+      "OC",
+      "OD",
+      "OE",
+      "OF",
+      "OG",
+      "OH",
+      "OI",
+      "41",
+      "TO"
+    ],
+    "42": [
+      "CB",
+      "CD",
+      "CH",
+      "CI",
+      "CK",
+      "CL",
+      "CM",
+      "CN",
+      "CO",
+      "CP",
+      "CQ",
+      "CS",
+      "CT",
+      "CU",
+      "CV",
+      "CW",
+      "CX",
+      "CY",
+      "42",
+      "SC"
+    ],
+    "43": [
+      "IA",
+      "IB",
+      "IC",
+      "ID",
+      "IE",
+      "IF",
+      "IG",
+      "IH",
+      "II",
+      "IJ",
+      "IK",
+      "IM",
+      "IP",
+      "IQ",
+      "IS",
+      "43",
+      "SI"
+    ],
+    "47": [
+      "XA",
+      "XB",
+      "XD",
+      "XE",
+      "XF",
+      "XG",
+      "XH",
+      "XI",
+      "XJ",
+      "XK",
+      "XL",
+      "XM",
+      "XN",
+      "XP",
+      "XQ",
+      "47",
+      "SX"
+    ],
+    "48": [
+      "48"
+    ],
+    "49": [
+      "RA",
+      "RB",
+      "RC",
+      "RD",
+      "RE",
+      "RF",
+      "RG",
+      "49",
+      "SR"
+    ],
+    "5": [
+      "05",
+      "S5"
+    ],
+    "50": [
+      "50",
+      "50"
+    ],
+    "51": [
+      "EA",
+      "EB",
+      "EC",
+      "ED",
+      "EE",
+      "EF",
+      "EG",
+      "EH",
+      "EI",
+      "EJ",
+      "EK",
+      "EL",
+      "EM",
+      "EN",
+      "EP",
+      "EQ",
+      "ER",
+      "ES",
+      "ET",
+      "51",
+      "SE"
+    ],
+    "52": [
+      "FA",
+      "FB",
+      "FC",
+      "FD",
+      "FE",
+      "FF",
+      "FG",
+      "FH",
+      "52",
+      "SF"
+    ],
+    "53": [
+      "BA",
+      "BB",
+      "BC",
+      "BD",
+      "BE",
+      "BF",
+      "BG",
+      "BJ",
+      "53",
+      "SB",
+      "79"
+    ],
+    "55": [
+      "YQ",
+      "YR",
+      "YT",
+      "YU",
+      "YV",
+      "YW",
+      "YX",
+      "YY",
+      "Y1",
+      "Y2",
+      "Y3",
+      "Y4",
+      "55",
+      "SN"
+    ],
+    "57": [
+      "WA",
+      "WB",
+      "WC",
+      "WD",
+      "WE",
+      "WF",
+      "WG",
+      "WH",
+      "WI",
+      "WJ",
+      "WK",
+      "WL",
+      "WM",
+      "57",
+      "SW"
+    ],
+    "59": [
+      "KA",
+      "KB",
+      "KC",
+      "KD",
+      "KE",
+      "KF",
+      "KG",
+      "KH",
+      "KJ",
+      "KK",
+      "KL",
+      "59",
+      "SK"
+    ],
+    "6": [
+      "6A",
+      "6B",
+      "6C",
+      "6D",
+      "6E",
+      "6F",
+      "6G",
+      "6H",
+      "6I",
+      "6J",
+      "06",
+      "S6"
+    ],
+    "60": [
+      "L6",
+      "L7",
+      "L8",
+      "L9",
+      "60",
+      "TN"
+    ],
+    "61": [
+      "QS",
+      "QT",
+      "QU",
+      "QV",
+      "QW",
+      "QX",
+      "QY",
+      "61",
+      "SG"
+    ],
+    "64": [
+      "6Q",
+      "6R",
+      "6S",
+      "6U",
+      "6V",
+      "6W",
+      "6X",
+      "6Y",
+      "64",
+      "SZ"
+    ],
+    "65": [
+      "7N",
+      "7P",
+      "7R",
+      "7S",
+      "7T",
+      "65",
+      "TD"
+    ],
+    "7": [
+      "7A",
+      "7B",
+      "7C",
+      "7D",
+      "7F",
+      "7G",
+      "7H",
+      "7I",
+      "7J",
+      "7K",
+      "07",
+      "S7"
+    ],
+    "70": [
+      "GA",
+      "GB",
+      "GC",
+      "GD",
+      "GE",
+      "GF",
+      "GG",
+      "GI",
+      "GJ",
+      "GK",
+      "GL",
+      "70",
+      "TM"
+    ],
+    "71": [
+      "A2",
+      "A3",
+      "A4",
+      "A5",
+      "A7",
+      "A8",
+      "71",
+      "TF"
+    ],
+    "72": [
+      "WN",
+      "WP",
+      "WQ",
+      "WR",
+      "WS",
+      "WT",
+      "WU",
+      "WV",
+      "WW",
+      "WX",
+      "WY",
+      "WZ",
+      "72",
+      "TS"
+    ],
+    "73": [
+      "LA",
+      "LB",
+      "LC",
+      "LD",
+      "LE",
+      "LF",
+      "LG",
+      "LH",
+      "LI",
+      "LJ",
+      "73",
+      "TI"
+    ],
+    "74": [
+      "JN",
+      "JP",
+      "JQ",
+      "JR",
+      "JS",
+      "JT",
+      "JU",
+      "JV",
+      "JW",
+      "JX",
+      "JY",
+      "JZ",
+      "J1",
+      "J2",
+      "J3",
+      "74",
+      "TP"
+    ],
+    "75": [
+      "N1",
+      "N2",
+      "N3",
+      "N4",
+      "N6",
+      "N7",
+      "75",
+      "TW"
+    ],
+    "76": [
+      "H1",
+      "H2",
+      "H3",
+      "H5",
+      "H6",
+      "H7",
+      "H8",
+      "76",
+      "TU"
+    ],
+    "77": [
+      "VN",
+      "VP",
+      "VQ",
+      "VR",
+      "VS",
+      "VU",
+      "VV",
+      "VW",
+      "VX",
+      "VY",
+      "VZ",
+      "V1",
+      "V2",
+      "77",
+      "TV"
+    ],
+    "8": [
+      "KO",
+      "KP",
+      "KS",
+      "KT",
+      "KV",
+      "KW",
+      "08",
+      "TK"
+    ],
+    "80": [
+      "AA",
+      "AB",
+      "AC",
+      "AD",
+      "AE",
+      "AF",
+      "AG",
+      "AH",
+      "AI",
+      "AJ",
+      "AK",
+      "80",
+      "SA"
+    ],
+    "82": [
+      "2Q",
+      "2R",
+      "2S",
+      "2T",
+      "2U",
+      "2V",
+      "2W",
+      "2X",
+      "82",
+      "SL"
+    ],
+    "83": [
+      "M1",
+      "M2",
+      "M3",
+      "M5",
+      "M6",
+      "M7",
+      "M8",
+      "83",
+      "SV",
+      "89"
+    ],
+    "84": [
+      "DA",
+      "DB",
+      "DC",
+      "DD",
+      "DE",
+      "DG",
+      "DH",
+      "DI",
+      "DJ",
+      "DK",
+      "DL",
+      "DM",
+      "DN",
+      "DP",
+      "DQ",
+      "84"
+    ],
+    "86": [
+      "HA",
+      "HB",
+      "HC",
+      "HD",
+      "HF",
+      "HG",
+      "HH",
+      "HI",
+      "HJ",
+      "HK",
+      "HL",
+      "HM",
+      "HP",
+      "86",
+      "SH"
+    ],
+    "88": [
+      "8A",
+      "8B",
+      "8D",
+      "8E",
+      "8F",
+      "8G",
+      "8H",
+      "8I",
+      "8J",
+      "8K",
+      "88",
+      "S8",
+      "ST"
+    ],
+    "9": [
+      "S9"
+    ],
+    "Amazon - 1": [
+      "90"
+    ],
+    "Amazon - 24": [
+      "93"
+    ],
+    "Amazon - 42": [
+      "94"
+    ],
+    "Amazon - 43": [
+      "96"
+    ],
+    "Amazon - 47": [
+      "97"
+    ],
+    "Amazon - 48": [
+      "95"
+    ],
+    "Amazon - 51": [
+      "91"
+    ],
+    "Amazon - 84": [
+      "92"
+    ],
+    "Canadian Custoemrs": [
+      "89"
+    ],
+    "Delphos Special": [
+      "1O",
+      "1I"
+    ],
+    "Delticom / Simple": [
+      "98"
+    ],
+    "LTL": [
+      "5D",
+      "5F",
+      "5G",
+      "5H",
+      "5J",
+      "5K",
+      "5M",
+      "5P",
+      "5R",
+      "5T",
+      "5W"
+    ],
+    "N/A": [
+      "TQ"
+    ],
+    "Special Marketing- Dave": [
+      "10"
+    ],
+    "UPS": [
+      "19"
+    ],
+    "Walmart- Loc 1": [
+      "9A"
+    ],
+    "Walmart- Loc 42": [
+      "9C"
+    ],
+    "Walmart- Loc 51": [
+      "9B"
+    ],
+    "Walmart- Loc 84": [
+      "9D"
+    ],
+    "ZT": [
+      "TZ"
+    ]
+  }
+}

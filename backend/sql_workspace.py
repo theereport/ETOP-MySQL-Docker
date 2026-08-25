@@ -4,20 +4,24 @@ import csv
 import io
 import json
 import os
-import re
 import sqlite3
 import time
-from contextlib import closing
 from datetime import date, datetime, time as datetime_time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import mysql.connector
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+from core.database import madden_database
+from core.sql_validator import (
+    apply_row_limit,
+    normalize_and_validate_sql,
+)
+from core.test_path_override import resolve_test_path_override
 
 
 load_dotenv()
@@ -25,72 +29,12 @@ load_dotenv()
 router = APIRouter(prefix="/sql", tags=["SQL Workspace"])
 
 BASE_DIR = Path(__file__).resolve().parent
-SQLITE_PATH = BASE_DIR / "sql_workspace.db"
+SQLITE_PATH = resolve_test_path_override(
+    "ETOP_TEST_SQL_WORKSPACE_DB", BASE_DIR / "sql_workspace.db"
+)
 
 DEFAULT_LIMIT = int(os.getenv("SQL_DEFAULT_LIMIT", "500"))
 MAX_LIMIT = int(os.getenv("SQL_MAX_LIMIT", "5000"))
-SQL_TIMEOUT_SECONDS = int(os.getenv("SQL_TIMEOUT_SECONDS", "60"))
-
-ALLOWED_STARTING_KEYWORDS = {
-    "SELECT",
-    "WITH",
-    "SHOW",
-    "DESCRIBE",
-    "DESC",
-    "EXPLAIN",
-}
-
-FORBIDDEN_KEYWORDS = {
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "REPLACE",
-    "MERGE",
-    "UPSERT",
-    "DROP",
-    "ALTER",
-    "TRUNCATE",
-    "CREATE",
-    "RENAME",
-    "GRANT",
-    "REVOKE",
-    "LOCK",
-    "UNLOCK",
-    "CALL",
-    "EXEC",
-    "EXECUTE",
-    "LOAD",
-    "HANDLER",
-    "INTO OUTFILE",
-    "INTO DUMPFILE",
-    "SET PASSWORD",
-    "START TRANSACTION",
-    "BEGIN",
-    "COMMIT",
-    "ROLLBACK",
-    "SAVEPOINT",
-    "RELEASE SAVEPOINT",
-    "KILL",
-    "SHUTDOWN",
-    "INSTALL",
-    "UNINSTALL",
-}
-
-READ_UNCOMMITTED_PREFIX = re.compile(
-    r"""
-    ^\s*
-    SET\s+
-    (?:SESSION\s+)?
-    TRANSACTION\s+
-    ISOLATION\s+
-    LEVEL\s+
-    READ\s+
-    UNCOMMITTED
-    \s*;
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
 
 class ExecuteSqlRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=250_000)
@@ -168,262 +112,6 @@ def initialize_sql_workspace_database() -> None:
 initialize_sql_workspace_database()
 
 
-def get_mysql_config() -> dict[str, Any]:
-    required_values = {
-        "host": os.getenv("MYSQL_HOST"),
-        "database": os.getenv("MYSQL_DATABASE"),
-        "user": os.getenv("MYSQL_USER"),
-        "password": os.getenv("MYSQL_PASSWORD"),
-    }
-
-    missing = [
-        key.upper()
-        for key, value in required_values.items()
-        if value is None or not value.strip()
-    ]
-
-    if missing:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Missing MySQL settings in backend/.env: "
-                + ", ".join(missing)
-            ),
-        )
-
-    return {
-        "host": required_values["host"],
-        "port": int(os.getenv("MYSQL_PORT", "3306")),
-        "database": required_values["database"],
-        "user": required_values["user"],
-        "password": required_values["password"],
-        "connection_timeout": 10,
-        "autocommit": True,
-        "use_pure": True,
-        "charset": "utf8mb4",
-        "collation": "utf8mb4_unicode_ci",
-    }
-
-
-def remove_comments_and_strings(sql: str) -> str:
-    """
-    Removes SQL comments and quoted string contents before security scanning.
-
-    This prevents harmless text such as:
-        SELECT 'delete this text'
-    from being incorrectly blocked.
-    """
-
-    result: list[str] = []
-    index = 0
-    length = len(sql)
-
-    while index < length:
-        character = sql[index]
-
-        if character in {"'", '"', "`"}:
-            quote = character
-            result.append(" ")
-
-            index += 1
-
-            while index < length:
-                current = sql[index]
-
-                if current == "\\":
-                    index += 2
-                    continue
-
-                if current == quote:
-                    if (
-                        index + 1 < length
-                        and sql[index + 1] == quote
-                    ):
-                        index += 2
-                        continue
-
-                    index += 1
-                    break
-
-                index += 1
-
-            continue
-
-        if (
-            character == "-"
-            and index + 1 < length
-            and sql[index + 1] == "-"
-        ):
-            index += 2
-
-            while index < length and sql[index] not in "\r\n":
-                index += 1
-
-            result.append(" ")
-            continue
-
-        if character == "#":
-            index += 1
-
-            while index < length and sql[index] not in "\r\n":
-                index += 1
-
-            result.append(" ")
-            continue
-
-        if (
-            character == "/"
-            and index + 1 < length
-            and sql[index + 1] == "*"
-        ):
-            end_position = sql.find("*/", index + 2)
-
-            if end_position == -1:
-                raise HTTPException(
-                    status_code=400,
-                    detail="The SQL contains an unclosed block comment.",
-                )
-
-            index = end_position + 2
-            result.append(" ")
-            continue
-
-        result.append(character)
-        index += 1
-
-    return "".join(result)
-
-
-def count_sql_statements(sql: str) -> int:
-    sanitized = remove_comments_and_strings(sql)
-    statements = [
-        statement.strip()
-        for statement in sanitized.split(";")
-        if statement.strip()
-    ]
-
-    return len(statements)
-
-
-def normalize_and_validate_sql(raw_sql: str) -> str:
-    sql = raw_sql.strip()
-
-    if not sql:
-        raise HTTPException(
-            status_code=400,
-            detail="Enter a SQL query before running it.",
-        )
-
-    # Many of the user's existing Workbench queries start with this exact
-    # read-uncommitted statement. The backend removes it and controls the
-    # database session itself.
-    sql = READ_UNCOMMITTED_PREFIX.sub("", sql, count=1).strip()
-
-    if not sql:
-        raise HTTPException(
-            status_code=400,
-            detail="No executable SELECT query was found.",
-        )
-
-    statement_count = count_sql_statements(sql)
-
-    if statement_count > 1:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Only one SQL statement can be executed at a time. "
-                "Remove any additional statements."
-            ),
-        )
-
-    sql = sql.rstrip().rstrip(";").strip()
-
-    sanitized = remove_comments_and_strings(sql)
-    normalized = re.sub(r"\s+", " ", sanitized).strip().upper()
-
-    first_keyword_match = re.match(r"^([A-Z]+)", normalized)
-
-    if not first_keyword_match:
-        raise HTTPException(
-            status_code=400,
-            detail="The SQL statement could not be identified.",
-        )
-
-    first_keyword = first_keyword_match.group(1)
-
-    if first_keyword not in ALLOWED_STARTING_KEYWORDS:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"SQL statements beginning with {first_keyword} are blocked. "
-                "Only read-only SELECT, WITH, SHOW, DESCRIBE, DESC, "
-                "and EXPLAIN statements are allowed."
-            ),
-        )
-
-    for forbidden_keyword in FORBIDDEN_KEYWORDS:
-        keyword_pattern = (
-            r"\b"
-            + re.escape(forbidden_keyword).replace(r"\ ", r"\s+")
-            + r"\b"
-        )
-
-        if re.search(keyword_pattern, normalized):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"The statement contains blocked SQL command: "
-                    f"{forbidden_keyword}."
-                ),
-            )
-
-    if re.search(r"\bINTO\s+(OUTFILE|DUMPFILE)\b", normalized):
-        raise HTTPException(
-            status_code=400,
-            detail="File-writing SQL commands are blocked.",
-        )
-
-    return sql
-
-
-def apply_row_limit(sql: str, requested_limit: int) -> str:
-    """
-    Adds a LIMIT to SELECT and WITH queries when one is not already present.
-
-    SHOW, DESCRIBE, and EXPLAIN are not modified.
-    """
-
-    sanitized = remove_comments_and_strings(sql)
-    normalized = re.sub(r"\s+", " ", sanitized).strip().upper()
-
-    if not normalized.startswith(("SELECT", "WITH")):
-        return sql
-
-    if re.search(r"\bLIMIT\s+\d+", normalized):
-        return sql
-
-    return f"{sql}\nLIMIT {requested_limit}"
-
-
-def serialize_value(value: Any) -> Any:
-    if value is None:
-        return None
-
-    if isinstance(value, Decimal):
-        return float(value)
-
-    if isinstance(value, (datetime, date, datetime_time)):
-        return value.isoformat()
-
-    if isinstance(value, bytes):
-        try:
-            return value.decode("utf-8")
-        except UnicodeDecodeError:
-            return value.hex()
-
-    return value
-
-
 def record_history(
     sql_text: str,
     success: bool,
@@ -457,53 +145,22 @@ def record_history(
         connection.commit()
 
 
+
 def execute_mysql_query(
     validated_sql: str,
     row_limit: int,
 ) -> dict[str, Any]:
+    """
+    Executes validated read-only SQL through the shared MaddenDatabase
+    service and records the result in local query history.
+    """
+
     limited_sql = apply_row_limit(validated_sql, row_limit)
     started_at = time.perf_counter()
 
-    connection = None
-    cursor = None
-
     try:
-        connection = mysql.connector.connect(**get_mysql_config())
-
-        cursor = connection.cursor(dictionary=True)
-
-        # Application-level read-only protection in addition to the
-        # database user's read-only permissions.
-        try:
-            cursor.execute(
-                "SET SESSION TRANSACTION READ ONLY"
-            )
-        except mysql.connector.Error:
-            # Some MySQL-compatible servers or account configurations may
-            # not allow this command. The query validator and read-only
-            # database account remain in effect.
-            pass
-
-        try:
-            cursor.execute(
-                f"SET SESSION MAX_EXECUTION_TIME = "
-                f"{SQL_TIMEOUT_SECONDS * 1000}"
-            )
-        except mysql.connector.Error:
-            pass
-
-        cursor.execute(limited_sql)
-        raw_rows = cursor.fetchall()
-
-        columns = list(cursor.column_names or [])
-
-        rows = [
-            {
-                column: serialize_value(row.get(column))
-                for column in columns
-            }
-            for row in raw_rows
-        ]
+        rows = madden_database.fetch_all(limited_sql)
+        columns = list(rows[0].keys()) if rows else []
 
         execution_ms = round(
             (time.perf_counter() - started_at) * 1000,
@@ -530,13 +187,13 @@ def execute_mysql_query(
             "execution_ms": execution_ms,
         }
 
-    except mysql.connector.Error as database_error:
+    except HTTPException as database_error:
         execution_ms = round(
             (time.perf_counter() - started_at) * 1000,
             2,
         )
 
-        error_message = str(database_error)
+        error_message = str(database_error.detail)
 
         record_history(
             sql_text=validated_sql,
@@ -546,63 +203,19 @@ def execute_mysql_query(
             error_message=error_message,
         )
 
-        raise HTTPException(
-            status_code=400,
-            detail=f"MySQL error: {error_message}",
-        ) from database_error
-
-    finally:
-        if cursor is not None:
-            cursor.close()
-
-        if connection is not None and connection.is_connected():
-            connection.close()
-
+        raise
 
 @router.get("/connection")
 def test_sql_connection() -> dict[str, Any]:
-    connection = None
-    cursor = None
+    """Tests the shared MaddenCo database service."""
 
-    try:
-        connection = mysql.connector.connect(**get_mysql_config())
-        cursor = connection.cursor(dictionary=True)
+    details = madden_database.test_connection()
 
-        cursor.execute(
-            """
-            SELECT
-                DATABASE() AS database_name,
-                CURRENT_USER() AS connected_user,
-                @@hostname AS server_name,
-                VERSION() AS server_version
-            """
-        )
-
-        details = cursor.fetchone() or {}
-
-        return {
-            "connected": True,
-            "database": details.get("database_name"),
-            "user": details.get("connected_user"),
-            "server": details.get("server_name"),
-            "version": details.get("server_version"),
-            "default_limit": DEFAULT_LIMIT,
-            "maximum_limit": MAX_LIMIT,
-        }
-
-    except mysql.connector.Error as database_error:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unable to connect to MySQL: {database_error}",
-        ) from database_error
-
-    finally:
-        if cursor is not None:
-            cursor.close()
-
-        if connection is not None and connection.is_connected():
-            connection.close()
-
+    return {
+        **details,
+        "default_limit": DEFAULT_LIMIT,
+        "maximum_limit": MAX_LIMIT,
+    }
 
 @router.post("/validate")
 def validate_sql(request: ExecuteSqlRequest) -> dict[str, Any]:

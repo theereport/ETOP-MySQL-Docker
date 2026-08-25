@@ -1,7 +1,4 @@
-import Editor, {
-  type BeforeMount,
-  type OnMount,
-} from '@monaco-editor/react'
+import type { OnMount } from '@monaco-editor/react'
 
 import {
   useCallback,
@@ -11,8 +8,11 @@ import {
   useState,
 } from 'react'
 
-import DatabaseExplorer from './DatabaseExplorer'
-import './SqlStudio.css'
+import DatabaseExplorer from './sqlstudio/DatabaseExplorer'
+import SqlAiPanel from './sqlstudio/SqlAiPanel'
+import SqlEditor from './sqlstudio/SqlEditor'
+import { getSchemaCatalog } from './sqlstudio/api/sqlApi'
+import './sqlstudio/SqlStudio.css'
 
 type ConnectionStatus = {
   connected: boolean
@@ -64,6 +64,42 @@ type QueryTab = {
   category: string
   description: string
   isDirty: boolean
+}
+
+type SchemaCatalogColumn = {
+  name: string
+  position: number
+  column_type: string
+  nullable: boolean
+  key: string
+  comment: string
+}
+
+type SchemaCatalogObject = {
+  name: string
+  type: 'table' | 'view'
+  comment: string
+  columns: SchemaCatalogColumn[]
+}
+
+type SchemaCatalog = {
+  database: string
+  objects: SchemaCatalogObject[]
+  object_count: number
+  column_count: number
+}
+
+type GeneratedSqlResponse = {
+  success: boolean
+  sql: string
+  explanation: string
+  database: string
+  model: string
+  schema_objects_used: {
+    name: string
+    type: 'table' | 'view'
+    column_count: number
+  }[]
 }
 
 type BottomPanel = 'results' | 'messages' | 'history'
@@ -254,6 +290,12 @@ export default function SqlWorkspace() {
 
   const [aiResponse, setAiResponse] = useState('')
 
+  const [schemaCatalog, setSchemaCatalog] =
+    useState<SchemaCatalog | null>(null)
+
+  const [isLoadingSchema, setIsLoadingSchema] =
+    useState(false)
+
   const editorRef =
     useRef<Parameters<OnMount>[0] | null>(null)
 
@@ -379,11 +421,36 @@ export default function SqlWorkspace() {
     }
   }, [])
 
+  const loadSchemaCatalog = useCallback(async () => {
+    setIsLoadingSchema(true)
+
+    try {
+      const catalog = await getSchemaCatalog()
+      setSchemaCatalog(catalog)
+    } catch (requestError) {
+      setSchemaCatalog(null)
+
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Unable to load the schema catalog.',
+      )
+    } finally {
+      setIsLoadingSchema(false)
+    }
+  }, [])
+
   useEffect(() => {
     void loadConnection()
     void loadSavedQueries()
     void loadHistory()
-  }, [loadConnection, loadHistory, loadSavedQueries])
+    void loadSchemaCatalog()
+  }, [
+    loadConnection,
+    loadHistory,
+    loadSavedQueries,
+    loadSchemaCatalog,
+  ])
 
   useEffect(() => {
     localStorage.setItem(
@@ -399,84 +466,10 @@ export default function SqlWorkspace() {
     )
   }, [activeTabId])
 
-  function handleEditorBeforeMount(
-    monaco: Parameters<BeforeMount>[0],
-  ) {
-    monaco.editor.defineTheme('enterprise-sql-dark', {
-      base: 'vs-dark',
-      inherit: true,
-      rules: [
-        {
-          token: 'keyword.sql',
-          foreground: '8B80FF',
-          fontStyle: 'bold',
-        },
-        {
-          token: 'string.sql',
-          foreground: '9ED6A5',
-        },
-        {
-          token: 'number.sql',
-          foreground: 'F1C77A',
-        },
-        {
-          token: 'comment.sql',
-          foreground: '65758B',
-          fontStyle: 'italic',
-        },
-        {
-          token: 'operator.sql',
-          foreground: 'A8B8CB',
-        },
-      ],
-      colors: {
-        'editor.background': '#080E18',
-        'editor.foreground': '#D9E4F2',
-        'editorLineNumber.foreground': '#4D5B70',
-        'editorLineNumber.activeForeground': '#A6B3C4',
-        'editorCursor.foreground': '#8B80FF',
-        'editor.selectionBackground': '#3D356F88',
-        'editor.inactiveSelectionBackground': '#302B5066',
-        'editor.lineHighlightBackground': '#101827',
-        'editorIndentGuide.background1': '#1E2A3C',
-        'editorIndentGuide.activeBackground1': '#394A63',
-        'editorWidget.background': '#111A29',
-        'editorWidget.border': '#263349',
-        'editorSuggestWidget.background': '#111A29',
-        'editorSuggestWidget.border': '#263349',
-        'editorSuggestWidget.selectedBackground': '#27334A',
-        'input.background': '#0D1522',
-        'input.border': '#263349',
-      },
-    })
-  }
-
-  function handleEditorMount(
+  function handleEditorReady(
     editor: Parameters<OnMount>[0],
-    monaco: Parameters<OnMount>[1],
   ) {
     editorRef.current = editor
-
-    editor.addAction({
-      id: 'run-sql-query',
-      label: 'Run SQL Query',
-      keybindings: [
-        monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
-        monaco.KeyCode.F5,
-      ],
-      run: () => executeQueryRef.current(),
-    })
-
-    editor.addAction({
-      id: 'save-sql-query',
-      label: 'Save SQL Query',
-      keybindings: [
-        monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-      ],
-      run: () => saveQueryRef.current(),
-    })
-
-    editor.focus()
   }
 
   function updateSql(nextSql: string | undefined) {
@@ -1116,6 +1109,46 @@ LIMIT 100;`
     )
   }
 
+  function openGeneratedSql(
+    response: GeneratedSqlResponse,
+  ) {
+    const nextNumber = tabs.length + 1
+
+    const generatedTab: QueryTab = {
+      id: crypto.randomUUID(),
+      title: `AI Query ${nextNumber}`,
+      sql: response.sql,
+      savedQueryId: null,
+      category: 'AI Generated',
+      description:
+        response.explanation ||
+        `Generated locally with ${response.model}.`,
+      isDirty: true,
+    }
+
+    setTabs((currentTabs) => [
+      ...currentTabs,
+      generatedTab,
+    ])
+
+    setActiveTabId(generatedTab.id)
+    setResult(null)
+    setActiveBottomPanel('messages')
+
+    setExecutionMessage(
+      [
+        `Generated read-only SQL with ${response.model}.`,
+        `${response.schema_objects_used.length} schema objects were supplied to the model.`,
+        response.explanation ||
+          'Review the generated SQL before running it.',
+      ].join('\n\n'),
+    )
+
+    setNotice(
+      'AI-generated SQL opened in a new query tab.',
+    )
+  }
+
   executeQueryRef.current = executeQuery
   saveQueryRef.current = saveQuery
 
@@ -1238,6 +1271,10 @@ LIMIT 100;`
         <aside className="sql-studio-left-panel">
           <div className="sql-studio-panel-title">
             <strong>Explorer</strong>
+
+            {isLoadingSchema && (
+              <span>Loading schema…</span>
+            )}
           </div>
 
           <div className="sql-studio-side-tabs four-tabs">
@@ -1432,40 +1469,37 @@ LIMIT 100;`
 
           {activeSidePanel === 'ai' && (
             <div className="sql-studio-side-content sql-studio-ai">
-              <strong>
-                Local SQL Assistant
-              </strong>
+              <SqlAiPanel
+                currentSql={activeTab.sql}
+                schemaCatalog={schemaCatalog}
+                onGenerated={openGeneratedSql}
+                onError={(message) => setError(message)}
+              />
 
-              <p>
-                Analyze the active SQL tab using
-                Gemma running locally.
-              </p>
+              <div className="sql-ai-existing-query">
+                <strong>Explain Active Query</strong>
 
-              <button
-                type="button"
-                onClick={() =>
-                  void explainSql()
-                }
-                disabled={isExplaining}
-              >
-                {isExplaining
-                  ? 'Analyzing SQL…'
-                  : 'Explain Active Query'}
-              </button>
+                <p>
+                  Analyze the SQL currently open in the editor
+                  using Gemma running locally.
+                </p>
 
-              {aiResponse && (
-                <div className="sql-studio-ai-response">
-                  {aiResponse}
-                </div>
-              )}
+                <button
+                  type="button"
+                  onClick={() => void explainSql()}
+                  disabled={isExplaining}
+                >
+                  {isExplaining
+                    ? 'Analyzing SQL…'
+                    : 'Explain Active Query'}
+                </button>
 
-              {!aiResponse &&
-                !isExplaining && (
-                  <p className="sql-studio-empty">
-                    AI analysis will appear
-                    here.
-                  </p>
+                {aiResponse && (
+                  <div className="sql-studio-ai-response">
+                    {aiResponse}
+                  </div>
                 )}
+              </div>
             </div>
           )}
         </aside>
@@ -1595,62 +1629,14 @@ LIMIT 100;`
             </button>
           </div>
 
-          <div className="sql-monaco-editor">
-            <Editor
-              height="100%"
-              language="sql"
-              theme="enterprise-sql-dark"
-              value={activeTab.sql}
-              beforeMount={
-                handleEditorBeforeMount
-              }
-              onMount={handleEditorMount}
-              onChange={updateSql}
-              path={`${activeTab.id}.sql`}
-              options={{
-                automaticLayout: true,
-                minimap: {
-                  enabled: true,
-                  side: 'right',
-                  showSlider: 'mouseover',
-                },
-                fontFamily:
-                  'Consolas, "Cascadia Code", "Courier New", monospace',
-                fontSize: 13,
-                lineHeight: 21,
-                lineNumbers: 'on',
-                glyphMargin: true,
-                folding: true,
-                foldingHighlight: true,
-                bracketPairColorization: {
-                  enabled: true,
-                },
-                guides: {
-                  bracketPairs: true,
-                  indentation: true,
-                },
-                renderLineHighlight: 'all',
-                scrollBeyondLastLine: false,
-                wordWrap: 'off',
-                tabSize: 4,
-                insertSpaces: true,
-                formatOnPaste: false,
-                formatOnType: false,
-                suggestOnTriggerCharacters: true,
-                quickSuggestions: {
-                  other: true,
-                  comments: false,
-                  strings: false,
-                },
-                cursorBlinking: 'smooth',
-                smoothScrolling: true,
-                padding: {
-                  top: 12,
-                  bottom: 12,
-                },
-              }}
-            />
-          </div>
+          <SqlEditor
+            activeTab={activeTab}
+            schemaCatalog={schemaCatalog}
+            onChange={updateSql}
+            onRun={executeQuery}
+            onSave={saveQuery}
+            onEditorReady={handleEditorReady}
+          />
 
           <div className="sql-bottom-panel">
             <div className="sql-bottom-tabs">

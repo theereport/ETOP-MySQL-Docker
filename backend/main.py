@@ -1,13 +1,69 @@
 import subprocess
 import sys
 import threading
-from datetime import datetime
+import os
+from contextlib import asynccontextmanager
+from datetime import date, datetime
 import json
 import math
 import sqlite3
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
+from data.database import initialize_database
+from core.database import madden_database
+from core.health import router as platform_health_router
+from core.module_registry import module_registry
+from modules.document_intelligence.integrations.receivables_repository import (
+    ReceivablesRepository,
+)
+from modules.document_intelligence.integrations.history_repository import (
+    HistoryRepository,
+)
+from modules.document_intelligence.cash_application.existing_provider import (
+    ExistingCashApplicationProvider,
+)
+from modules.document_intelligence.cash_application.router import (
+    configure_cash_application_data_provider,
+)
+from modules.document_intelligence.lockbox_preparation.active_provider import (
+    ExistingReadOnlyPreparationProvider,
+)
+from modules.document_intelligence.lockbox_preparation.coordinator import (
+    DurableLockboxPreparationCoordinator,
+)
+from modules.document_intelligence.lockbox_preparation.repository import (
+    LockboxPreparationRepository,
+)
+from modules.document_intelligence.lockbox_preparation.router import (
+    configure_durable_lockbox_preparation,
+)
+from modules.document_intelligence.lockbox_preparation.service import (
+    DurableLockboxPreparationService,
+)
+from modules.document_intelligence.lockbox_review.service import (
+    configure_current_open_ar_loader,
+    configure_governed_preparation_loader,
+)
+from modules.document_intelligence.lockbox_preparation.contracts import (
+    dataclass_payload,
+)
+from modules.document_intelligence.lockbox_preparation.source_loader import (
+    SavedLockboxSourceLoader,
+)
 
+from decimal import Decimal
+from modules.document_intelligence.services import (
+    AIExplainer,
+    HistoricalBehaviorEngine,
+    InvoiceMatcher,
+    RecommendationEngine,
+)
+
+from modules.workflow_foundation.access_control import ModuleAccessMiddleware
+from modules.automations.scheduler import automation_scheduler
+from customer_match import router as customer_match_router
+from customer_risk import router as customer_risk_router
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -15,6 +71,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sql_workspace import router as sql_workspace_router
 from schema_explorer import router as schema_explorer_router
+from sql_ai import router as sql_ai_router
 
 # ---------------------------------------------------------
 # Local-only configuration
@@ -57,24 +114,129 @@ index_job_lock = threading.Lock()
 # FastAPI application
 # ---------------------------------------------------------
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    automation_scheduler.start()
+    lockbox_preparation_coordinator.resume_recovered()
+
+    try:
+        yield
+    finally:
+        automation_scheduler.stop()
+
+
 app = FastAPI(
     title="Enterprise AI Workbench API",
     version="0.2.0",
+    lifespan=lifespan,
 )
 
+initialize_database()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+app.add_middleware(ModuleAccessMiddleware)
+configured_app_url = os.getenv("ETOP_APP_URL")
+if configured_app_url:
+    parsed_app_url = urlsplit(configured_app_url)
+    if parsed_app_url.scheme not in {"http", "https"} or not parsed_app_url.netloc:
+        raise RuntimeError("ETOP_APP_URL must be a valid http(s) application URL.")
+    cors_origins = [f"{parsed_app_url.scheme}://{parsed_app_url.netloc}"]
+else:
+    cors_origins = [
         "http://127.0.0.1:5173",
         "http://localhost:5173",
-    ],
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    ]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 app.include_router(sql_workspace_router)
 app.include_router(schema_explorer_router)
+app.include_router(sql_ai_router)
+app.include_router(platform_health_router)
+app.include_router(customer_match_router)
+app.include_router(customer_risk_router)
+
+# Every business module is registered the same way, through the manifest-
+# based ModuleRegistry: a broken module's import/router-mount failure is
+# captured as a "failed" module status instead of taking down every other
+# module and the platform itself (see ADR-005 in Architecture Decisions.md).
+for module_path in (
+    "modules.document_intelligence",
+    "modules.reports",
+    "modules.customer_360",
+    "modules.credit_risk",
+    "modules.accounts_payable",
+    "modules.payment_notes",
+    "modules.workflow_foundation",
+    "modules.financial_close",
+    "modules.erp_evidence",
+    "modules.automations",
+    "modules.platform_search",
+    "modules.vendor_intelligence",
+    "modules.ar_collections",
+    "modules.freight_logistics",
+    "modules.inventory_purchasing",
+    "modules.tax_compliance",
+    "modules.sales_order_visibility",
+    "modules.pricing_contracts",
+    "modules.general_ledger",
+):
+    module_registry.register(app, module_path)
+
+receivables_repository = ReceivablesRepository(
+    database=madden_database,
+)
+
+cash_application_provider = ExistingCashApplicationProvider(
+    receivables_repository=receivables_repository,
+)
+
+configure_cash_application_data_provider(
+    cash_application_provider
+)
+
+lockbox_preparation_repository = LockboxPreparationRepository()
+lockbox_preparation_provider = ExistingReadOnlyPreparationProvider(
+    receivables_repository=receivables_repository,
+)
+lockbox_preparation_coordinator = DurableLockboxPreparationCoordinator(
+    repository=lockbox_preparation_repository,
+    provider=lockbox_preparation_provider,
+)
+lockbox_preparation_service = DurableLockboxPreparationService(
+    coordinator=lockbox_preparation_coordinator,
+    source_loader=SavedLockboxSourceLoader(),
+)
+configure_durable_lockbox_preparation(
+    lockbox_preparation_service
+)
+configure_governed_preparation_loader(
+    lambda source_job_id: lockbox_preparation_service.current_source_job(
+        source_job_id,
+        include_transactions=True,
+    )
+)
+configure_current_open_ar_loader(
+    lambda customer_number, as_of_date: dataclass_payload(
+        lockbox_preparation_provider.load_open_ar(
+            customer_number,
+            as_of_date,
+        )
+    )
+)
+
+invoice_matcher = InvoiceMatcher()
+
+history_repository = HistoryRepository(
+    database=madden_database,
+)
+
+historical_behavior_engine = HistoricalBehaviorEngine()
+recommendation_engine = RecommendationEngine()
+ai_explainer = AIExplainer()
 
 # ---------------------------------------------------------
 # Request and response models
@@ -491,15 +653,142 @@ def run_full_index() -> None:
 # API endpoints
 # ---------------------------------------------------------
 
+@app.get("/api/test/open-invoices/{customer_number}")
+def test_open_invoices(
+    customer_number: str,
+    aging_as_of_date: date | None = None,
+) -> dict:
+    effective_aging_date = aging_as_of_date or date.today()
+
+    invoices = receivables_repository.get_open_invoices(
+        customer_number=customer_number,
+        aging_as_of_date=effective_aging_date,
+    )
+
+    return {
+        "customer_number": customer_number,
+        "aging_as_of_date": effective_aging_date,
+        "invoice_count": len(invoices),
+        "invoices": [
+            invoice.model_dump()
+            for invoice in invoices
+        ],
+    }
+
+@app.get("/api/test/invoice-match/{customer_number}")
+def test_invoice_match(
+    customer_number: str,
+    payment_amount: Decimal,
+    invoice_number: str | None = None,
+    aging_as_of_date: date | None = None,
+) -> dict:
+    effective_aging_date = (
+        aging_as_of_date or date.today()
+    )
+
+    invoices = receivables_repository.get_open_invoices(
+        customer_number=customer_number,
+        aging_as_of_date=effective_aging_date,
+    )
+
+    supplied_invoice_numbers = (
+        [invoice_number]
+        if invoice_number
+        else []
+    )
+
+    result = invoice_matcher.match(
+        customer_number=customer_number,
+        payment_amount=payment_amount,
+        open_invoices=invoices,
+        supplied_invoice_numbers=(
+            supplied_invoice_numbers
+        ),
+    )
+
+    return result.model_dump()
+
+
+@app.get("/api/test/cash-application-recommendation/{customer_number}")
+def test_cash_application_recommendation(
+    customer_number: str,
+    payment_amount: Decimal,
+    invoice_number: str | None = None,
+    aging_as_of_date: date | None = None,
+    include_history: bool = True,
+) -> dict:
+    effective_aging_date = (
+        aging_as_of_date or date.today()
+    )
+
+    invoices = receivables_repository.get_open_invoices(
+        customer_number=customer_number,
+        aging_as_of_date=effective_aging_date,
+    )
+
+    historical_behavior = None
+
+    if include_history:
+        payment_groups = (
+            history_repository.get_historical_payment_groups(
+            customer_number=customer_number,
+            limit=500,
+            )
+        )
+
+        historical_behavior = historical_behavior_engine.analyze(
+            customer_number=customer_number,
+            payment_groups=payment_groups,
+        )    
+
+    recommendation = recommendation_engine.recommend(
+        customer_number=customer_number,
+        payment_amount=payment_amount,
+        open_invoices=invoices,
+        supplied_invoice_numbers=(
+            [invoice_number]
+            if invoice_number
+            else []
+        ),
+        historical_behavior=historical_behavior,
+    )
+
+    return {
+        "recommendation": recommendation.model_dump(),
+        "explanation": ai_explainer.explain(
+            recommendation
+        ),
+    }
+
+
 @app.get("/health")
 def health() -> dict:
+    """Return launcher-safe local runtime readiness.
+
+    This endpoint intentionally exposes only coarse readiness facts. Protected
+    module, SQL, and knowledge endpoints remain authenticated.
+    """
+
+    knowledge_ready = DATABASE_PATH.exists()
+
+    try:
+        madden_status = madden_database.test_connection()
+        madden_database_ready = bool(madden_status.get("connected"))
+    except Exception:
+        # Health must report dependency readiness without exposing database
+        # connection details or turning a dependency outage into a 5xx.
+        madden_database_ready = False
+
     return {
         "status": "healthy",
         "backend": "local",
+        "backend_ready": True,
+        "madden_database_ready": madden_database_ready,
+        "knowledge_database_exists": knowledge_ready,
+        "knowledge_ready": knowledge_ready,
         "ollama": OLLAMA_BASE_URL,
         "chat_model": CHAT_MODEL,
         "embedding_model": EMBEDDING_MODEL,
-        "knowledge_database_exists": DATABASE_PATH.exists(),
         "knowledge_database": str(DATABASE_PATH),
     }
 
@@ -731,3 +1020,43 @@ references such as [Source 1].
         sources=sources,
         search_mode="local_sop_search",
     )
+
+class CustomerIntelligenceSummaryRequest(BaseModel):
+    customer: dict
+    health: dict
+    recommendations: list[dict]
+
+
+@app.post("/api/v1/customer-intelligence/summary")
+def generate_customer_intelligence_summary(payload: CustomerIntelligenceSummaryRequest):
+    """Generate a local, grounded customer summary. Calculations stay deterministic in ETOP."""
+    prompt = f"""You are an enterprise credit and customer analyst.
+Use only the JSON provided. Do not invent facts or numbers.
+Write a concise executive account summary under 160 words.
+Explain the health score, the strongest positive signal, the largest risk, and the recommended next action.
+
+DATA:
+{json.dumps(payload.model_dump(), default=str)}
+"""
+    try:
+        response = requests.post(
+            OLLAMA_CHAT_URL,
+            json={
+                "model": CHAT_MODEL,
+                "stream": False,
+                "messages": [{"role": "user", "content": prompt}],
+                "options": {"temperature": 0.1},
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        content = response.json().get("message", {}).get("content", "").strip()
+        if not content:
+            raise ValueError("Ollama returned an empty summary.")
+        return {
+            "summary": content,
+            "model": CHAT_MODEL,
+            "generated_at": datetime.now().isoformat(),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Local AI summary unavailable: {exc}") from exc

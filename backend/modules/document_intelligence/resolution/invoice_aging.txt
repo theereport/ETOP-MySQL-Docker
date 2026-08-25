@@ -1,0 +1,46 @@
+from __future__ import annotations
+
+from datetime import date
+
+
+class InvoiceAgingCalculator:
+    def __init__(
+        self,
+        current_days: int = 0,
+        past_due_30_days: int = 30,
+        past_due_60_days: int = 60,
+        past_due_90_days: int = 90,
+    ):
+        self.current_days = current_days
+        self.past_due_30_days = past_due_30_days
+        self.past_due_60_days = past_due_60_days
+        self.past_due_90_days = past_due_90_days
+
+    def get_bucket(
+        self,
+        due_date: date | None,
+        aging_as_of_date: date,
+    ) -> str:
+        if due_date is None:
+            return "UNKNOWN"
+
+        days_past_due = (
+            aging_as_of_date - due_date
+        ).days
+
+        if days_past_due < 0:
+            return "FUTURE DUE"
+
+        if days_past_due <= self.current_days:
+            return "CURRENT DUE"
+
+        if days_past_due <= self.past_due_30_days:
+            return "PAST DUE 30"
+
+        if days_past_due <= self.past_due_60_days:
+            return "PAST DUE 60"
+
+        if days_past_due <= self.past_due_90_days:
+            return "PAST DUE 90"
+
+        return "PAST DUE 120"
