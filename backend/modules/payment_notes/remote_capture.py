@@ -162,6 +162,7 @@ class ParsedRemoteCapture:
     source_row_count: int
     rows: tuple[ParsedBankRow, ...]
     quarantined_rows: tuple[QuarantinedBankRow, ...]
+    omitted_row_count: int
     deposits: tuple[DepositBalance, ...]
 
 
@@ -188,6 +189,19 @@ def _create_business_date(raw_value: str) -> str:
     raise ValueError("createDate is not in the supported bank timestamp format.")
 
 
+# Bank remote-capture store numbers that do not match this platform's
+# canonical store/location numbering. Confirmed by the business owner:
+# the bank reports Detroit as store "05", but the canonical store number
+# used elsewhere in ETOP (route references, etc.) is "4" / "L4".
+_LOCATION_NUMBER_OVERRIDES: dict[str, tuple[str, str]] = {
+    "5": ("4", "L4"),
+}
+
+# Store number "00"/"0" is an administrative (Corporate) posting, not a
+# real store deposit - rows for it are omitted entirely, not quarantined.
+_EXCLUDED_STORE_NUMBERS = frozenset({"0"})
+
+
 def _location(raw_value: str) -> tuple[str, str, str]:
     text = raw_value.strip()
     match = re.fullmatch(r"\s*([0-9]+)\s*-\s*(.+?)\s*", text)
@@ -198,8 +212,11 @@ def _location(raw_value: str) -> tuple[str, str, str]:
     store = normalize_store(raw_store)
     if not store or not name:
         raise ValueError("location has no usable store number or name.")
-    display_store = str(int(raw_store)).zfill(2)
-    return store, f"L{display_store}", name
+    if store in _LOCATION_NUMBER_OVERRIDES:
+        store, location_key = _LOCATION_NUMBER_OVERRIDES[store]
+    else:
+        location_key = f"L{str(int(raw_store)).zfill(2)}"
+    return store, location_key, name
 
 
 def _normalized_account_name(value: str) -> str:
@@ -291,6 +308,7 @@ def parse_remote_capture(content: bytes, source_name: str) -> ParsedRemoteCaptur
 
     parsed_rows: list[ParsedBankRow] = []
     quarantined: list[QuarantinedBankRow] = []
+    omitted_row_count = 0
     source_row_count = 0
     for row_number, values in enumerate(reader, start=2):
         if not any(value.strip() for value in values):
@@ -325,6 +343,11 @@ def parse_remote_capture(content: bytes, source_name: str) -> ParsedRemoteCaptur
         except ValueError:
             reason_codes.append("LOCATION_FORMAT_INVALID")
             store, location_key, location_name = "", "", ""
+        if store in _EXCLUDED_STORE_NUMBERS:
+            # Administrative/Corporate rows are not a real store deposit -
+            # omitted entirely rather than quarantined or reconciled.
+            omitted_row_count += 1
+            continue
         try:
             create_date = _create_business_date(raw["createDate"])
         except ValueError:
@@ -380,7 +403,7 @@ def parse_remote_capture(content: bytes, source_name: str) -> ParsedRemoteCaptur
                 warnings=tuple(row_warnings),
             )
         )
-    if not parsed_rows and not quarantined:
+    if not parsed_rows and not quarantined and not omitted_row_count:
         raise RemoteCaptureError("Remote-capture CSV has no data rows.")
 
     grouped: dict[str, list[ParsedBankRow]] = {}
@@ -457,6 +480,7 @@ def parse_remote_capture(content: bytes, source_name: str) -> ParsedRemoteCaptur
         source_row_count=source_row_count,
         rows=tuple(parsed_rows),
         quarantined_rows=tuple(quarantined),
+        omitted_row_count=omitted_row_count,
         deposits=tuple(deposits),
     )
 

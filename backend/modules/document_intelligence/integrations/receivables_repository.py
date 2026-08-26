@@ -44,9 +44,10 @@ class ReceivablesRepository:
             TARONUMCNT
     """
 
-    def __init__(self, database):
+    def __init__(self, database, *, invoice_owner_cache=None):
         self.database = database
         self.aging_calculator = InvoiceAgingCalculator()
+        self._invoice_owner_cache = invoice_owner_cache
 
     def get_open_invoices(
         self,
@@ -160,6 +161,12 @@ class ReceivablesRepository:
         owners: dict[str, set[str]] = {
             invoice: set() for invoice in normalized
         }
+
+        if self._invoice_owner_cache is not None:
+            cached = self._invoice_owner_cache.get_owners(normalized)
+            if cached is not None:
+                return cached
+
         for start in range(
             0,
             len(normalized),
@@ -176,11 +183,10 @@ class ReceivablesRepository:
                     CAST(TARONUMCST AS CHAR) AS customer_number
                 FROM TMAROP
                 WHERE TAROAMTOPN <> 0
-                  AND TRIM(LEADING '0' FROM CAST(TARONUMINV AS CHAR))
-                      IN ({placeholders})
+                  AND TARONUMINV IN ({placeholders})
                 LIMIT {self.CURRENT_INVOICE_OWNER_ROW_LIMIT}
                 """,
-                tuple(chunk),
+                tuple(int(invoice) for invoice in chunk),
             )
             if len(rows) >= self.CURRENT_INVOICE_OWNER_ROW_LIMIT:
                 raise RuntimeError(

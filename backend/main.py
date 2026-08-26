@@ -17,6 +17,10 @@ from core.module_registry import module_registry
 from modules.document_intelligence.integrations.receivables_repository import (
     ReceivablesRepository,
 )
+from modules.document_intelligence.integrations.invoice_owner_cache import (
+    invoice_owner_cache_repository,
+    refresh_invoice_owner_cache,
+)
 from modules.document_intelligence.integrations.history_repository import (
     HistoryRepository,
 )
@@ -183,11 +187,13 @@ for module_path in (
     "modules.sales_order_visibility",
     "modules.pricing_contracts",
     "modules.general_ledger",
+    "modules.cash_flow_forecasting",
 ):
     module_registry.register(app, module_path)
 
 receivables_repository = ReceivablesRepository(
     database=madden_database,
+    invoice_owner_cache=invoice_owner_cache_repository,
 )
 
 cash_application_provider = ExistingCashApplicationProvider(

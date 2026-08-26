@@ -25,6 +25,9 @@ dist-ssr
 .env
 backend/.env
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 __pycache__/
 .pytest_cache/
 .venv/
@@ -45,3 +48,4 @@ backend/data/modules/
 backend/data/automation_outputs/
 backend/modules/document_intelligence/lockbox_exports/
 backend/modules/document_intelligence/lockbox_results/
+backend/modules/document_intelligence/lockbox_review/exports/

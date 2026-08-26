@@ -319,6 +319,21 @@ class PncLockboxParserTest(unittest.TestCase):
                     [expected],
                 )
 
+    def test_check_for_line_accepts_memo_label(self) -> None:
+        examples = {
+            "Memo 331002": "331002",
+            "MEMO Tire Sales Acct# 726882": "726882",
+            "Memo: 180645": "180645",
+        }
+
+        for text, expected in examples.items():
+            with self.subTest(text=text):
+                matches = check_for_customer_directives(text)
+                self.assertEqual(
+                    [item["customer_number"] for item in matches],
+                    [expected],
+                )
+
     def test_check_for_line_rejects_out_of_range_digit_counts(self) -> None:
         for text in (
             "For 33100",  # five digits

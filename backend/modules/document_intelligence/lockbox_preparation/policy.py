@@ -646,6 +646,50 @@ def assess_remittance_reconciliation(
     }
 
 
+def find_unique_due_date_bucket_match(
+    *,
+    check_amount: Decimal | str | int | float,
+    open_invoices: Iterable[OpenInvoice],
+) -> tuple[tuple[date, ...], tuple[EffectiveInvoice, ...]] | None:
+    """Return a single due-date bucket, or a unique combination of complete
+    due-date buckets, that exactly matches ``check_amount`` for one
+    candidate customer's current open AR - or None.
+
+    Used as an identity tie-breaker: when no other evidence (phone,
+    invoice ownership, payer-supplied number) can select a customer on its
+    own, an exact dollar match against a candidate's own current open
+    due-date buckets is itself strong, independent evidence that the
+    candidate is correct. If more than one single bucket independently
+    matches, that is a genuine ambiguity and this returns None rather than
+    guessing.
+    """
+
+    amount = money(check_amount)
+    effective = tuple(
+        effective_invoice(invoice) for invoice in open_invoices
+    )
+    eligible = _eligible_open_items(effective)
+
+    due_date_groups: dict[date, list[EffectiveInvoice]] = defaultdict(list)
+    for invoice in eligible:
+        if invoice.due_date is not None:
+            due_date_groups[invoice.due_date].append(invoice)
+
+    matching_groups = [
+        (due_date, tuple(invoices))
+        for due_date, invoices in due_date_groups.items()
+        if invoices
+        and abs(_invoice_total(invoices) - amount) <= AMOUNT_TOLERANCE
+    ]
+    if len(matching_groups) == 1:
+        due_date, invoices = matching_groups[0]
+        return (due_date,), invoices
+    if len(matching_groups) > 1:
+        return None
+
+    return _unique_complete_due_date_group_combination(eligible, amount)
+
+
 def recommend_allocation(
     *,
     check_amount: Decimal | str | int | float,
@@ -936,23 +980,23 @@ def recommend_allocation(
                 reason=reason,
             )
 
-        # A payer statement may enumerate a broader set of currently open
-        # invoices than the invoices intended for this check.  When those
-        # admitted rows overstate the payment, a unique exact combination of
-        # complete ERP due-date groups is stronger allocation evidence than
-        # the over-inclusive draft.  A unique match may be one complete group
-        # or a combination of groups. Every signed item in each selected group
-        # is included; partial groups and ambiguous combinations remain in
-        # review.
+        # None of the remittance-residual completion methods above found a
+        # clean, unique answer (the residual heuristics require agreement
+        # with the ORIGINAL remittance-derived invoice numbers, which may be
+        # incomplete or partially garbled). Before giving up into review,
+        # check whether a clean combination of complete ERP due-date groups
+        # exactly matches the check amount for the already-confirmed
+        # customer - this covers over-inclusive or partially-misread
+        # remittance drafts where the underlying due-date/aging evidence is
+        # still unambiguous. Unlike the residual methods above, this does
+        # not depend on the remittance-derived invoice numbers being
+        # complete or correct.
         eligible_customers = {
             invoice.customer_number for invoice in eligible
         }
         due_date_combination = (
             _unique_complete_due_date_group_combination(eligible, amount)
-            if (
-                len(remittance_customers) == 1
-                and eligible_customers == remittance_customers
-            )
+            if len(eligible_customers) <= 1
             else None
         )
         if due_date_combination is not None:
@@ -962,10 +1006,10 @@ def recommend_allocation(
                 for value in due_dates
             )
             reason = (
-                "The remittance list is broader than the payment, but one "
-                f"unique combination of {len(due_dates)} complete signed "
-                "current ERP due-date groups exactly matches the check: "
-                f"{due_date_text}."
+                "The remittance list did not exactly complete the check, "
+                f"but one unique combination of {len(due_dates)} complete "
+                "signed current ERP due-date groups exactly matches the "
+                f"check: {due_date_text}."
             )
             return _recommendation(
                 check_amount=amount,
@@ -1092,6 +1136,38 @@ def recommend_allocation(
         if not matching_groups
         else []
     )
+    if not matching_groups and not oldest_matches:
+        # Neither a single due-date group nor a chronological oldest-item
+        # prefix matched on its own. Before giving up, check whether a
+        # combination of two or more complete due-date groups exactly
+        # matches - e.g. a past-due bucket plus a current bucket. This is
+        # tried only when the oldest-prefix search found nothing at all
+        # (not merely ambiguous): if oldest-prefix already found multiple
+        # candidate prefixes, that is a genuine human-relevant ambiguity
+        # about which items are being paid, and this combination search
+        # must not silently pick one interpretation over another.
+        due_date_combination = _unique_complete_due_date_group_combination(
+            eligible, amount
+        )
+        if due_date_combination is not None:
+            due_dates, due_date_invoices = due_date_combination
+            due_date_text = ", ".join(
+                f"{value.month}/{value.day}/{value.year % 100:02d}"
+                for value in due_dates
+            )
+            reason = (
+                "No single due-date group matches the check amount, but "
+                f"one unique combination of {len(due_dates)} complete "
+                "signed current ERP due-date groups exactly matches the "
+                f"check: {due_date_text}."
+            )
+            return _recommendation(
+                check_amount=amount,
+                method="unique_exact_due_date_group_combination",
+                invoices=due_date_invoices,
+                reason=reason,
+            )
+
     if len(oldest_matches) == 1:
         invoices = oldest_matches[0]
         through_date = invoices[-1].due_date

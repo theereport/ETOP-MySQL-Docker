@@ -935,6 +935,165 @@ class ControlProjectionTest(unittest.TestCase):
         self.assertFalse(admitted)
         self.assertIn("customer_evidence_not_deterministic", blockers)
 
+    def test_check_phone_number_match_can_promote(self) -> None:
+        control, candidate = snapshots()
+        control_item = control["transactions"][30]
+        candidate_item = deepcopy(candidate["transactions"][30])
+        candidate_item["result"] = result(
+            customer="640194",
+            method="exact_remittance_invoices",
+            difference="0.00",
+            allocations=[{"apply_amount": "10.00"}],
+            basis="check_phone_number_match",
+            confidence=1.0,
+            matching_evidence={
+                "check_phone_number_verified": True,
+                "check_phone_number_conflict": False,
+                "failed_selection_gates": [],
+            },
+        )
+
+        admitted, blockers = promotion_assessment(
+            control_item,
+            candidate_item,
+        )
+
+        self.assertTrue(admitted, blockers)
+
+    def test_check_phone_number_match_with_conflict_cannot_promote(
+        self,
+    ) -> None:
+        control, candidate = snapshots()
+        control_item = control["transactions"][30]
+        candidate_item = deepcopy(candidate["transactions"][30])
+        candidate_item["result"] = result(
+            customer="640194",
+            method="exact_remittance_invoices",
+            difference="0.00",
+            allocations=[{"apply_amount": "10.00"}],
+            basis="check_phone_number_match",
+            confidence=1.0,
+            matching_evidence={
+                "check_phone_number_verified": True,
+                "check_phone_number_conflict": True,
+                "failed_selection_gates": [],
+            },
+        )
+
+        admitted, blockers = promotion_assessment(
+            control_item,
+            candidate_item,
+        )
+
+        self.assertFalse(admitted)
+        self.assertIn("customer_evidence_not_deterministic", blockers)
+
+    def test_learned_payer_bank_account_mapping_can_promote(self) -> None:
+        control, candidate = snapshots()
+        control_item = control["transactions"][30]
+        candidate_item = deepcopy(candidate["transactions"][30])
+        candidate_item["result"] = result(
+            customer="640194",
+            method="exact_remittance_invoices",
+            difference="0.00",
+            allocations=[{"apply_amount": "10.00"}],
+            basis="learned_payer_bank_account_mapping",
+            confidence=1.0,
+            matching_evidence={
+                "learned_payer_bank_account_verified": True,
+                "learned_payer_bank_account_conflict": False,
+                "failed_selection_gates": [],
+            },
+        )
+
+        admitted, blockers = promotion_assessment(
+            control_item,
+            candidate_item,
+        )
+
+        self.assertTrue(admitted, blockers)
+
+    def test_learned_payer_bank_account_mapping_with_conflict_cannot_promote(
+        self,
+    ) -> None:
+        control, candidate = snapshots()
+        control_item = control["transactions"][30]
+        candidate_item = deepcopy(candidate["transactions"][30])
+        candidate_item["result"] = result(
+            customer="640194",
+            method="exact_remittance_invoices",
+            difference="0.00",
+            allocations=[{"apply_amount": "10.00"}],
+            basis="learned_payer_bank_account_mapping",
+            confidence=1.0,
+            matching_evidence={
+                "learned_payer_bank_account_verified": True,
+                "learned_payer_bank_account_conflict": True,
+                "failed_selection_gates": [],
+            },
+        )
+
+        admitted, blockers = promotion_assessment(
+            control_item,
+            candidate_item,
+        )
+
+        self.assertFalse(admitted)
+        self.assertIn("customer_evidence_not_deterministic", blockers)
+
+    def test_unique_open_ar_bucket_match_can_promote(self) -> None:
+        control, candidate = snapshots()
+        control_item = control["transactions"][30]
+        candidate_item = deepcopy(candidate["transactions"][30])
+        candidate_item["result"] = result(
+            customer="640194",
+            method="exact_remittance_invoices",
+            difference="0.00",
+            allocations=[{"apply_amount": "10.00"}],
+            basis="unique_open_ar_bucket_match",
+            confidence=1.0,
+            matching_evidence={
+                "unique_open_ar_bucket_match_verified": True,
+                "unique_open_ar_bucket_match_conflict": False,
+                "failed_selection_gates": [],
+            },
+        )
+
+        admitted, blockers = promotion_assessment(
+            control_item,
+            candidate_item,
+        )
+
+        self.assertTrue(admitted, blockers)
+
+    def test_unique_open_ar_bucket_match_with_conflict_cannot_promote(
+        self,
+    ) -> None:
+        control, candidate = snapshots()
+        control_item = control["transactions"][30]
+        candidate_item = deepcopy(candidate["transactions"][30])
+        candidate_item["result"] = result(
+            customer="640194",
+            method="exact_remittance_invoices",
+            difference="0.00",
+            allocations=[{"apply_amount": "10.00"}],
+            basis="unique_open_ar_bucket_match",
+            confidence=1.0,
+            matching_evidence={
+                "unique_open_ar_bucket_match_verified": True,
+                "unique_open_ar_bucket_match_conflict": True,
+                "failed_selection_gates": [],
+            },
+        )
+
+        admitted, blockers = promotion_assessment(
+            control_item,
+            candidate_item,
+        )
+
+        self.assertFalse(admitted)
+        self.assertIn("customer_evidence_not_deterministic", blockers)
+
     def test_complete_exact_phone_and_zip_can_promote_at_resolver_score(
         self,
     ) -> None:

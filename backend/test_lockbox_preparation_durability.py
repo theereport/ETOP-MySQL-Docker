@@ -42,6 +42,7 @@ from lockbox_preparation.policy import (
     assess_remittance_reconciliation,
     disambiguate_remittance_rows,
     effective_invoice,
+    find_unique_due_date_bucket_match,
     normalize_invoice,
     recommend_allocation,
     validate_application,
@@ -861,7 +862,7 @@ class DurablePreparationTest(unittest.TestCase):
         self.assertIn("current_invoice_owner_read_degraded", event_types)
         self.assertNotIn("customer_conflict_assessed", event_types)
 
-    def test_direct_partial_current_owner_evidence_never_selects(
+    def test_direct_partial_current_owner_evidence_resolves_via_bucket_match(
         self,
     ) -> None:
         original = build_request(1)
@@ -895,9 +896,57 @@ class DurablePreparationTest(unittest.TestCase):
             coordinator.shutdown()
 
         transaction = result["transactions"][0]
+        resolution = transaction["result"]["customer_resolution"]
+        # Invoice-ownership evidence alone remains incomplete (one admitted
+        # invoice has no current TMAROP owner), but candidate 520459 is the
+        # only candidate whose own open AR has a due-date bucket that
+        # exactly matches the check amount - that unique dollar match is
+        # itself strong enough independent evidence to resolve and balance.
+        self.assertEqual(resolution["selection_basis"], "unique_open_ar_bucket_match")
+        self.assertEqual(resolution["customer_number"], "520459")
+        self.assertEqual(result["balanced_count"], 1)
+
+    def test_direct_partial_current_owner_evidence_without_bucket_match_never_selects(
+        self,
+    ) -> None:
+        original = build_request(1)
+        source = replace(
+            original,
+            transactions=(
+                replace(
+                    original.transactions[0],
+                    check_amount=Decimal("999.00"),
+                    extracted_invoice_numbers=(
+                        "520000001",
+                        "520000002",
+                    ),
+                ),
+            ),
+        )
+        provider = FakeDirectCurrentOwnerProvider(
+            current_owners_by_invoice={
+                "520000001": {"520459"},
+                "520000002": set(),
+            }
+        )
+        repository = self.repository()
+        coordinator = DurableLockboxPreparationCoordinator(
+            repository,
+            provider,
+            read_workers=2,
+        )
+        try:
+            result = coordinator.start(source, background=False)
+        finally:
+            coordinator.shutdown()
+
+        transaction = result["transactions"][0]
         assessment = transaction["result"]["evidence"][
             "customer_conflict_assessment"
         ]
+        # The only candidate's open AR ($100.00) does not match this
+        # check ($999.00), so there is no bucket-match tie-break evidence
+        # either - the transaction correctly stays in review.
         self.assertEqual(assessment["status"], "incomplete")
         self.assertEqual(result["balanced_count"], 0)
         self.assertFalse(transaction["result"]["can_auto_approve"])
@@ -2485,10 +2534,17 @@ class AllocationPolicyTest(unittest.TestCase):
             remittance_evidence_complete=False,
         )
 
-        self.assertEqual(recommendation.method, "partial_exact_remittance")
-        self.assertEqual(recommendation.status, "review_required")
-        self.assertEqual(recommendation.suggested_total, Decimal("460.00"))
-        self.assertEqual(recommendation.difference, Decimal("14.18"))
+        # The remittance-gated SC-residual-completion method correctly does
+        # not fire without complete remittance evidence. But the customer's
+        # full open balance (this invoice plus the SC) is a unique, complete
+        # due-date-group combination that exactly matches the check - that
+        # does not depend on remittance completeness, so it still resolves.
+        self.assertEqual(
+            recommendation.method, "unique_exact_due_date_group_combination"
+        )
+        self.assertEqual(recommendation.status, "recommended")
+        self.assertEqual(recommendation.suggested_total, Decimal("474.18"))
+        self.assertEqual(recommendation.difference, Decimal("0.00"))
 
     def test_complete_remittance_uses_all_items_in_oldest_due_date_prefix(self) -> None:
         invoices = (
@@ -2697,12 +2753,22 @@ class AllocationPolicyTest(unittest.TestCase):
             remittance_evidence_complete=False,
         )
 
-        self.assertEqual(recommendation.method, "partial_exact_remittance")
-        self.assertEqual(recommendation.status, "review_required")
+        # The remittance-gated unique-open-item-residual method correctly
+        # does not fire without complete remittance evidence. But the
+        # customer's full open balance (both invoices) is a unique, complete
+        # due-date-group combination that exactly matches the check - that
+        # does not depend on remittance completeness, so it still resolves.
         self.assertEqual(
-            [line.invoice_number for line in recommendation.allocations],
-            ["431000040"],
+            recommendation.method, "unique_exact_due_date_group_combination"
         )
+        self.assertEqual(recommendation.status, "recommended")
+        self.assertEqual(
+            sorted(
+                line.invoice_number for line in recommendation.allocations
+            ),
+            ["431000040", "431000041"],
+        )
+        self.assertEqual(recommendation.difference, Decimal("0.00"))
 
     def test_exact_erp_reconciliation_can_resolve_stale_page_completeness(
         self,
@@ -3101,6 +3167,166 @@ class AllocationPolicyTest(unittest.TestCase):
         )
         self.assertEqual(recommendation.status, "review_required")
         self.assertFalse(recommendation.allocations)
+
+    def test_non_adjacent_due_date_groups_combine_when_oldest_prefix_finds_nothing(
+        self,
+    ) -> None:
+        invoices = (
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431320001",
+                open_amount=Decimal("100.00"),
+                due_date=date(2026, 5, 10),
+                raw_transaction_type="I",
+            ),
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431320002",
+                open_amount=Decimal("30.00"),
+                due_date=date(2026, 6, 10),
+                raw_transaction_type="I",
+            ),
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431320003",
+                open_amount=Decimal("200.00"),
+                due_date=date(2026, 7, 10),
+                raw_transaction_type="I",
+            ),
+        )
+
+        recommendation = recommend_allocation(
+            check_amount=Decimal("300.00"),
+            extracted_invoice_numbers=(),
+            open_invoices=invoices,
+        )
+
+        # No single due-date group is $300, and no chronological
+        # oldest-first prefix sums to $300 either (100, 130, 330). Only
+        # the non-adjacent combination of the 5/10 and 7/10 groups does.
+        self.assertEqual(
+            recommendation.method,
+            "unique_exact_due_date_group_combination",
+        )
+        self.assertEqual(
+            sorted(
+                line.invoice_number for line in recommendation.allocations
+            ),
+            ["431320001", "431320003"],
+        )
+        self.assertEqual(recommendation.difference, Decimal("0.00"))
+
+    def test_find_unique_due_date_bucket_match_single_bucket(self) -> None:
+        invoices = (
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431400001",
+                open_amount=Decimal("100.00"),
+                due_date=date(2026, 8, 10),
+                raw_transaction_type="I",
+            ),
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431400002",
+                open_amount=Decimal("50.00"),
+                due_date=date(2026, 9, 10),
+                raw_transaction_type="I",
+            ),
+        )
+
+        match = find_unique_due_date_bucket_match(
+            check_amount=Decimal("100.00"),
+            open_invoices=invoices,
+        )
+
+        self.assertIsNotNone(match)
+        due_dates, matched_invoices = match
+        self.assertEqual(due_dates, (date(2026, 8, 10),))
+        self.assertEqual(
+            [line.invoice_number for line in matched_invoices],
+            ["431400001"],
+        )
+
+    def test_find_unique_due_date_bucket_match_combination(self) -> None:
+        invoices = (
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431400010",
+                open_amount=Decimal("100.00"),
+                due_date=date(2026, 8, 10),
+                raw_transaction_type="I",
+            ),
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431400011",
+                open_amount=Decimal("50.00"),
+                due_date=date(2026, 9, 10),
+                raw_transaction_type="I",
+            ),
+        )
+
+        match = find_unique_due_date_bucket_match(
+            check_amount=Decimal("150.00"),
+            open_invoices=invoices,
+        )
+
+        self.assertIsNotNone(match)
+        due_dates, matched_invoices = match
+        self.assertEqual(
+            sorted(due_dates),
+            [date(2026, 8, 10), date(2026, 9, 10)],
+        )
+        self.assertEqual(
+            sorted(line.invoice_number for line in matched_invoices),
+            ["431400010", "431400011"],
+        )
+
+    def test_find_unique_due_date_bucket_match_returns_none_when_no_match(
+        self,
+    ) -> None:
+        invoices = (
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431400020",
+                open_amount=Decimal("100.00"),
+                due_date=date(2026, 8, 10),
+                raw_transaction_type="I",
+            ),
+        )
+
+        match = find_unique_due_date_bucket_match(
+            check_amount=Decimal("999.00"),
+            open_invoices=invoices,
+        )
+
+        self.assertIsNone(match)
+
+    def test_find_unique_due_date_bucket_match_returns_none_when_multiple_single_buckets_match(
+        self,
+    ) -> None:
+        invoices = (
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431400030",
+                open_amount=Decimal("100.00"),
+                due_date=date(2026, 8, 10),
+                raw_transaction_type="I",
+            ),
+            OpenInvoice(
+                customer_number="1",
+                invoice_number="431400031",
+                open_amount=Decimal("100.00"),
+                due_date=date(2026, 9, 10),
+                raw_transaction_type="I",
+            ),
+        )
+
+        match = find_unique_due_date_bucket_match(
+            check_amount=Decimal("100.00"),
+            open_invoices=invoices,
+        )
+
+        self.assertIsNone(match)
 
     def test_negative_debit_is_credit_and_positive_apply_is_rejected(self) -> None:
         invoice = effective_invoice(

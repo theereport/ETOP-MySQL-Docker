@@ -11,6 +11,8 @@ from invoice_number_rules import normalize_erp_invoice
 
 from ..lockbox_service import get_lockbox_result
 from ..pnc_lockbox_export import export_pnc_workbook
+from ..resolution.normalization import last4, normalize_company_name
+from ..resolution.payer_mapping_repository import PayerCustomerMappingRepository
 from .database import (
     append_customer_note as append_customer_note_record,
     get_customer_notes as get_customer_note_records,
@@ -366,6 +368,35 @@ def get_lockbox_review(job_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
+def _record_confirmed_payer_mapping(
+    transaction: dict[str, Any],
+    customer_number: str,
+    customer_name: str,
+) -> None:
+    """Best-effort: remember this check's bank account as belonging to the
+    customer a reviewer just confirmed, so the same bank account resolves
+    automatically next time (a fallback tier in active_provider.py reads
+    this back). Never allowed to fail the actual review save."""
+
+    if not customer_number:
+        return
+    routing_number = str(transaction.get("aba_routing") or "").strip()
+    bank_account_last4 = last4(transaction.get("account_number"))
+    if not routing_number or len(bank_account_last4) != 4:
+        return
+    try:
+        PayerCustomerMappingRepository().upsert(
+            routing_number,
+            bank_account_last4,
+            normalize_company_name(customer_name),
+            customer_number,
+            1.0,
+            confirmed_by_user=True,
+        )
+    except Exception:
+        pass
+
+
 def save_transaction_review(
     job_id: str,
     transaction_id: str,
@@ -438,6 +469,12 @@ def save_transaction_review(
         notes=str(payload.get("notes") or "").strip(),
         override_reason=override_reason,
     )
+    if status != "held":
+        _record_confirmed_payer_mapping(
+            transaction,
+            customer_number,
+            str(payload.get("customer_name") or "").strip(),
+        )
     return get_lockbox_review(job_id)
 
 

@@ -66,6 +66,9 @@ def initialize_database() -> None:
     from modules.general_ledger.notes_repository import (
         initialize_general_ledger_database,
     )
+    from modules.cash_flow_forecasting.notes_repository import (
+        initialize_cash_flow_forecasting_database,
+    )
     from modules.pricing_contracts.notes_repository import (
         initialize_pricing_contracts_database,
     )
@@ -91,3 +94,4 @@ def initialize_database() -> None:
     initialize_sales_order_visibility_database()
     initialize_pricing_contracts_database()
     initialize_general_ledger_database()
+    initialize_cash_flow_forecasting_database()

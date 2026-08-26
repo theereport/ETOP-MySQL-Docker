@@ -35,6 +35,24 @@ def required_modules_for_path(path: str) -> tuple[str, ...] | None:
         return ("accounts_payable",)
     if normalized.startswith("/api/v1/credit-risk"):
         return ("credit_risk",)
+    if normalized.startswith("/api/v1/vendor-intelligence"):
+        return ("vendor_intelligence",)
+    if normalized.startswith("/api/v1/ar-collections"):
+        return ("ar_collections",)
+    if normalized.startswith("/api/v1/freight-logistics"):
+        return ("freight_logistics",)
+    if normalized.startswith("/api/v1/inventory-purchasing"):
+        return ("inventory_purchasing",)
+    if normalized.startswith("/api/v1/tax-compliance"):
+        return ("tax_compliance",)
+    if normalized.startswith("/api/v1/sales-order-visibility"):
+        return ("sales_order_visibility",)
+    if normalized.startswith("/api/v1/pricing-contracts"):
+        return ("pricing_contracts",)
+    if normalized.startswith("/api/v1/general-ledger"):
+        return ("general_ledger",)
+    if normalized.startswith("/api/v1/cash-flow-forecasting"):
+        return ("cash_flow_forecasting",)
     if normalized.startswith("/api/v1/erp-evidence/accounts-payable"):
         return ("accounts_payable",)
     if normalized.startswith("/api/v1/erp-evidence/credit"):

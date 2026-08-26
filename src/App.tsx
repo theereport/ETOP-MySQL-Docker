@@ -26,6 +26,7 @@ import TaxComplianceWorkspace from './features/tax-compliance'
 import SalesOrderVisibilityWorkspace from './features/sales-order-visibility'
 import PricingContractsWorkspace from './features/pricing-contracts'
 import GeneralLedgerWorkspace from './features/general-ledger'
+import CashFlowForecastingWorkspace from './features/cash-flow-forecasting'
 import AccountsPayableWorkspace from './features/accounts-payable'
 import FinancialCloseWorkspace from './features/financial-close'
 import PaymentNotesWorkspace from './features/payment-notes'
@@ -955,6 +956,10 @@ function App() {
 
           {selectedModule === 'General Ledger' && (
             <GeneralLedgerWorkspace />
+          )}
+
+          {selectedModule === 'Cash Flow Forecasting' && (
+            <CashFlowForecastingWorkspace />
           )}
 
           {selectedModule === 'Financial Close' && (

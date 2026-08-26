@@ -29,7 +29,7 @@ _BANK_ACCOUNT_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 _CHECK_FOR_LABEL = re.compile(
-    r"\b(?:for|f0r|ror)\b(?P<body>[^\n]*)",
+    r"\b(?:for|f0r|ror|memo)\b(?P<body>[^\n]*)",
     re.IGNORECASE,
 )
 _CHECK_FOR_ACCOUNT = re.compile(
@@ -125,7 +125,7 @@ def check_customer_account_directives(text: str) -> list[dict[str, str]]:
 
 def check_for_customer_directives(text: str) -> list[dict[str, str]]:
     """Return six- or seven-digit customer-number evidence from a check
-    ``FOR`` line.
+    ``FOR`` or ``MEMO`` line.
 
     MaddenCo customer numbers (TMCUST.CUNUMBER) are decimal(7,0) — a real
     customer number can be six or seven digits. This evidence is
@@ -133,9 +133,9 @@ def check_for_customer_directives(text: str) -> list[dict[str, str]]:
     is consumed only as the final account-number fallback after invoice
     ownership, explicit check account instructions, and governed K&M
     statement evidence. Generic six- or seven-digit values outside a
-    check-bounded ``FOR`` line are never admitted. A line explicitly
-    labelled as an invoice, purchase order, bank, routing, or MICR
-    reference is also rejected unless it contains an explicit
+    check-bounded ``FOR``/``MEMO`` line are never admitted. A line
+    explicitly labelled as an invoice, purchase order, bank, routing, or
+    MICR reference is also rejected unless it contains an explicit
     ``Account``/``Acct`` label. The trailing digit-boundary check in this
     regex family rejects any longer run (e.g. a bank routing/MICR number),
     so widening to seven digits does not admit eight-or-more-digit values.

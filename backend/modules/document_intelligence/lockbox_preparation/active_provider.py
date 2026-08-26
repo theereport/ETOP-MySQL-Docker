@@ -26,9 +26,12 @@ from customer_match_service import (
     exact_address_postal_matches,
     exact_phone_matches,
     exact_phone_postal_matches,
+    normalize_phone,
     rank_customer_matches,
 )
 
+from ..resolution.normalization import last4
+from ..resolution.payer_mapping_repository import PayerCustomerMappingRepository
 from .contracts import (
     CustomerResolution,
     CustomerGroupSnapshot,
@@ -62,6 +65,15 @@ ExactAddressLoader = Callable[
     [dict[str, str | None], str, str],
     tuple[list[dict[str, Any]], bool],
 ]
+PayerMappingLookup = Callable[[str, str], list[str]]
+
+
+def _default_payer_mapping_lookup(
+    routing_number: str, bank_account_last4: str
+) -> list[str]:
+    return PayerCustomerMappingRepository().find_confirmed_customer_numbers(
+        routing_number, bank_account_last4
+    )
 
 
 @dataclass(frozen=True)
@@ -219,6 +231,9 @@ class ExistingReadOnlyPreparationProvider:
         exact_address_loader: ExactAddressLoader = (
             _select_exact_address_postal_records
         ),
+        payer_mapping_lookup: PayerMappingLookup = (
+            _default_payer_mapping_lookup
+        ),
     ) -> None:
         self.receivables_repository = receivables_repository
         self._invoice_owner_loader = invoice_owner_loader
@@ -227,6 +242,7 @@ class ExistingReadOnlyPreparationProvider:
         self._customer_group_record_loader = customer_group_record_loader
         self._exact_phone_loader = exact_phone_loader
         self._exact_address_loader = exact_address_loader
+        self._payer_mapping_lookup = payer_mapping_lookup
 
     def resolve_invoice_owners(
         self,
@@ -561,6 +577,169 @@ class ExistingReadOnlyPreparationProvider:
                     "customer."
                 )
 
+        normalized_check_phone = normalize_phone(source.get("customer_phone"))
+        check_phone_number_valid = len(normalized_check_phone) == 10
+        check_phone_customer_number = ""
+        check_phone_number_conflict = False
+        if check_phone_number_valid:
+            phone_candidates, phone_query_complete = self._exact_phone_loader(
+                self._customer_columns_loader(), normalized_check_phone
+            )
+            check_phone_customer_number = (
+                _customer_number(phone_candidates[0].get("customer_number"))
+                if phone_query_complete and len(phone_candidates) == 1
+                else ""
+            )
+            check_phone_number_conflict = bool(
+                check_phone_customer_number
+                and any(
+                    owners and owners != {check_phone_customer_number}
+                    for owners in owner_sets
+                )
+            )
+            if check_phone_customer_number and not check_phone_number_conflict:
+                try:
+                    check_phone_customer = self.load_customer(
+                        check_phone_customer_number
+                    )
+                except Exception as error:
+                    check_phone_customer = None
+                    directive_warnings.append(
+                        "The check's printed phone number uniquely matched "
+                        f"ERP customer account {check_phone_customer_number}, "
+                        "but the exact read-only customer lookup did not "
+                        f"verify it: {type(error).__name__}."
+                    )
+                if check_phone_customer:
+                    unresolved_owner_count = sum(
+                        not owners for owners in owner_sets
+                    )
+                    return CustomerResolution(
+                        status="resolved",
+                        customer_number=check_phone_customer_number,
+                        customer_snapshot=check_phone_customer.fields,
+                        candidates=(check_phone_customer_number,),
+                        matched_on=(
+                            "The check's printed phone number uniquely "
+                            "matches one verified ERP customer after "
+                            "stronger account and statement evidence was "
+                            "exhausted.",
+                        ),
+                        source_reference=(
+                            "PNC check phone number and ERP customer master"
+                        ),
+                        as_of_time=check_phone_customer.as_of_time,
+                        selection_basis="check_phone_number_match",
+                        matching_evidence={
+                            "valid_invoice_count": len(valid_invoices),
+                            "invoice_owner_conflict": False,
+                            "unresolved_invoice_owner_count": (
+                                unresolved_owner_count
+                            ),
+                            "partial_invoice_owner_evidence": bool(
+                                any(owner_sets) and unresolved_owner_count
+                            ),
+                            "check_phone_number_match": (
+                                check_phone_customer_number
+                            ),
+                            "check_phone_number_verified": True,
+                            "check_phone_number_conflict": False,
+                            "selected_basis": "check_phone_number_match",
+                            "rule_version": CUSTOMER_MATCH_RULE_VERSION,
+                        },
+                        selected_confidence=1.0,
+                        confidence_basis="check_phone_number_match",
+                    )
+            elif check_phone_number_conflict:
+                directive_warnings.append(
+                    "The check's printed phone number uniquely matches one "
+                    "ERP customer, but that customer conflicts with "
+                    "preserved invoice-owner evidence and cannot be "
+                    "selected."
+                )
+
+        routing_number = str(source.get("aba_routing") or "").strip()
+        bank_account_last4 = last4(source.get("account_number"))
+        learned_mapping_customer_number = ""
+        learned_mapping_conflict = False
+        if routing_number and len(bank_account_last4) == 4:
+            confirmed_customers = self._payer_mapping_lookup(
+                routing_number, bank_account_last4
+            )
+            if len(confirmed_customers) == 1:
+                learned_mapping_customer_number = _customer_number(
+                    confirmed_customers[0]
+                )
+            learned_mapping_conflict = bool(
+                learned_mapping_customer_number
+                and any(
+                    owners and owners != {learned_mapping_customer_number}
+                    for owners in owner_sets
+                )
+            )
+            if learned_mapping_customer_number and not learned_mapping_conflict:
+                try:
+                    learned_mapping_customer = self.load_customer(
+                        learned_mapping_customer_number
+                    )
+                except Exception as error:
+                    learned_mapping_customer = None
+                    directive_warnings.append(
+                        "This check's bank account was previously confirmed "
+                        f"for ERP customer account {learned_mapping_customer_number}, "
+                        "but the exact read-only customer lookup did not "
+                        f"verify it: {type(error).__name__}."
+                    )
+                if learned_mapping_customer:
+                    unresolved_owner_count = sum(
+                        not owners for owners in owner_sets
+                    )
+                    return CustomerResolution(
+                        status="resolved",
+                        customer_number=learned_mapping_customer_number,
+                        customer_snapshot=learned_mapping_customer.fields,
+                        candidates=(learned_mapping_customer_number,),
+                        matched_on=(
+                            "This check's bank account (routing and account "
+                            "number) was previously confirmed by a reviewer "
+                            "as belonging to one ERP customer.",
+                        ),
+                        source_reference=(
+                            "Locally learned payer bank-account mapping and "
+                            "ERP customer master"
+                        ),
+                        as_of_time=learned_mapping_customer.as_of_time,
+                        selection_basis="learned_payer_bank_account_mapping",
+                        matching_evidence={
+                            "valid_invoice_count": len(valid_invoices),
+                            "invoice_owner_conflict": False,
+                            "unresolved_invoice_owner_count": (
+                                unresolved_owner_count
+                            ),
+                            "partial_invoice_owner_evidence": bool(
+                                any(owner_sets) and unresolved_owner_count
+                            ),
+                            "learned_payer_bank_account_mapping": (
+                                learned_mapping_customer_number
+                            ),
+                            "learned_payer_bank_account_verified": True,
+                            "learned_payer_bank_account_conflict": False,
+                            "selected_basis": (
+                                "learned_payer_bank_account_mapping"
+                            ),
+                            "rule_version": CUSTOMER_MATCH_RULE_VERSION,
+                        },
+                        selected_confidence=1.0,
+                        confidence_basis="learned_payer_bank_account_mapping",
+                    )
+            elif learned_mapping_conflict:
+                directive_warnings.append(
+                    "This check's bank account was previously confirmed for "
+                    "one ERP customer, but that customer conflicts with "
+                    "preserved invoice-owner evidence and cannot be "
+                    "selected."
+                )
+
         source_fields = {
             "phone": (source.get("customer_phone"), 80),
             "address_line_1": (
@@ -716,6 +895,16 @@ class ExistingReadOnlyPreparationProvider:
                 "check_for_customer_verified": False,
                 "check_for_customer_conflict": (
                     for_customer_number_conflict
+                ),
+                "check_phone_number_match": check_phone_customer_number,
+                "check_phone_number_verified": False,
+                "check_phone_number_conflict": check_phone_number_conflict,
+                "learned_payer_bank_account_mapping": (
+                    learned_mapping_customer_number
+                ),
+                "learned_payer_bank_account_verified": False,
+                "learned_payer_bank_account_conflict": (
+                    learned_mapping_conflict
                 ),
             }
         )

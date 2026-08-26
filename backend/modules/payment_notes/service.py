@@ -236,6 +236,11 @@ class PaymentNotesService:
         payments_by_store: dict[str, tuple[tuple[ExpectedPayment, ...], bool, list[str]]] = {}
         route_resolutions: dict[str, dict[str, Any]] = {}
         run_warnings: list[str] = []
+        if parsed.omitted_row_count:
+            run_warnings.append(
+                f"{parsed.omitted_row_count} Corporate (store 00) row(s) were omitted "
+                "from this upload; they are not a store deposit."
+            )
         expected_query_provenance: list[dict[str, Any]] = []
         expected_query_snapshots: list[dict[str, Any]] = []
         erp_query_complete = True
@@ -413,7 +418,8 @@ class PaymentNotesService:
         payload = {
             "run_id": run_id, "status": status,
             "source": {"name": parsed.source_name, "sha256": parsed.source_sha256, "size": parsed.source_size,
-                       "parser_version": parsed.parser_version, "source_row_count": parsed.source_row_count},
+                       "parser_version": parsed.parser_version, "source_row_count": parsed.source_row_count,
+                       "omitted_row_count": parsed.omitted_row_count},
             "route_reference": {"reference_id": active["reference_id"], "version_label": active["version_label"],
                                 "source_sha256": active["source_sha256"]},
             "date_from": start.isoformat(), "date_to": end.isoformat(),

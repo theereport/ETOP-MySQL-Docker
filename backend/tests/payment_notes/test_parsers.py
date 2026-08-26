@@ -74,6 +74,26 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(conflict.status, "conflict_only")
         self.assertEqual(conflict.conflicting_routes, ("ZZ",))
 
+    def test_corporate_store_00_rows_are_omitted_not_quarantined(self):
+        parsed = parse_remote_capture(capture([
+            row("Business Check", "10.00", store="00", deposit="D-1"),
+            row("Virtual Credit", "10.00", store="1", deposit="D-2"),
+        ]), "synthetic.csv")
+        self.assertEqual(parsed.omitted_row_count, 1)
+        self.assertEqual(len(parsed.quarantined_rows), 0)
+        self.assertEqual(len(parsed.rows), 1)
+        self.assertEqual(parsed.rows[0].store_number, "1")
+
+    def test_detroit_store_05_maps_to_canonical_store_4(self):
+        parsed = parse_remote_capture(capture([
+            row("Virtual Credit", "10.00", store="05", deposit="D-1"),
+        ]), "synthetic.csv")
+        self.assertEqual(len(parsed.quarantined_rows), 0)
+        self.assertEqual(parsed.rows[0].store_number, "4")
+        self.assertEqual(parsed.rows[0].location_key, "L4")
+        self.assertEqual(parsed.deposits[0].store_number, "4")
+        self.assertEqual(parsed.deposits[0].location_key, "L4")
+
     def test_xlsx_ignores_styled_trailing_blank_columns(self):
         workbook = Workbook(); sheet = workbook.active
         sheet.append([" STORE ", " route ", None, None])

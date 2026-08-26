@@ -11,6 +11,7 @@ import { manifests as taxComplianceManifests } from '../../features/tax-complian
 import { manifests as salesOrderVisibilityManifests } from '../../features/sales-order-visibility/manifest'
 import { manifests as pricingContractsManifests } from '../../features/pricing-contracts/manifest'
 import { manifests as generalLedgerManifests } from '../../features/general-ledger/manifest'
+import { manifests as cashFlowForecastingManifests } from '../../features/cash-flow-forecasting/manifest'
 import { manifests as financialCloseManifests } from '../../features/financial-close/manifest'
 import { manifests as paymentNotesManifests } from '../../features/payment-notes/manifest'
 import { manifests as workflowFoundationManifests } from '../../features/workflow-foundation/manifest'
@@ -152,6 +153,7 @@ export const moduleManifests: ModuleManifestEntry[] = [
   ...salesOrderVisibilityManifests,
   ...pricingContractsManifests,
   ...generalLedgerManifests,
+  ...cashFlowForecastingManifests,
   ...financialCloseManifests,
   ...paymentNotesManifests,
   ...documentIntelligenceManifests,

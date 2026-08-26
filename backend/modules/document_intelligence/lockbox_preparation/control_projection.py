@@ -87,6 +87,9 @@ PROMOTION_SELECTION_BASES = frozenset(
         "payer_supplied_customer_number",
         "km_statement_customer_number",
         "check_for_customer_number",
+        "check_phone_number_match",
+        "learned_payer_bank_account_mapping",
+        "unique_open_ar_bucket_match",
     }
 )
 PROMOTION_METHODS = frozenset(
@@ -114,6 +117,9 @@ _CUSTOMER_EVIDENCE_MINIMUMS = {
     "payer_supplied_customer_number": 1.0,
     "km_statement_customer_number": 1.0,
     "check_for_customer_number": 1.0,
+    "check_phone_number_match": 1.0,
+    "learned_payer_bank_account_mapping": 1.0,
+    "unique_open_ar_bucket_match": 1.0,
 }
 _CUSTOMER_EVIDENCE_STOP_GATES = frozenset(
     {
@@ -333,6 +339,12 @@ def _customer_evidence_is_deterministic(result: Mapping[str, Any]) -> bool:
         return False
     if bool(evidence.get("check_for_customer_conflict")):
         return False
+    if bool(evidence.get("check_phone_number_conflict")):
+        return False
+    if bool(evidence.get("learned_payer_bank_account_conflict")):
+        return False
+    if bool(evidence.get("unique_open_ar_bucket_match_conflict")):
+        return False
 
     if selection_basis in {
         "exact_phone_and_zip",
@@ -362,6 +374,12 @@ def _customer_evidence_is_deterministic(result: Mapping[str, Any]) -> bool:
         return bool(evidence.get("km_statement_customer_verified"))
     if selection_basis == "check_for_customer_number":
         return bool(evidence.get("check_for_customer_verified"))
+    if selection_basis == "check_phone_number_match":
+        return bool(evidence.get("check_phone_number_verified"))
+    if selection_basis == "learned_payer_bank_account_mapping":
+        return bool(evidence.get("learned_payer_bank_account_verified"))
+    if selection_basis == "unique_open_ar_bucket_match":
+        return bool(evidence.get("unique_open_ar_bucket_match_verified"))
 
     # Complete invoice-owner paths already carry their own 1.0 governed
     # resolution basis.  The conflict checks above remain mandatory.

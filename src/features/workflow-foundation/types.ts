@@ -30,6 +30,7 @@ export type ETOPModuleId =
   | 'sales_order_visibility'
   | 'pricing_contracts'
   | 'general_ledger'
+  | 'cash_flow_forecasting'
 
 export type EffectivePermissions = {
   module_ids: ETOPModuleId[]

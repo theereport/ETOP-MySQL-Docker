@@ -36,6 +36,7 @@ from .policy import (
     RULE_VERSION,
     assess_remittance_reconciliation,
     disambiguate_remittance_rows,
+    find_unique_due_date_bucket_match,
     normalize_invoice,
     recommend_allocation,
     recommend_enterprise_group_allocation,
@@ -50,6 +51,40 @@ from .states import FileState, TransactionState
 
 DEFAULT_READ_WORKERS = 6
 MAX_READ_WORKERS = 8
+MAX_BUCKET_TIEBREAK_CANDIDATES = 8
+
+# Selection bases whose evidence does not depend on the remittance-derived
+# invoice numbers being complete - a payer-supplied account number, a
+# statement/FOR-line number, a phone match, or a learned bank-account
+# mapping all identify the customer independently of the OCR'd invoice
+# list. When TMAROP shows some (not all) of those invoice numbers as
+# currently open, and none of the ones that ARE found disagree with the
+# resolved customer, that is missing evidence, not a conflict - it should
+# not void an otherwise-independent, verified resolution.
+INVOICE_NUMBER_INDEPENDENT_SELECTION_BASES = frozenset(
+    {
+        "payer_supplied_customer_number",
+        "km_statement_customer_number",
+        "check_for_customer_number",
+        "check_phone_number_match",
+        "learned_payer_bank_account_mapping",
+    }
+)
+
+
+def _current_open_owners_consistent_with(
+    customer_number: str,
+    current_open_invoice_owners: dict[str, tuple[str, ...]],
+) -> bool:
+    """True if every invoice with a known current-open owner agrees with
+    ``customer_number`` - i.e. no invoice points to a different customer,
+    though some invoices may have no current-open owner at all."""
+
+    return all(
+        set(owners) == {customer_number}
+        for owners in current_open_invoice_owners.values()
+        if owners
+    )
 
 
 class DurableLockboxPreparationCoordinator:
@@ -353,6 +388,15 @@ class DurableLockboxPreparationCoordinator:
                         cache_lock,
                     )
                 )
+            if resolution.status != "resolved" or not resolution.customer_number:
+                tiebreak = self._bucket_match_tiebreak(
+                    transaction,
+                    resolution,
+                    open_ar_cache,
+                    cache_lock,
+                )
+                if tiebreak is not None:
+                    resolution = tiebreak
             if resolution.status != "resolved" or not resolution.customer_number:
                 evidence = {
                     "customer_resolution": dataclass_payload(resolution),
@@ -837,12 +881,26 @@ class DurableLockboxPreparationCoordinator:
                 owners
                 for owners in assessment.current_open_invoice_owners.values()
             )
+            incompleteness_exempt = bool(
+                assessment.status == "incomplete"
+                and resolution.status == "resolved"
+                and resolution.customer_number
+                and resolution.selection_basis
+                in INVOICE_NUMBER_INDEPENDENT_SELECTION_BASES
+                and _current_open_owners_consistent_with(
+                    resolution.customer_number,
+                    assessment.current_open_invoice_owners,
+                )
+            )
             must_hold = bool(
                 assessment.status in {
                     "ambiguous",
-                    "incomplete",
                     "evidence_unavailable",
                 }
+                or (
+                    assessment.status == "incomplete"
+                    and not incompleteness_exempt
+                )
                 or (
                     assessment.status == "not_found"
                     and len(candidates) >= 2
@@ -902,6 +960,34 @@ class DurableLockboxPreparationCoordinator:
                 )
                 if assessment.status != "ambiguous":
                     return resolution, assessment, None
+            elif incompleteness_exempt:
+                resolution = CustomerResolution(
+                    status=resolution.status,
+                    customer_number=resolution.customer_number,
+                    customer_snapshot=resolution.customer_snapshot,
+                    candidates=tuple(
+                        dict.fromkeys(
+                            (
+                                *resolution.candidates,
+                                *assessment.candidate_customer_numbers,
+                            )
+                        )
+                    ),
+                    matched_on=resolution.matched_on,
+                    warnings=resolution.warnings,
+                    source_reference=resolution.source_reference,
+                    as_of_time=resolution.as_of_time,
+                    selection_basis=resolution.selection_basis,
+                    matching_evidence={
+                        **dict(resolution.matching_evidence),
+                        "current_open_status": assessment.status,
+                        "current_open_owner_present": has_current_owner,
+                        "current_open_incompleteness_exempted": True,
+                    },
+                    selected_confidence=resolution.selected_confidence,
+                    confidence_basis=resolution.confidence_basis,
+                )
+                return resolution, assessment, None
             else:
                 return resolution, assessment, None
 
@@ -1135,6 +1221,100 @@ class DurableLockboxPreparationCoordinator:
             ),
             assessment,
             enterprise_assessment,
+        )
+
+    def _bucket_match_tiebreak(
+        self,
+        transaction: SourceTransaction,
+        resolution: CustomerResolution,
+        open_ar_cache: dict[tuple[str, date], Future[OpenARSnapshot]],
+        cache_lock: threading.RLock,
+    ) -> CustomerResolution | None:
+        """Last-resort identity tie-break before giving up on a transaction.
+
+        No other identity signal (phone, invoice ownership, payer-supplied
+        number) was able to select a customer on its own. If exactly one
+        candidate customer's own current open AR has a due-date bucket, or
+        a combination of complete due-date buckets, that exactly matches
+        the check amount, that dollar-exact match is itself strong,
+        independent evidence that this candidate is correct - even without
+        any other corroborating signal. If more than one candidate's open
+        AR also matches, or none does, this returns None and the
+        transaction remains in review.
+        """
+
+        candidates = tuple(
+            dict.fromkeys(
+                candidate for candidate in resolution.candidates if candidate
+            )
+        )
+        if not candidates or len(candidates) > MAX_BUCKET_TIEBREAK_CANDIDATES:
+            # A large candidate list is both a performance risk (one live
+            # open-AR read per candidate, serially) and a weaker signal (more
+            # candidates means a higher chance one matches by coincidence).
+            # Neither is worth it - stay in review instead.
+            return None
+        as_of_date = transaction.payment_date or date.today()
+        matches: dict[str, Any] = {}
+        for customer_number in candidates:
+            try:
+                open_ar = self._cached_read(
+                    open_ar_cache,
+                    (customer_number, as_of_date),
+                    lambda customer_number=customer_number: (
+                        self.provider.load_open_ar(
+                            customer_number,
+                            as_of_date,
+                        )
+                    ),
+                    cache_lock,
+                )
+            except Exception:
+                # A read failure is not the same as "no match" - it means
+                # this candidate's open AR is genuinely unknown, so the
+                # tie-break cannot rule it out. Fail closed rather than
+                # risk selecting a different candidate that only appears
+                # unique because one candidate's evidence never loaded.
+                return None
+            combination = find_unique_due_date_bucket_match(
+                check_amount=transaction.check_amount,
+                open_invoices=open_ar.invoices,
+            )
+            if combination is not None:
+                matches[customer_number] = combination
+        if len(matches) != 1:
+            return None
+
+        customer_number = next(iter(matches))
+        try:
+            customer = self.provider.load_customer(customer_number)
+        except Exception:
+            return None
+        return CustomerResolution(
+            status="resolved",
+            customer_number=customer_number,
+            customer_snapshot=customer.fields,
+            candidates=candidates,
+            matched_on=(
+                "This candidate's own current open AR has a due-date "
+                "bucket, or a combination of complete due-date buckets, "
+                "that exactly matches the check amount, and no other "
+                "candidate's open AR also matches.",
+            ),
+            warnings=resolution.warnings,
+            source_reference="ERP open AR due-date bucket match",
+            as_of_time=customer.as_of_time,
+            selection_basis="unique_open_ar_bucket_match",
+            matching_evidence={
+                **dict(resolution.matching_evidence),
+                "selected_basis": "unique_open_ar_bucket_match",
+                "unique_open_ar_bucket_match": customer_number,
+                "unique_open_ar_bucket_match_verified": True,
+                "unique_open_ar_bucket_match_conflict": False,
+                "candidate_count": len(candidates),
+            },
+            selected_confidence=1.0,
+            confidence_basis="unique_open_ar_bucket_match",
         )
 
     def _save_exception(

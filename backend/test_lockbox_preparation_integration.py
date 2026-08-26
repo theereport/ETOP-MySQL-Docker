@@ -437,9 +437,16 @@ class ActiveProviderIntegrationTest(unittest.TestCase):
         records,
         invoices=None,
         address_complete=True,
+        confirmed_mappings=None,
     ):
+        confirmed_mappings = confirmed_mappings or {}
         return ExistingReadOnlyPreparationProvider(
             FakeReceivablesRepository(invoices),
+            payer_mapping_lookup=(
+                lambda routing, last4: confirmed_mappings.get(
+                    (routing, last4), []
+                )
+            ),
             invoice_owner_loader=lambda values: (owners, []),
             customer_columns_loader=lambda: {
                 "customer_number": "CUNUMBER",
@@ -690,6 +697,212 @@ class ActiveProviderIntegrationTest(unittest.TestCase):
             resolution.matching_evidence["check_for_customer_verified"]
         )
 
+    def test_verified_check_phone_number_resolves_after_for_line(self):
+        provider = self.provider(
+            owners={},
+            records=[customer_record("640194")],
+        )
+
+        resolution = provider.resolve_customer(
+            SourceTransaction(
+                transaction_id="G-PHONE-1",
+                ordinal=1,
+                check_amount=Decimal("11660.98"),
+                original_source={
+                    "customer_phone": "(419) 555-1212",
+                },
+            ),
+            {},
+        )
+
+        self.assertEqual(resolution.status, "resolved")
+        self.assertEqual(resolution.customer_number, "640194")
+        self.assertEqual(
+            resolution.confidence_basis,
+            "check_phone_number_match",
+        )
+        self.assertEqual(resolution.selected_confidence, 1.0)
+        self.assertTrue(
+            resolution.matching_evidence["check_phone_number_verified"]
+        )
+
+    def test_check_for_customer_number_remains_ahead_of_phone_number(self):
+        provider = self.provider(
+            owners={},
+            records=[customer_record("331002")],
+        )
+
+        resolution = provider.resolve_customer(
+            SourceTransaction(
+                transaction_id="G-PHONE-2",
+                ordinal=1,
+                check_amount=Decimal("125.00"),
+                original_source={
+                    "for_customer_number": "331002",
+                    "customer_phone": "4195551212",
+                },
+            ),
+            {},
+        )
+
+        self.assertEqual(resolution.status, "resolved")
+        self.assertEqual(resolution.customer_number, "331002")
+        self.assertEqual(
+            resolution.confidence_basis,
+            "check_for_customer_number",
+        )
+
+    def test_check_phone_number_conflict_with_invoice_owner_is_not_selected(self):
+        provider = self.provider(
+            owners={"431000001": {"111111"}},
+            records=[customer_record("999999")],
+        )
+        evidence = provider.resolve_invoice_owners(["431000001"])
+
+        resolution = provider.resolve_customer(
+            SourceTransaction(
+                transaction_id="G-PHONE-3",
+                ordinal=1,
+                check_amount=Decimal("125.00"),
+                extracted_invoice_numbers=(
+                    "431000001",
+                    "431000002",
+                ),
+                original_source={"customer_phone": "4195551212"},
+            ),
+            evidence,
+        )
+
+        self.assertNotEqual(
+            resolution.confidence_basis,
+            "check_phone_number_match",
+        )
+        self.assertTrue(
+            resolution.matching_evidence["check_phone_number_conflict"]
+        )
+
+    def test_learned_payer_bank_account_mapping_resolves(self):
+        provider = self.provider(
+            owners={},
+            records=[customer_record("640194")],
+            confirmed_mappings={("076401251", "1234"): ["640194"]},
+        )
+
+        resolution = provider.resolve_customer(
+            SourceTransaction(
+                transaction_id="G-LEARNED-1",
+                ordinal=1,
+                check_amount=Decimal("125.00"),
+                original_source={
+                    "aba_routing": "076401251",
+                    "account_number": "998877661234",
+                },
+            ),
+            {},
+        )
+
+        self.assertEqual(resolution.status, "resolved")
+        self.assertEqual(resolution.customer_number, "640194")
+        self.assertEqual(
+            resolution.confidence_basis,
+            "learned_payer_bank_account_mapping",
+        )
+        self.assertEqual(resolution.selected_confidence, 1.0)
+        self.assertTrue(
+            resolution.matching_evidence[
+                "learned_payer_bank_account_verified"
+            ]
+        )
+
+    def test_check_for_customer_number_remains_ahead_of_learned_mapping(self):
+        provider = self.provider(
+            owners={},
+            records=[customer_record("331002")],
+            confirmed_mappings={("076401251", "1234"): ["999999"]},
+        )
+
+        resolution = provider.resolve_customer(
+            SourceTransaction(
+                transaction_id="G-LEARNED-2",
+                ordinal=1,
+                check_amount=Decimal("125.00"),
+                original_source={
+                    "for_customer_number": "331002",
+                    "aba_routing": "076401251",
+                    "account_number": "1234",
+                },
+            ),
+            {},
+        )
+
+        self.assertEqual(resolution.customer_number, "331002")
+        self.assertEqual(
+            resolution.confidence_basis,
+            "check_for_customer_number",
+        )
+
+    def test_learned_mapping_conflict_with_invoice_owner_is_not_selected(self):
+        provider = self.provider(
+            owners={"431000001": {"111111"}},
+            records=[customer_record("999999")],
+            confirmed_mappings={("076401251", "1234"): ["999999"]},
+        )
+        evidence = provider.resolve_invoice_owners(["431000001"])
+
+        resolution = provider.resolve_customer(
+            SourceTransaction(
+                transaction_id="G-LEARNED-3",
+                ordinal=1,
+                check_amount=Decimal("125.00"),
+                extracted_invoice_numbers=(
+                    "431000001",
+                    "431000002",
+                ),
+                original_source={
+                    "aba_routing": "076401251",
+                    "account_number": "1234",
+                },
+            ),
+            evidence,
+        )
+
+        self.assertNotEqual(
+            resolution.confidence_basis,
+            "learned_payer_bank_account_mapping",
+        )
+        self.assertTrue(
+            resolution.matching_evidence[
+                "learned_payer_bank_account_conflict"
+            ]
+        )
+
+    def test_learned_mapping_with_multiple_distinct_customers_is_not_used(self):
+        provider = self.provider(
+            owners={},
+            records=[customer_record("640194")],
+            confirmed_mappings={
+                ("076401251", "1234"): ["640194", "700001"],
+            },
+        )
+
+        resolution = provider.resolve_customer(
+            SourceTransaction(
+                transaction_id="G-LEARNED-4",
+                ordinal=1,
+                check_amount=Decimal("125.00"),
+                original_source={
+                    "aba_routing": "076401251",
+                    "account_number": "1234",
+                },
+            ),
+            {},
+        )
+
+        self.assertNotEqual(
+            resolution.confidence_basis,
+            "learned_payer_bank_account_mapping",
+        )
+
     def test_statement_customer_number_remains_ahead_of_for_line(self):
         provider = self.provider(
             owners={},
@@ -787,9 +1000,16 @@ class ActiveProviderIntegrationTest(unittest.TestCase):
         self.assertIn("first five ZIP digits", resolution.matched_on[0])
 
     def test_contact_fallback_reuses_established_match_ranking(self):
+        # Two records share one phone number, so the earlier
+        # check_phone_number_match tier's "exactly one exact-phone
+        # candidate" precondition is not met and this falls through to
+        # the deeper address+zip-corroborated ranking path.
+        second_record = dict(customer_record("520460"))
+        second_record["address_line_1"] = "200 Other Ave"
+        second_record["postal_code"] = "45866"
         provider = self.provider(
             owners={},
-            records=[customer_record()],
+            records=[customer_record(), second_record],
         )
         resolution = provider.resolve_customer(
             SourceTransaction(
@@ -835,6 +1055,11 @@ class ActiveProviderIntegrationTest(unittest.TestCase):
         )
 
     def test_unique_exact_phone_resolves_without_zip(self):
+        # A unique exact-phone match now resolves through the earlier
+        # check_phone_number_match tier (same precedence tier as the check
+        # FOR line), unconditionally at full confidence - it no longer
+        # depends on name/address corroboration via the deeper generic
+        # customer-match-service ranking path.
         provider = self.provider(
             owners={},
             records=[customer_record()],
@@ -856,16 +1081,15 @@ class ActiveProviderIntegrationTest(unittest.TestCase):
         self.assertEqual(resolution.customer_number, "520459")
         self.assertEqual(
             resolution.selection_basis,
-            "unique_exact_phone",
+            "check_phone_number_match",
         )
         self.assertEqual(resolution.selected_confidence, 1.0)
         self.assertEqual(
             resolution.confidence_basis,
-            "unique_phone_with_contact_confirmation",
+            "check_phone_number_match",
         )
-        self.assertEqual(
-            resolution.matching_evidence["exact_phone_match_count"],
-            1,
+        self.assertTrue(
+            resolution.matching_evidence["check_phone_number_verified"]
         )
 
     def test_unique_exact_phone_without_other_contact_is_deterministic(self):
@@ -887,10 +1111,10 @@ class ActiveProviderIntegrationTest(unittest.TestCase):
 
         self.assertEqual(resolution.status, "resolved")
         self.assertEqual(resolution.customer_number, "520459")
-        self.assertEqual(resolution.selected_confidence, 0.99)
+        self.assertEqual(resolution.selected_confidence, 1.0)
         self.assertEqual(
             resolution.confidence_basis,
-            "unique_exact_phone",
+            "check_phone_number_match",
         )
 
     def test_complete_unique_exact_address_and_zip_reaches_provider(self):

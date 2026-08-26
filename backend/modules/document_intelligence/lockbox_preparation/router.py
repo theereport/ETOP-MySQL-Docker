@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ..integrations.invoice_owner_cache import refresh_invoice_owner_cache
 from .errors import IdempotencyConflictError
 from .service import DurableLockboxPreparationService
 
@@ -144,3 +145,17 @@ def durable_preparation_exception_summary(job_id: str) -> dict:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/lockbox/preparation/invoice-owner-cache/refresh")
+def refresh_current_invoice_owner_cache() -> dict:
+    """Refresh the local cache of currently-open TMAROP invoice ownership.
+
+    TMAROP has no usable index on the invoice-number column, so the
+    per-transaction live lookup this cache replaces was an unindexed full
+    scan that could exceed the platform's statement timeout under load.
+    This is a deliberate, infrequent batch read - run it manually after
+    ERP activity that would change open invoice ownership.
+    """
+
+    return refresh_invoice_owner_cache()

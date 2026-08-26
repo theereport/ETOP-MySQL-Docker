@@ -201,6 +201,12 @@ class WorkflowFoundationRepository:
             "Chart of accounts, period balances, and posted transaction evidence from MaddenCo.",
             "Workspaces",
         ),
+        (
+            "cash_flow_forecasting",
+            "Cash Flow Forecasting",
+            "14-week rolling cash flow projection with a prior-year backtest and accuracy history.",
+            "Workspaces",
+        ),
     )
 
     DEFAULT_DIRECT_USER_MODULES = ("dashboard", "work_management")
