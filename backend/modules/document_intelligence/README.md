@@ -11,7 +11,10 @@
   native text
 - Rule-based document classification
 - Parser registry
-- Existing specialized PNC Lockbox processing and review path
+- Specialized PNC Lockbox processing and manual review workspace,
+  including ERP-and-manually-linked enterprise customer allocation
+  across accounts and a Misc G/L write-off entry — see
+  `lockbox_review/README.md`
 - Deterministic vendor-invoice parser with field source/page/location,
   ambiguity, actual OCR confidence, and explicit validation evidence
 - Structured JSON results

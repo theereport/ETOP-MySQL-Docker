@@ -1,5 +1,75 @@
 # Changelog
 
+## [0.7.0 Cash Application Increment 1 R2] - Enterprise Linking, Statement Summary, and Misc G/L Entry
+
+### Added
+- Manually-linked (non-ERP) enterprise customer grouping, merged with any
+  existing ERP `CUNUMENT` group rather than replacing it. The
+  linked-customers response discloses which evidence contributed via
+  `source: "erp" | "manual" | "mixed"`. A reviewer can link two customers
+  with no CUNUMENT relationship, or extend an already ERP-linked group
+  with a further manually-linked account; unlinking only ever removes
+  that one customer's own manual-group membership.
+- A statement/aging summary mini table (statement date, future, current,
+  01-30, 31-60, over-61, due-now) in the review header, sourced from the
+  existing `customer_360` TMCUST aging evidence once a customer resolves.
+- Misc G/L Entry: a bounded write-off (reason `Service Charge ADJ`, GL
+  `3880`, server-validated) with reviewer-entered location, department,
+  and amount. The amount participates in `difference`/`balanced` without
+  becoming an allocation row, round-trips on save/reload, and exports to
+  its own `misc_gl` workbook tab (Check #, Customer #, GL Code, Location,
+  Department, Amount).
+- `Customer Number` column on the reviewed PNC lockbox export's detail
+  sheet.
+
+### Fixed
+- Allocation rows added from a linked enterprise account's open items no
+  longer show a blank Open Amount, Invoice Date, Due Date, and Aging —
+  the allocation table's evidence lookup now spans every linked account
+  whose open items have been fetched, not only the primary customer's.
+- The editable allocation table now visibly groups rows by owning
+  customer number (with a divider row) whenever a transaction's draft
+  spans more than one enterprise account.
+
+## [0.7.0 Cash Application Increment 1 R1] - Lockbox Review Workflow Tweaks
+
+### Added
+- A Clear button for the editable ERP open-item allocation draft.
+- An Invoice Date column between Apply Amount and Due Date.
+- A left/right toggle through ERP-enterprise-linked accounts, showing
+  each account's open-item count and letting a reviewer add open
+  invoices from any linked account into the same check's allocation.
+
+### Changed
+- Reviewer action buttons (Customer Notes, Email Customer, Back, Next,
+  Hold, Save Correction, Approve Transaction) reordered into a single
+  uniformly-sized column.
+
+## [0.7.0 Cash Application Increment 1] - Lockbox Preparation Reliability and Cash Flow Forecasting Foundation
+
+### Added
+- `cash_flow_forecasting` module: a 14-week rolling AR/AP/other cash
+  flow projection with a same-week-last-year backtest and an accuracy
+  history that accumulates as weeks close. Evidence-only — it never
+  writes to the ERP and never feeds tracked accuracy back into its own
+  future projections. See `backend/modules/cash_flow_forecasting/README.md`.
+- Standalone ETOP Launcher desktop application for starting and
+  monitoring the local backend/frontend development environment.
+- A phone/bank-account-independent allocation tie-break that trusts an
+  exact dollar match against a candidate customer's own open A/R.
+- Recognition of "MEMO" as a customer-number label alongside "FOR" on
+  checks.
+
+### Fixed
+- Lockbox preparation was leaving checks in manual review far more often
+  than necessary. Root-caused and corrected: an unindexed live `TMAROP`
+  query that timed out under batch load (replaced with a local cache), a
+  customer-conflict gate that discarded independently-verified
+  resolutions over merely-incomplete (not conflicting) invoice evidence,
+  and missing multi-bucket due-date combination matching in two
+  allocation code paths.
+- Payment-notes location-number handling during remote capture.
+
 ## [0.7.0 AP Increment 5 R2] - Coordinate-Aware Vendor Invoice Extraction
 
 ### Fixed
