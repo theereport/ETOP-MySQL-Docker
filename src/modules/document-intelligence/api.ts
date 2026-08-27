@@ -528,3 +528,36 @@ export async function getLinkedCustomerAccounts(
   if (!response.ok) throw new Error(await readError(response))
   return response.json()
 }
+
+export async function linkCustomerAsEnterprise(
+  customerNumber: string,
+  linkToCustomerNumber: string,
+  linkedBy: string,
+): Promise<LinkedCustomerAccountsResponse> {
+  const response = await fetch(
+    `${PLATFORM_API_BASE}/customer-match/linked-customers/`
+    + `${encodeURIComponent(customerNumber)}/link`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        link_to_customer_number: linkToCustomerNumber,
+        linked_by: linkedBy,
+      }),
+    },
+  )
+  if (!response.ok) throw new Error(await readError(response))
+  return response.json()
+}
+
+export async function unlinkCustomerFromManualEnterprise(
+  customerNumber: string,
+): Promise<LinkedCustomerAccountsResponse> {
+  const response = await fetch(
+    `${PLATFORM_API_BASE}/customer-match/linked-customers/`
+    + `${encodeURIComponent(customerNumber)}/link`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) throw new Error(await readError(response))
+  return response.json()
+}

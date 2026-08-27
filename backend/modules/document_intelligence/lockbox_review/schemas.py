@@ -44,6 +44,18 @@ class SaveTransactionReviewRequest(BaseModel):
     customer_city: str = Field(default="", max_length=150)
     customer_state: str = Field(default="", max_length=100)
     customer_postal_code: str = Field(default="", max_length=40)
+    misc_gl_reason: str = Field(default="", max_length=100)
+    misc_gl_location: str = Field(default="", max_length=150)
+    misc_gl_department: str = Field(default="", max_length=150)
+    misc_gl_amount: float = 0.0
+
+
+class MiscGlEntry(BaseModel):
+    reason: str = ""
+    gl_code: str = ""
+    location: str = ""
+    department: str = ""
+    amount: float = 0.0
 
 
 class AppendCustomerNoteRequest(BaseModel):
@@ -124,6 +136,7 @@ class ReviewedTransaction(BaseModel):
     reviewer: str
     notes: str
     override_reason: str
+    misc_gl: MiscGlEntry = Field(default_factory=MiscGlEntry)
     reviewed_at: str | None
 
 

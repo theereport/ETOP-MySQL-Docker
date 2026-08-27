@@ -19,6 +19,9 @@ from customer_match_service import (
     normalize_text,
     rank_customer_matches,
 )
+from modules.document_intelligence.resolution.manual_enterprise_group_repository import (
+    ManualEnterpriseGroupRepository,
+)
 
 
 router = APIRouter(
@@ -490,6 +493,133 @@ def _select_enterprise_customer_records(
     return madden_database.fetch_all(query, tuple(parameters))
 
 
+def _select_customer_records_by_numbers(
+    columns: dict[str, str | None],
+    customer_numbers: list[str],
+) -> list[dict[str, Any]]:
+    """Read TMCUST rows for an explicit set of customer numbers - used for
+    manually-linked (non-CUNUMENT) enterprise groups, where membership comes
+    from the local manual_enterprise_groups table rather than a shared ERP
+    enterprise number."""
+
+    number_column = columns.get("customer_number")
+    name_column = columns.get("customer_name")
+    if not number_column or not name_column or not customer_numbers:
+        return []
+
+    select_parts = []
+    for field in (
+        "customer_number",
+        "customer_name",
+        "phone",
+        "address_line_1",
+        "address_line_2",
+        "city",
+        "state",
+        "postal_code",
+    ):
+        column = columns.get(field)
+        if column:
+            select_parts.append(f"{_identifier(column)} AS {_identifier(field)}")
+        else:
+            select_parts.append(f"'' AS {_identifier(field)}")
+
+    placeholders = ", ".join(["%s"] * len(customer_numbers))
+    query = f"""
+        SELECT {", ".join(select_parts)}
+        FROM {_identifier(_SCHEMA)}.{_identifier(_CUSTOMER_TABLE)}
+        WHERE CAST({_identifier(number_column)} AS CHAR) IN ({placeholders})
+        LIMIT 251
+    """
+    return madden_database.fetch_all(query, tuple(customer_numbers))
+
+
+def _build_linked_accounts_payload(
+    normalized_customer: str,
+    records: list[dict[str, Any]],
+    source: str,
+    enterprise_number: str = "",
+) -> dict[str, Any]:
+    """Shared account-list builder for both the ERP CUNUMENT path and the
+    manually-linked path - once we have a candidate set of TMCUST rows,
+    open-item counts and the reviewer-facing shape are identical either way."""
+
+    linked_by_number = {
+        str(record.get("customer_number") or "")
+        .strip()
+        .removesuffix(".0"): record
+        for record in records
+        if str(record.get("customer_number") or "").strip()
+    }
+    linked_numbers = list(linked_by_number.keys())
+    if len(linked_numbers) <= 1:
+        return {
+            "is_enterprise": False,
+            "enterprise_number": enterprise_number,
+            "accounts": [],
+            "source": None,
+        }
+
+    placeholders = ", ".join(["%s"] * len(linked_numbers))
+    balance_rows = madden_database.fetch_all(
+        f"""
+        SELECT
+            CAST(TARONUMCST AS CHAR) AS customer_number,
+            COUNT(*) AS open_item_count
+        FROM TMAROP
+        WHERE TAROAMTOPN <> 0
+          AND TARONUMCST IN ({placeholders})
+        GROUP BY TARONUMCST
+        """,
+        tuple(linked_numbers),
+    )
+    open_item_counts = {
+        str(bal_row.get("customer_number") or "")
+        .strip()
+        .removesuffix(".0"): int(bal_row.get("open_item_count") or 0)
+        for bal_row in balance_rows
+    }
+
+    accounts = []
+    for number in linked_numbers:
+        is_current = number == normalized_customer
+        open_item_count = open_item_counts.get(number, 0)
+        if not is_current and open_item_count <= 0:
+            continue
+        record = linked_by_number[number]
+        accounts.append(
+            {
+                "customer_number": number,
+                "customer_name": str(
+                    record.get("customer_name") or ""
+                ).strip(),
+                "phone": str(record.get("phone") or "").strip(),
+                "address_line_1": str(
+                    record.get("address_line_1") or ""
+                ).strip(),
+                "city": str(record.get("city") or "").strip(),
+                "state": str(record.get("state") or "").strip(),
+                "postal_code": str(
+                    record.get("postal_code") or ""
+                ).strip(),
+                "open_item_count": open_item_count,
+                "is_current_customer": is_current,
+            }
+        )
+    accounts.sort(
+        key=lambda item: (
+            not item["is_current_customer"],
+            item["customer_name"],
+        )
+    )
+    return {
+        "is_enterprise": len(accounts) > 1,
+        "enterprise_number": enterprise_number,
+        "accounts": accounts,
+        "source": source if len(accounts) > 1 else None,
+    }
+
+
 @lru_cache(maxsize=1)
 def _discover_invoice_sources() -> list[tuple[str, str, str]]:
     rows = madden_database.fetch_all(
@@ -793,13 +923,28 @@ def resolve_invoice_owners(
     }
 
 
+class LinkEnterpriseCustomerRequest(BaseModel):
+    link_to_customer_number: str = Field(...)
+    linked_by: str = ""
+
+
 @router.get("/linked-customers/{customer_number}")
 def linked_customer_accounts(customer_number: str) -> dict[str, Any]:
-    """Return every CUNUMENT-linked TMCUST account for this customer that
-    currently has an open item, so a reviewer can toggle through an
-    enterprise group's accounts and allocate one check across more than
-    one of them. Enterprise customers commonly pay several linked accounts
-    with a single check.
+    """Return every linked account for this customer that currently has an
+    open item, so a reviewer can toggle through an enterprise group's
+    accounts and allocate one check across more than one of them.
+    Enterprise customers commonly pay several linked accounts with a single
+    check.
+
+    Two sources of linkage are merged together:
+      1. ERP evidence - CUNUMENT ties this account to a shared enterprise
+         number in TMCUST.
+      2. Manual evidence - a reviewer has previously linked this account to
+         others in the local manual_enterprise_groups table, for customers
+         who are known to pay together but have no CUNUMENT relationship.
+         This applies even when the account already has an ERP group - an
+         ERP-linked customer can still turn out to jointly pay with a third,
+         non-ERP-linked customer as well.
     """
 
     normalized_customer = str(customer_number or "").strip().removesuffix(
@@ -815,105 +960,71 @@ def linked_customer_accounts(customer_number: str) -> dict[str, Any]:
         columns = _resolve_customer_columns()
         number_column = columns.get("customer_number")
         enterprise_column = columns.get("enterprise_number")
-        if not number_column or not enterprise_column:
-            return {
-                "is_enterprise": False,
-                "enterprise_number": "",
-                "accounts": [],
+        enterprise_number = ""
+
+        if number_column and enterprise_column:
+            row = madden_database.fetch_one(
+                f"""
+                SELECT CAST({_identifier(enterprise_column)} AS CHAR)
+                    AS enterprise_number
+                FROM {_identifier(_SCHEMA)}.{_identifier(_CUSTOMER_TABLE)}
+                WHERE CAST({_identifier(number_column)} AS CHAR) = %s
+                """,
+                (normalized_customer,),
+            )
+            enterprise_number = str(
+                (row or {}).get("enterprise_number") or ""
+            ).strip().removesuffix(".0")
+
+        erp_numbers: set[str] = set()
+        if enterprise_number and enterprise_number != "0":
+            erp_rows = _select_enterprise_customer_records(
+                columns,
+                normalized_customer,
+                enterprise_number,
+            )
+            erp_numbers = {
+                str(record.get("customer_number") or "").strip().removesuffix(".0")
+                for record in erp_rows
+                if str(record.get("customer_number") or "").strip()
             }
 
-        row = madden_database.fetch_one(
-            f"""
-            SELECT CAST({_identifier(enterprise_column)} AS CHAR)
-                AS enterprise_number
-            FROM {_identifier(_SCHEMA)}.{_identifier(_CUSTOMER_TABLE)}
-            WHERE CAST({_identifier(number_column)} AS CHAR) = %s
-            """,
-            (normalized_customer,),
+        manual_numbers = set(
+            ManualEnterpriseGroupRepository().find_group_members(
+                normalized_customer,
+            )
         )
-        enterprise_number = str(
-            (row or {}).get("enterprise_number") or ""
-        ).strip().removesuffix(".0")
 
-        if not enterprise_number or enterprise_number == "0":
+        combined_numbers = erp_numbers | manual_numbers | {normalized_customer}
+        if len(combined_numbers) <= 1:
             return {
                 "is_enterprise": False,
-                "enterprise_number": "",
+                "enterprise_number": (
+                    enterprise_number if enterprise_number != "0" else ""
+                ),
                 "accounts": [],
+                "source": None,
+                "read_only": True,
             }
 
-        linked_rows = _select_enterprise_customer_records(
-            columns,
+        combined_rows = _select_customer_records_by_numbers(
+            columns, list(combined_numbers),
+        )
+        has_erp = len(erp_numbers) > 1
+        has_manual = len(manual_numbers) > 1
+        source = (
+            "mixed" if has_erp and has_manual
+            else "erp" if has_erp
+            else "manual"
+        )
+        payload = _build_linked_accounts_payload(
             normalized_customer,
-            enterprise_number,
+            combined_rows,
+            source,
+            enterprise_number if has_erp else "",
         )
-        linked_by_number = {
-            str(record.get("customer_number") or "")
-            .strip()
-            .removesuffix(".0"): record
-            for record in linked_rows
-            if str(record.get("customer_number") or "").strip()
-        }
-        linked_numbers = list(linked_by_number.keys())
-        if len(linked_numbers) <= 1:
-            return {
-                "is_enterprise": False,
-                "enterprise_number": enterprise_number,
-                "accounts": [],
-            }
-
-        placeholders = ", ".join(["%s"] * len(linked_numbers))
-        balance_rows = madden_database.fetch_all(
-            f"""
-            SELECT
-                CAST(TARONUMCST AS CHAR) AS customer_number,
-                COUNT(*) AS open_item_count
-            FROM TMAROP
-            WHERE TAROAMTOPN <> 0
-              AND TARONUMCST IN ({placeholders})
-            GROUP BY TARONUMCST
-            """,
-            tuple(linked_numbers),
-        )
-        open_item_counts = {
-            str(bal_row.get("customer_number") or "")
-            .strip()
-            .removesuffix(".0"): int(bal_row.get("open_item_count") or 0)
-            for bal_row in balance_rows
-        }
-
-        accounts = []
-        for number in linked_numbers:
-            is_current = number == normalized_customer
-            open_item_count = open_item_counts.get(number, 0)
-            if not is_current and open_item_count <= 0:
-                continue
-            record = linked_by_number[number]
-            accounts.append(
-                {
-                    "customer_number": number,
-                    "customer_name": str(
-                        record.get("customer_name") or ""
-                    ).strip(),
-                    "phone": str(record.get("phone") or "").strip(),
-                    "address_line_1": str(
-                        record.get("address_line_1") or ""
-                    ).strip(),
-                    "city": str(record.get("city") or "").strip(),
-                    "state": str(record.get("state") or "").strip(),
-                    "postal_code": str(
-                        record.get("postal_code") or ""
-                    ).strip(),
-                    "open_item_count": open_item_count,
-                    "is_current_customer": is_current,
-                }
-            )
-        accounts.sort(
-            key=lambda item: (
-                not item["is_current_customer"],
-                item["customer_name"],
-            )
-        )
+        payload["read_only"] = True
+        return payload
     except HTTPException:
         raise
     except Exception as exc:
@@ -922,9 +1033,73 @@ def linked_customer_accounts(customer_number: str) -> dict[str, Any]:
             detail=f"Linked enterprise customer lookup is unavailable: {exc}",
         ) from exc
 
-    return {
-        "is_enterprise": len(accounts) > 1,
-        "enterprise_number": enterprise_number,
-        "accounts": accounts,
-        "read_only": True,
+
+@router.post("/linked-customers/{customer_number}/link")
+def link_customer_as_enterprise(
+    customer_number: str,
+    request: LinkEnterpriseCustomerRequest,
+) -> dict[str, Any]:
+    """Manually link two customers together as an enterprise group for
+    payment purposes, for customers known to pay jointly but who have no
+    ERP CUNUMENT relationship. Returns the refreshed linked-accounts view.
+    """
+
+    normalized_customer = str(customer_number or "").strip().removesuffix(
+        ".0"
+    )
+    link_to = str(
+        request.link_to_customer_number or "",
+    ).strip().removesuffix(".0")
+    if not normalized_customer or not link_to:
+        raise HTTPException(
+            status_code=400,
+            detail="Both customer numbers are required.",
+        )
+
+    columns = _resolve_customer_columns()
+    existing_records = _select_customer_records_by_numbers(
+        columns, [normalized_customer, link_to],
+    )
+    found_numbers = {
+        str(record.get("customer_number") or "").strip().removesuffix(".0")
+        for record in existing_records
     }
+    missing_numbers = [
+        number
+        for number in (normalized_customer, link_to)
+        if number not in found_numbers
+    ]
+    if missing_numbers:
+        raise HTTPException(
+            status_code=404,
+            detail=f"ERP customer number(s) not found: {', '.join(missing_numbers)}",
+        )
+
+    try:
+        ManualEnterpriseGroupRepository().link_customers(
+            normalized_customer, link_to, request.linked_by.strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return linked_customer_accounts(normalized_customer)
+
+
+@router.delete("/linked-customers/{customer_number}/link")
+def unlink_customer_from_manual_enterprise(customer_number: str) -> dict[str, Any]:
+    """Remove a customer from its manually-linked enterprise group, if any.
+    Does not affect ERP CUNUMENT linkage - that evidence is authoritative
+    and is not something a reviewer can edit here."""
+
+    normalized_customer = str(customer_number or "").strip().removesuffix(
+        ".0"
+    )
+    if not normalized_customer:
+        raise HTTPException(
+            status_code=400,
+            detail="A customer number is required.",
+        )
+
+    ManualEnterpriseGroupRepository().unlink_customer(normalized_customer)
+
+    return linked_customer_accounts(normalized_customer)

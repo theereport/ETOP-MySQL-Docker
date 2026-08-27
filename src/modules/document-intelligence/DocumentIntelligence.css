@@ -1703,6 +1703,55 @@
   gap: 12px;
 }
 
+.lockbox-statement-summary {
+  display: flex;
+  gap: 14px;
+  padding: 8px 14px;
+  border: 1px solid #283b55;
+  border-radius: 9px;
+  background: #111a28;
+}
+
+.lockbox-statement-summary-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 60px;
+}
+
+.lockbox-statement-summary-col span {
+  color: #7f90a8;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  white-space: nowrap;
+}
+
+.lockbox-statement-summary-col strong {
+  margin-top: 3px;
+  color: #edf3fb;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.lockbox-statement-summary-total {
+  padding-left: 14px;
+  border-left: 1px solid #283b55;
+}
+
+.lockbox-statement-summary-total strong {
+  color: #8ebaff;
+}
+
+.cash-ai-table-group-row td {
+  padding: 6px 10px;
+  background: rgba(74, 133, 218, .1);
+  color: #a9c8f7;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
 .lockbox-prepared-badge {
   min-width: 190px;
   padding: 8px 11px;
@@ -2328,6 +2377,50 @@
   resize: vertical;
 }
 
+.lockbox-misc-gl-entry {
+  margin: 0 14px 14px;
+  padding: 12px;
+  border: 1px solid #283b55;
+  border-radius: 10px;
+  background: rgba(16, 27, 44, .72);
+}
+
+.lockbox-misc-gl-heading strong,
+.lockbox-misc-gl-heading span {
+  display: block;
+}
+
+.lockbox-misc-gl-heading span {
+  margin-top: 4px;
+  color: #7f90a8;
+  font-size: 10px;
+}
+
+.lockbox-misc-gl-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.lockbox-misc-gl-row label {
+  color: #8595ab;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.lockbox-misc-gl-row input,
+.lockbox-misc-gl-row select {
+  width: 100%;
+  margin-top: 5px;
+}
+
+@media (max-width: 900px) {
+  .lockbox-misc-gl-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .lockbox-review-validation {
   padding-bottom: 10px;
   overflow: auto;
@@ -2731,6 +2824,13 @@
   background: rgba(16, 27, 44, .72);
 }
 
+.lockbox-linked-accounts-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .lockbox-linked-accounts-heading strong,
 .lockbox-linked-accounts-heading span {
   display: block;
@@ -2740,6 +2840,136 @@
   margin-top: 4px;
   color: #7f90a8;
   font-size: 10px;
+}
+
+.lockbox-linked-accounts-heading button {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+}
+
+.lockbox-link-customer-form {
+  grid-column: 1 / -1;
+  padding: 8px 12px;
+  border: 1px solid #283b55;
+  border-radius: 8px;
+  background: rgba(16, 27, 44, .5);
+}
+
+.lockbox-link-customer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lockbox-link-customer-row strong {
+  flex: 0 0 auto;
+  color: #c7d4e6;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.lockbox-link-customer-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.lockbox-link-customer-row button {
+  flex: 0 0 auto;
+}
+
+.lockbox-link-customer-error {
+  margin-top: 8px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  background: rgba(211, 71, 71, .12);
+  color: #f0a4a4;
+  font-size: 11px;
+}
+
+.lockbox-info-bubble-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.lockbox-info-bubble {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #445977;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .04);
+  color: #9fb3cc;
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.lockbox-info-bubble:hover {
+  border-color: #6d92c9;
+  color: #cfe0f7;
+}
+
+.lockbox-info-popover {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 260px;
+  padding: 10px 12px;
+  border: 1px solid #365276;
+  border-radius: 9px;
+  background: #101a29;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+  color: #c7d4e6;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.lockbox-linked-accounts-popover {
+  right: 0;
+  left: auto;
+  width: 280px;
+}
+
+.lockbox-linked-accounts-popover strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #edf3fb;
+}
+
+.lockbox-linked-accounts-popover ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.lockbox-linked-accounts-popover li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid #202e42;
+}
+
+.lockbox-linked-accounts-popover li:first-child {
+  border-top: 0;
+}
+
+.lockbox-linked-accounts-popover li span:first-child {
+  flex: 0 0 auto;
+  color: #8ebaff;
+}
+
+.lockbox-linked-accounts-popover li span:last-child {
+  color: #d7e0ed;
+  text-align: right;
 }
 
 .lockbox-linked-account-toggle {

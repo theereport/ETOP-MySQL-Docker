@@ -351,6 +351,14 @@ export type LockboxReviewStatus =
 
 export type ReviewedLockboxAllocation = LockboxAllocation
 
+export type LockboxMiscGlEntry = {
+  reason: string
+  gl_code: string
+  location: string
+  department: string
+  amount: number
+}
+
 export type ReviewedLockboxTransaction = Omit<LockboxTransaction, 'status'> & {
   original_allocations: ReviewedLockboxAllocation[]
   allocations: ReviewedLockboxAllocation[]
@@ -358,6 +366,7 @@ export type ReviewedLockboxTransaction = Omit<LockboxTransaction, 'status'> & {
   reviewer: string
   notes: string
   override_reason: string
+  misc_gl: LockboxMiscGlEntry
   reviewed_at: string | null
 }
 
@@ -385,6 +394,10 @@ export type SaveLockboxTransactionReviewRequest = {
   customer_city?: string
   customer_state?: string
   customer_postal_code?: string
+  misc_gl_reason?: string
+  misc_gl_location?: string
+  misc_gl_department?: string
+  misc_gl_amount?: number
 }
 
 export type LockboxCustomerNote = {
@@ -484,5 +497,6 @@ export type LinkedCustomerAccountsResponse = {
   is_enterprise: boolean
   enterprise_number: string
   accounts: LinkedCustomerAccount[]
+  source?: 'erp' | 'manual' | 'mixed' | null
   read_only?: boolean
 }

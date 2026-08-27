@@ -101,6 +101,7 @@ const reviewedTransaction: ReviewedLockboxTransaction = {
   reviewer: '',
   notes: '',
   override_reason: '',
+  misc_gl: { reason: '', gl_code: '', location: '', department: '', amount: 0 },
   reviewed_at: null,
 }
 

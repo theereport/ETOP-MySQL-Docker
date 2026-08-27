@@ -41,6 +41,9 @@ REVIEW_STATUSES = {
     "approved",
 }
 PROTECTED_HUMAN_DRAFT_STATUSES = {"corrected", "held", "approved"}
+MISC_GL_REASON_CODES: dict[str, str] = {
+    "Service Charge ADJ": "3880",
+}
 GovernedPreparationLoader = Callable[[str], dict[str, Any]]
 CurrentOpenARLoader = Callable[[str, date], dict[str, Any]]
 _governed_preparation_loader: GovernedPreparationLoader | None = None
@@ -174,7 +177,9 @@ def _build_review(job_id: str) -> dict[str, Any]:
         )
         allocation_total = _money(sum(item["net_invoice_amount"] for item in allocations))
         check_amount = _money(original.get("check_amount"))
-        difference = _money(check_amount - allocation_total)
+        misc_gl = review.get("misc_gl") or {} if review else {}
+        misc_gl_amount = _money(misc_gl.get("amount") or 0)
+        difference = _money(check_amount - allocation_total - misc_gl_amount)
         balanced = abs(difference) <= BALANCE_TOLERANCE
 
         if review:
@@ -204,6 +209,7 @@ def _build_review(job_id: str) -> dict[str, Any]:
                 "reviewer": review["reviewer"] if review else "",
                 "notes": review["notes"] if review else "",
                 "override_reason": review["override_reason"] if review else "",
+                "misc_gl": misc_gl,
                 "reviewed_at": review["reviewed_at"] if review else None,
             }
         )
@@ -435,8 +441,30 @@ def save_transaction_review(
             as_of_date=_as_of_date(transaction.get("date")),
         )
 
+    misc_gl_reason = str(payload.get("misc_gl_reason") or "").strip()
+    misc_gl_amount = _money(payload.get("misc_gl_amount") or 0)
+    if misc_gl_reason and misc_gl_reason not in MISC_GL_REASON_CODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown Misc G/L reason: {misc_gl_reason}",
+        )
+    if misc_gl_amount and not misc_gl_reason:
+        raise HTTPException(
+            status_code=400,
+            detail="A Misc G/L reason is required when an amount is entered.",
+        )
+    misc_gl = {
+        "reason": misc_gl_reason,
+        "gl_code": MISC_GL_REASON_CODES.get(misc_gl_reason, ""),
+        "location": str(payload.get("misc_gl_location") or "").strip(),
+        "department": str(payload.get("misc_gl_department") or "").strip(),
+        "amount": misc_gl_amount,
+    }
+
     allocation_total = _money(sum(item["net_invoice_amount"] for item in allocations))
-    difference = _money(_money(transaction["check_amount"]) - allocation_total)
+    difference = _money(
+        _money(transaction["check_amount"]) - allocation_total - misc_gl_amount
+    )
     balanced = abs(difference) <= BALANCE_TOLERANCE
     override_reason = str(payload.get("override_reason") or "").strip()
 
@@ -468,6 +496,7 @@ def save_transaction_review(
         reviewer=str(payload.get("reviewer") or "").strip(),
         notes=str(payload.get("notes") or "").strip(),
         override_reason=override_reason,
+        misc_gl=misc_gl,
     )
     if status != "held":
         _record_confirmed_payer_mapping(

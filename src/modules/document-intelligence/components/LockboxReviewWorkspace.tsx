@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import type { ReactElement } from 'react'
 
 import {
   getCustomerSummary,
@@ -20,7 +21,9 @@ import {
   getLockboxCustomerNotes,
   getDocumentFileUrl,
   getLinkedCustomerAccounts,
+  linkCustomerAsEnterprise,
   saveLockboxTransactionReview,
+  unlinkCustomerFromManualEnterprise,
 } from '../api'
 
 import type {
@@ -300,6 +303,10 @@ function money(value: number) {
   })
 }
 
+const MISC_GL_REASONS: { value: string; glCode: string }[] = [
+  { value: 'Service Charge ADJ', glCode: '3880' },
+]
+
 function displayDate(value?: string | null) {
   if (!value) return '—'
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
@@ -421,13 +428,25 @@ export default function LockboxReviewWorkspace({
   const [showOpenInvoicePicker, setShowOpenInvoicePicker] = useState(false)
   const [openInvoiceSearch, setOpenInvoiceSearch] = useState('')
   const [linkedAccounts, setLinkedAccounts] = useState<LinkedCustomerAccount[]>([])
+  const [linkedAccountsSource, setLinkedAccountsSource] =
+    useState<'erp' | 'manual' | 'mixed' | null>(null)
   const [linkedAccountIndex, setLinkedAccountIndex] = useState(0)
-  const [linkedAccountOpenInvoices, setLinkedAccountOpenInvoices] =
-    useState<LegacyInvoiceDetail[]>([])
+  const [linkedAccountInvoicesByCustomer, setLinkedAccountInvoicesByCustomer] =
+    useState<Record<string, LegacyInvoiceDetail[]>>({})
   const [isLoadingLinkedInvoices, setIsLoadingLinkedInvoices] = useState(false)
   const [linkedInvoiceError, setLinkedInvoiceError] = useState('')
   const [showLinkedInvoicePicker, setShowLinkedInvoicePicker] = useState(false)
   const [linkedInvoiceSearch, setLinkedInvoiceSearch] = useState('')
+  const [linkTargetInput, setLinkTargetInput] = useState('')
+  const [isLinkingCustomer, setIsLinkingCustomer] = useState(false)
+  const [linkActionError, setLinkActionError] = useState('')
+  const [showLinkFormInfo, setShowLinkFormInfo] = useState(false)
+  const [showLinkedAccountsInfo, setShowLinkedAccountsInfo] = useState(false)
+  const [customerSummary, setCustomerSummary] = useState<CustomerSummary | null>(null)
+  const [miscGlReason, setMiscGlReason] = useState('')
+  const [miscGlLocation, setMiscGlLocation] = useState('')
+  const [miscGlDepartment, setMiscGlDepartment] = useState('')
+  const [miscGlAmount, setMiscGlAmount] = useState('')
   const [reviewActionModal, setReviewActionModal] =
     useState<ReviewActionModal>(null)
   const reviewActionModalRef = useRef<ReviewActionModal>(null)
@@ -602,6 +621,12 @@ export default function LockboxReviewWorkspace({
     setReviewer(transaction.reviewer)
     setNotes(transaction.notes)
     setOverrideReason(transaction.override_reason)
+    setMiscGlReason(transaction.misc_gl?.reason || '')
+    setMiscGlLocation(transaction.misc_gl?.location || '')
+    setMiscGlDepartment(transaction.misc_gl?.department || '')
+    setMiscGlAmount(
+      transaction.misc_gl?.amount ? String(transaction.misc_gl.amount) : '',
+    )
     setCustomerNumber(savedCustomerNumber)
     setCustomerSearch(customerSearchValue)
     setCustomerName(transaction.customer_name || '')
@@ -773,9 +798,14 @@ export default function LockboxReviewWorkspace({
     setLinkedAccountIndex(0)
     setShowLinkedInvoicePicker(false)
     setLinkedInvoiceSearch('')
+    setLinkTargetInput('')
+    setLinkActionError('')
+    setShowLinkFormInfo(false)
+    setShowLinkedAccountsInfo(false)
 
     if (!customerNumber.trim()) {
       setLinkedAccounts([])
+      setLinkedAccountsSource(null)
       return
     }
 
@@ -786,13 +816,95 @@ export default function LockboxReviewWorkspace({
     ).then((response) => {
       if (controller.signal.aborted) return
       setLinkedAccounts(response.is_enterprise ? response.accounts : [])
+      setLinkedAccountsSource(response.is_enterprise ? (response.source ?? null) : null)
     }).catch(() => {
       if (controller.signal.aborted) return
       setLinkedAccounts([])
+      setLinkedAccountsSource(null)
     })
 
     return () => controller.abort()
   }, [customerNumber])
+
+  useEffect(() => {
+    if (!customerNumber.trim()) {
+      setCustomerSummary(null)
+      return
+    }
+
+    const controller = new AbortController()
+    void getCustomerSummary(
+      customerNumber.trim(),
+      controller.signal,
+    ).then((summary) => {
+      if (controller.signal.aborted) return
+      setCustomerSummary(summary)
+    }).catch(() => {
+      if (controller.signal.aborted) return
+      setCustomerSummary(null)
+    })
+
+    return () => controller.abort()
+  }, [customerNumber])
+
+  const customerDueNow = customerSummary
+    ? Number((
+      customerSummary.aging.current + customerSummary.aging.past_due
+    ).toFixed(2))
+    : null
+  const customerOver61 = customerSummary
+    ? Number((
+      customerSummary.aging.days_90 + customerSummary.aging.days_120
+    ).toFixed(2))
+    : null
+
+  const linkCurrentCustomerToEnterprise = async () => {
+    const target = linkTargetInput.trim()
+    if (!customerNumber.trim() || !target) return
+    setIsLinkingCustomer(true)
+    setLinkActionError('')
+    try {
+      const response = await linkCustomerAsEnterprise(
+        customerNumber.trim(),
+        target,
+        reviewer.trim(),
+      )
+      setLinkedAccounts(response.is_enterprise ? response.accounts : [])
+      setLinkedAccountsSource(response.is_enterprise ? (response.source ?? null) : null)
+      setLinkedAccountIndex(0)
+      setLinkTargetInput('')
+    } catch (error) {
+      setLinkActionError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to link these customers.',
+      )
+    } finally {
+      setIsLinkingCustomer(false)
+    }
+  }
+
+  const unlinkCurrentCustomerFromManualGroup = async () => {
+    if (!customerNumber.trim()) return
+    setIsLinkingCustomer(true)
+    setLinkActionError('')
+    try {
+      const response = await unlinkCustomerFromManualEnterprise(
+        customerNumber.trim(),
+      )
+      setLinkedAccounts(response.is_enterprise ? response.accounts : [])
+      setLinkedAccountsSource(response.is_enterprise ? (response.source ?? null) : null)
+      setLinkedAccountIndex(0)
+    } catch (error) {
+      setLinkActionError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to unlink this customer.',
+      )
+    } finally {
+      setIsLinkingCustomer(false)
+    }
+  }
 
   const activeLinkedAccount = linkedAccounts[linkedAccountIndex] || null
 
@@ -805,25 +917,30 @@ export default function LockboxReviewWorkspace({
       || activeLinkedAccount.is_current_customer
       || !transaction
     ) {
-      setLinkedAccountOpenInvoices([])
       setLinkedInvoiceError('')
       return
     }
 
+    const linkedCustomerNumber = activeLinkedAccount.customer_number
     const controller = new AbortController()
     setIsLoadingLinkedInvoices(true)
     setLinkedInvoiceError('')
 
     void getLockboxOpenInvoices(
-      activeLinkedAccount.customer_number,
+      linkedCustomerNumber,
       normalizeLockboxPaymentDate(transaction.date),
       controller.signal,
     ).then((invoices) => {
       if (controller.signal.aborted) return
-      setLinkedAccountOpenInvoices(invoices ?? [])
+      // Merge rather than replace - a linked account's invoices, once
+      // fetched, stay available for the allocation table's evidence lookup
+      // even after the reviewer toggles to a different account.
+      setLinkedAccountInvoicesByCustomer((current) => ({
+        ...current,
+        [linkedCustomerNumber]: invoices ?? [],
+      }))
     }).catch((error) => {
       if (controller.signal.aborted) return
-      setLinkedAccountOpenInvoices([])
       setLinkedInvoiceError(
         error instanceof Error
           ? error.message
@@ -899,8 +1016,14 @@ export default function LockboxReviewWorkspace({
     [allocations],
   )
 
+  const miscGlAmountNumber = Number(miscGlAmount) || 0
+  const miscGlCode = MISC_GL_REASONS.find(
+    (reason) => reason.value === miscGlReason,
+  )?.glCode || ''
   const difference = transaction
-    ? Number((transaction.check_amount - allocationTotal).toFixed(2))
+    ? Number((
+      transaction.check_amount - allocationTotal - miscGlAmountNumber
+    ).toFixed(2))
     : 0
   const balanced = Math.abs(difference) <= 0.01
   const hasUnsavedAllocationChanges = Boolean(
@@ -913,6 +1036,10 @@ export default function LockboxReviewWorkspace({
     || reviewer !== transaction.reviewer
     || notes !== transaction.notes
     || overrideReason !== transaction.override_reason
+    || miscGlReason !== (transaction.misc_gl?.reason || '')
+    || miscGlLocation !== (transaction.misc_gl?.location || '')
+    || miscGlDepartment !== (transaction.misc_gl?.department || '')
+    || miscGlAmountNumber !== (transaction.misc_gl?.amount || 0)
     || customerNumber.trim() !== (transaction.customer_number || '').trim()
     || customerName.trim() !== (transaction.customer_name || '').trim()
     || customerPhone.trim() !== firstText(
@@ -1097,9 +1224,32 @@ export default function LockboxReviewWorkspace({
     setOpenInvoiceSearch('')
   }
 
+  const activeLinkedAccountOpenInvoices = activeLinkedAccount
+    ? linkedAccountInvoicesByCustomer[activeLinkedAccount.customer_number] || []
+    : []
+
+  const allOpenInvoicesByKey = useMemo(() => {
+    const combined = new Map(openInvoicesByNumber)
+    for (const invoices of Object.values(linkedAccountInvoicesByCustomer)) {
+      for (const invoice of invoices) {
+        const identity = getLegacyOpenItemIdentity(invoice)
+        if (identity) combined.set(identity.key, invoice)
+      }
+    }
+    return combined
+  }, [openInvoicesByNumber, linkedAccountInvoicesByCustomer])
+
+  const customerNameByNumber = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const account of linkedAccounts) {
+      map.set(account.customer_number, account.customer_name)
+    }
+    return map
+  }, [linkedAccounts])
+
   const availableLinkedOpenInvoices = useMemo(() => {
     const search = linkedInvoiceSearch.trim().toLowerCase()
-    return linkedAccountOpenInvoices.filter((invoice) => {
+    return activeLinkedAccountOpenInvoices.filter((invoice) => {
       const identity = getLegacyOpenItemIdentity(invoice)
       if (!identity || allocatedInvoiceNumbers.has(identity.key)) {
         return false
@@ -1120,8 +1270,8 @@ export default function LockboxReviewWorkspace({
       ].some((value) => String(value ?? '').toLowerCase().includes(search))
     })
   }, [
+    activeLinkedAccountOpenInvoices,
     allocatedInvoiceNumbers,
-    linkedAccountOpenInvoices,
     linkedInvoiceSearch,
   ])
 
@@ -1556,6 +1706,10 @@ export default function LockboxReviewWorkspace({
         customer_city: customerCity.trim(),
         customer_state: customerState.trim(),
         customer_postal_code: customerPostalCode.trim(),
+        misc_gl_reason: miscGlReason,
+        misc_gl_location: miscGlLocation.trim(),
+        misc_gl_department: miscGlDepartment.trim(),
+        misc_gl_amount: miscGlAmountNumber,
       }
 
       const updated = await saveLockboxTransactionReview(
@@ -2223,6 +2377,40 @@ export default function LockboxReviewWorkspace({
               {customerName || 'Unknown customer'} · Check {transaction.check_number}
             </small>
           </div>
+          {customerSummary && (
+            <div className="lockbox-statement-summary">
+              <div className="lockbox-statement-summary-col">
+                <span>Statement Date</span>
+                <strong>
+                  {displayDate(customerSummary.activity.last_statement_date as string | null)}
+                </strong>
+              </div>
+              <div className="lockbox-statement-summary-col">
+                <span>Future</span>
+                <strong>{money(customerSummary.aging.future)}</strong>
+              </div>
+              <div className="lockbox-statement-summary-col">
+                <span>Current</span>
+                <strong>{money(customerSummary.aging.current)}</strong>
+              </div>
+              <div className="lockbox-statement-summary-col">
+                <span>01-30</span>
+                <strong>{money(customerSummary.aging.days_30)}</strong>
+              </div>
+              <div className="lockbox-statement-summary-col">
+                <span>31-60</span>
+                <strong>{money(customerSummary.aging.days_60)}</strong>
+              </div>
+              <div className="lockbox-statement-summary-col">
+                <span>Over 61</span>
+                <strong>{money(customerOver61 ?? 0)}</strong>
+              </div>
+              <div className="lockbox-statement-summary-col lockbox-statement-summary-total">
+                <span>Due Now</span>
+                <strong>{money(customerDueNow ?? 0)}</strong>
+              </div>
+            </div>
+          )}
           <div className="lockbox-review-topbar-actions">
             {preparedTransaction && (
               <div className={`lockbox-prepared-badge ${preparedTransaction.status}`}>
@@ -2325,6 +2513,39 @@ export default function LockboxReviewWorkspace({
                   <strong>Customer Identity</strong>
                   <span>Correct these values to create customer-matching training data</span>
                 </div>
+                {linkedAccounts.length > 1 && (
+                  <div className="lockbox-info-bubble-wrap">
+                    <button
+                      type="button"
+                      className="lockbox-info-bubble"
+                      aria-label="Show linked enterprise accounts"
+                      onClick={() => setShowLinkedAccountsInfo(
+                        (current) => !current,
+                      )}
+                    >
+                      i
+                    </button>
+                    {showLinkedAccountsInfo && (
+                      <div className="lockbox-info-popover lockbox-linked-accounts-popover">
+                        <strong>
+                          {linkedAccountsSource === 'manual'
+                            ? 'Manually linked accounts'
+                            : linkedAccountsSource === 'mixed'
+                              ? 'ERP and manually linked accounts'
+                              : 'ERP enterprise-linked accounts'}
+                        </strong>
+                        <ul>
+                          {linkedAccounts.map((account) => (
+                            <li key={account.customer_number}>
+                              <span>#{account.customer_number}</span>
+                              <span>{account.customer_name}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="lockbox-review-fields lockbox-customer-fields">
@@ -2478,12 +2699,29 @@ export default function LockboxReviewWorkspace({
                 {linkedAccounts.length > 1 && (
                   <div className="lockbox-linked-accounts">
                     <div className="lockbox-linked-accounts-heading">
-                      <strong>Linked Enterprise Accounts</strong>
-                      <span>
-                        This customer pays as part of an enterprise group.
-                        Toggle to another linked account to add its open
-                        invoices to this check's allocation.
-                      </span>
+                      <div>
+                        <strong>Linked Enterprise Accounts</strong>
+                        <span>
+                          {linkedAccountsSource === 'manual'
+                            ? 'Manually linked for payment purposes. '
+                            : linkedAccountsSource === 'mixed'
+                              ? 'ERP-linked, plus at least one manually linked account. '
+                              : 'This customer pays as part of an enterprise group. '}
+                          Toggle to another linked account to add its open
+                          invoices to this check's allocation.
+                        </span>
+                      </div>
+                      {(linkedAccountsSource === 'manual'
+                        || linkedAccountsSource === 'mixed') && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={isLinkingCustomer}
+                          onClick={() => void unlinkCurrentCustomerFromManualGroup()}
+                        >
+                          Unlink #{customerNumber}
+                        </button>
+                      )}
                     </div>
                     <div className="lockbox-linked-account-toggle">
                       <button
@@ -2603,6 +2841,57 @@ export default function LockboxReviewWorkspace({
                             )}
                           </div>
                         )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {Boolean(customerNumber.trim()) && (
+                  <div className="lockbox-link-customer-form">
+                    <div className="lockbox-link-customer-row">
+                      <strong>Link as Enterprise</strong>
+                      <div className="lockbox-info-bubble-wrap">
+                        <button
+                          type="button"
+                          className="lockbox-info-bubble"
+                          aria-label="What does linking as enterprise do?"
+                          onClick={() => setShowLinkFormInfo(
+                            (current) => !current,
+                          )}
+                        >
+                          i
+                        </button>
+                        {showLinkFormInfo && (
+                          <div className="lockbox-info-popover">
+                            If this customer is known to pay jointly with
+                            another account - even one with no ERP CUNUMENT
+                            relationship, or in addition to an existing ERP
+                            enterprise group - link them here to add
+                            invoices from both when balancing a check.
+                          </div>
+                        )}
+                      </div>
+                      <input
+                        value={linkTargetInput}
+                        onChange={(event) => setLinkTargetInput(
+                          event.target.value,
+                        )}
+                        placeholder="Customer number to link"
+                      />
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={
+                          isLinkingCustomer || !linkTargetInput.trim()
+                        }
+                        onClick={() => void linkCurrentCustomerToEnterprise()}
+                      >
+                        {isLinkingCustomer ? 'Linking…' : 'Link'}
+                      </button>
+                    </div>
+                    {linkActionError && (
+                      <div className="lockbox-link-customer-error">
+                        {linkActionError}
                       </div>
                     )}
                   </div>
@@ -2755,7 +3044,63 @@ export default function LockboxReviewWorkspace({
                             </tr>
                           </thead>
                           <tbody>
-                            {allocations.map((allocation, index) => {
+                            {(() => {
+                              const hasMultipleCustomers = allocations.some(
+                                (allocation) => {
+                                  const owner = (
+                                    allocation.customer_number || ''
+                                  ).trim()
+                                  return owner && owner !== customerNumber.trim()
+                                },
+                              )
+                              const orderedEntries = allocations.map(
+                                (allocation, index) => ({ allocation, index }),
+                              )
+                              if (hasMultipleCustomers) {
+                                orderedEntries.sort((a, b) => {
+                                  const groupA = (
+                                    a.allocation.customer_number || ''
+                                  ).trim()
+                                  const groupB = (
+                                    b.allocation.customer_number || ''
+                                  ).trim()
+                                  if (groupA === groupB) return a.index - b.index
+                                  if (!groupA) return -1
+                                  if (!groupB) return 1
+                                  return groupA.localeCompare(groupB)
+                                })
+                              }
+
+                              const rows: ReactElement[] = []
+                              let lastGroupKey: string | null = null
+
+                              orderedEntries.forEach(({ allocation, index }) => {
+                                const groupKey = (
+                                  allocation.customer_number || ''
+                                ).trim()
+                                if (
+                                  hasMultipleCustomers
+                                  && groupKey !== lastGroupKey
+                                ) {
+                                  lastGroupKey = groupKey
+                                  const groupLabel = groupKey
+                                    ? `#${groupKey} · ${
+                                      customerNameByNumber.get(groupKey)
+                                        || 'Unknown customer'
+                                    }`
+                                    : `#${customerNumber.trim()} · ${
+                                      customerName || 'Unknown customer'
+                                    } (primary)`
+                                  rows.push(
+                                    <tr
+                                      key={`group-${groupKey || 'primary'}`}
+                                      className="cash-ai-table-group-row"
+                                    >
+                                      <td colSpan={9}>{groupLabel}</td>
+                                    </tr>,
+                                  )
+                                }
+
                               const invoiceNumber = normalizeErpInvoiceNumber(
                                 allocation.invoice_number,
                               )
@@ -2771,7 +3116,7 @@ export default function LockboxReviewWorkspace({
                                         ) === invoiceNumber
                                   ),
                                 )
-                              const invoice = openInvoicesByNumber.get(
+                              const invoice = allOpenInvoicesByKey.get(
                                 allocationOpenItemKey(allocation),
                               )
                               const effect = invoice
@@ -2801,7 +3146,7 @@ export default function LockboxReviewWorkspace({
                                 && !isGovernedServiceCharge(allocation)
                               )
 
-                              return (
+                              rows.push(
                                 <tr key={`${index}-${allocation.invoice_number}`}>
                                   <td>
                                     <input
@@ -2911,9 +3256,12 @@ export default function LockboxReviewWorkspace({
                                       ×
                                     </button>
                                   </td>
-                                </tr>
+                                </tr>,
                               )
-                            })}
+                              })
+
+                              return rows
+                            })()}
                           </tbody>
                         </table>
                       ) : (
@@ -3286,8 +3634,64 @@ export default function LockboxReviewWorkspace({
 
             <div className="lockbox-review-fields">
               <label>Reviewer<input value={reviewer} onChange={(event) => setReviewer(event.target.value)} placeholder="Reviewer name" /></label>
-              <label>Review notes<textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What was corrected?" /></label>
               {!balanced && <label>Override reason<textarea value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} placeholder="Required only when approving an unbalanced transaction" /></label>}
+            </div>
+
+            <div className="lockbox-misc-gl-entry">
+              <div className="lockbox-misc-gl-heading">
+                <strong>Misc G/L Entry</strong>
+                <span>
+                  For write-offs already waived on the account, most
+                  typically a service charge. The amount reduces the
+                  outstanding difference on this check.
+                </span>
+              </div>
+              <div className="lockbox-misc-gl-row">
+                <label>
+                  Reason
+                  <select
+                    value={miscGlReason}
+                    onChange={(event) => setMiscGlReason(event.target.value)}
+                  >
+                    <option value="">—</option>
+                    {MISC_GL_REASONS.map((reason) => (
+                      <option key={reason.value} value={reason.value}>
+                        {reason.value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  GL
+                  <input value={miscGlCode} readOnly placeholder="—" />
+                </label>
+                <label>
+                  Location
+                  <input
+                    value={miscGlLocation}
+                    onChange={(event) => setMiscGlLocation(event.target.value)}
+                    placeholder="Location"
+                  />
+                </label>
+                <label>
+                  Department
+                  <input
+                    value={miscGlDepartment}
+                    onChange={(event) => setMiscGlDepartment(event.target.value)}
+                    placeholder="Department"
+                  />
+                </label>
+                <label>
+                  Amount
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={miscGlAmount}
+                    onChange={(event) => setMiscGlAmount(event.target.value)}
+                    placeholder="0.00"
+                  />
+                </label>
+              </div>
             </div>
           </section>
 
@@ -3295,6 +3699,9 @@ export default function LockboxReviewWorkspace({
             <div className="lockbox-review-pane-heading"><div><strong>Validation</strong><span>Updates as you edit</span></div></div>
             <div className="lockbox-validation-card"><span>Check Amount</span><strong>{money(transaction.check_amount)}</strong></div>
             <div className="lockbox-validation-card"><span>Allocation Total</span><strong>{money(allocationTotal)}</strong></div>
+            {miscGlAmountNumber !== 0 && (
+              <div className="lockbox-validation-card"><span>Misc G/L Entry</span><strong>{money(miscGlAmountNumber)}</strong></div>
+            )}
             <div className={`lockbox-validation-card ${balanced ? 'success' : 'warning'}`}><span>Difference</span><strong>{money(difference)}</strong></div>
             <div className={`lockbox-balance-state ${balanced ? 'success' : 'warning'}`}><b>{balanced ? '✓' : '!'}</b><div><strong>{balanced ? 'Balanced' : 'Review Required'}</strong><span>{balanced ? 'Ready for approval' : 'Allocations do not match the check amount'}</span></div></div>
 

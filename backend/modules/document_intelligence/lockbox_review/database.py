@@ -42,6 +42,7 @@ def initialize_database() -> None:
                 reviewer TEXT NOT NULL DEFAULT '',
                 notes TEXT NOT NULL DEFAULT '',
                 override_reason TEXT NOT NULL DEFAULT '',
+                misc_gl_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (job_id, transaction_id)
@@ -84,6 +85,11 @@ def initialize_database() -> None:
             connection.execute(
                 "ALTER TABLE transaction_reviews "
                 "ADD COLUMN customer_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "misc_gl_json" not in columns:
+            connection.execute(
+                "ALTER TABLE transaction_reviews "
+                "ADD COLUMN misc_gl_json TEXT NOT NULL DEFAULT '{}'"
             )
         connection.commit()
 
@@ -173,6 +179,7 @@ def get_reviews(job_id: str) -> dict[str, dict[str, Any]]:
             "reviewer": row["reviewer"],
             "notes": row["notes"],
             "override_reason": row["override_reason"],
+            "misc_gl": json.loads(row["misc_gl_json"] or "{}"),
             "reviewed_at": row["updated_at"],
         }
         for row in rows
@@ -190,6 +197,7 @@ def save_review(
     reviewer: str,
     notes: str,
     override_reason: str,
+    misc_gl: dict[str, Any] | None = None,
 ) -> None:
     initialize_database()
     now = datetime.now(timezone.utc).isoformat()
@@ -199,8 +207,8 @@ def save_review(
             INSERT INTO transaction_reviews (
                 job_id, transaction_id, original_allocations_json,
                 allocations_json, customer_json, status, reviewer, notes,
-                override_reason, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                override_reason, misc_gl_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id, transaction_id) DO UPDATE SET
                 allocations_json = excluded.allocations_json,
                 customer_json = excluded.customer_json,
@@ -208,6 +216,7 @@ def save_review(
                 reviewer = excluded.reviewer,
                 notes = excluded.notes,
                 override_reason = excluded.override_reason,
+                misc_gl_json = excluded.misc_gl_json,
                 updated_at = excluded.updated_at
             """,
             (
@@ -220,6 +229,7 @@ def save_review(
                 reviewer,
                 notes,
                 override_reason,
+                json.dumps(misc_gl or {}, ensure_ascii=False),
                 now,
                 now,
             ),

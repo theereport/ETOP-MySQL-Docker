@@ -30,6 +30,7 @@ HEADERS = [
     "Check Image",
     "Envelope Image",
     "Invoice Image",
+    "Customer Number",
 ]
 
 
@@ -241,6 +242,10 @@ def export_pnc_workbook(
                         )
                         else ""
                     ),
+                    transaction.get(
+                        "customer_number",
+                        "",
+                    ),
                 ]
             )
             sequence += 1
@@ -280,7 +285,7 @@ def export_pnc_workbook(
 
     sheet.freeze_panes = "A4"
     sheet.auto_filter.ref = (
-        f"A3:T{max(sheet.max_row, 3)}"
+        f"A3:U{max(sheet.max_row, 3)}"
     )
 
     date_column = 6
@@ -309,7 +314,7 @@ def export_pnc_workbook(
         9: 11, 10: 9, 11: 14, 12: 13,
         13: 15, 14: 13, 15: 17,
         16: 18, 17: 14, 18: 13,
-        19: 15, 20: 14,
+        19: 15, 20: 14, 21: 15,
     }
 
     for column, width in widths.items():
@@ -317,5 +322,54 @@ def export_pnc_workbook(
             get_column_letter(column)
         ].width = width
 
+    _write_misc_gl_sheet(workbook, result)
+
     workbook.save(output_path)
     return output_path
+
+
+MISC_GL_HEADERS = [
+    "Check #",
+    "Customer #",
+    "GL Code",
+    "Location",
+    "Department",
+    "Amount",
+]
+
+
+def _write_misc_gl_sheet(
+    workbook: Workbook,
+    result: dict[str, Any],
+) -> None:
+    """A second tab listing every Misc G/L write-off entered during review -
+    most typically a service-charge adjustment already waived on the
+    account. Kept separate from the invoice-allocation detail sheet since
+    these rows never post against TMAROP open items."""
+
+    if "misc_gl" in workbook.sheetnames:
+        del workbook["misc_gl"]
+    sheet = workbook.create_sheet("misc_gl")
+
+    for column, header in enumerate(MISC_GL_HEADERS, start=1):
+        cell = sheet.cell(row=1, column=column, value=header)
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.font = Font(bold=True, color="FFFFFF")
+
+    row_offset = 2
+    for transaction in result.get("transactions", []):
+        misc_gl = transaction.get("misc_gl") or {}
+        amount = misc_gl.get("amount") or 0
+        if not amount:
+            continue
+        sheet.cell(row=row_offset, column=1, value=transaction.get("check_number"))
+        sheet.cell(row=row_offset, column=2, value=transaction.get("customer_number"))
+        sheet.cell(row=row_offset, column=3, value=misc_gl.get("gl_code", ""))
+        sheet.cell(row=row_offset, column=4, value=misc_gl.get("location", ""))
+        sheet.cell(row=row_offset, column=5, value=misc_gl.get("department", ""))
+        cell = sheet.cell(row=row_offset, column=6, value=amount)
+        cell.number_format = '$#,##0.00'
+        row_offset += 1
+
+    for column in range(1, len(MISC_GL_HEADERS) + 1):
+        sheet.column_dimensions[get_column_letter(column)].width = 15
