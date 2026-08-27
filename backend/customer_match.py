@@ -791,3 +791,140 @@ def resolve_invoice_owners(
         "source_query_count": source_count,
         "read_only": True,
     }
+
+
+@router.get("/linked-customers/{customer_number}")
+def linked_customer_accounts(customer_number: str) -> dict[str, Any]:
+    """Return every CUNUMENT-linked TMCUST account for this customer that
+    currently has an open item, so a reviewer can toggle through an
+    enterprise group's accounts and allocate one check across more than
+    one of them. Enterprise customers commonly pay several linked accounts
+    with a single check.
+    """
+
+    normalized_customer = str(customer_number or "").strip().removesuffix(
+        ".0"
+    )
+    if not normalized_customer:
+        raise HTTPException(
+            status_code=400,
+            detail="A customer number is required.",
+        )
+
+    try:
+        columns = _resolve_customer_columns()
+        number_column = columns.get("customer_number")
+        enterprise_column = columns.get("enterprise_number")
+        if not number_column or not enterprise_column:
+            return {
+                "is_enterprise": False,
+                "enterprise_number": "",
+                "accounts": [],
+            }
+
+        row = madden_database.fetch_one(
+            f"""
+            SELECT CAST({_identifier(enterprise_column)} AS CHAR)
+                AS enterprise_number
+            FROM {_identifier(_SCHEMA)}.{_identifier(_CUSTOMER_TABLE)}
+            WHERE CAST({_identifier(number_column)} AS CHAR) = %s
+            """,
+            (normalized_customer,),
+        )
+        enterprise_number = str(
+            (row or {}).get("enterprise_number") or ""
+        ).strip().removesuffix(".0")
+
+        if not enterprise_number or enterprise_number == "0":
+            return {
+                "is_enterprise": False,
+                "enterprise_number": "",
+                "accounts": [],
+            }
+
+        linked_rows = _select_enterprise_customer_records(
+            columns,
+            normalized_customer,
+            enterprise_number,
+        )
+        linked_by_number = {
+            str(record.get("customer_number") or "")
+            .strip()
+            .removesuffix(".0"): record
+            for record in linked_rows
+            if str(record.get("customer_number") or "").strip()
+        }
+        linked_numbers = list(linked_by_number.keys())
+        if len(linked_numbers) <= 1:
+            return {
+                "is_enterprise": False,
+                "enterprise_number": enterprise_number,
+                "accounts": [],
+            }
+
+        placeholders = ", ".join(["%s"] * len(linked_numbers))
+        balance_rows = madden_database.fetch_all(
+            f"""
+            SELECT
+                CAST(TARONUMCST AS CHAR) AS customer_number,
+                COUNT(*) AS open_item_count
+            FROM TMAROP
+            WHERE TAROAMTOPN <> 0
+              AND TARONUMCST IN ({placeholders})
+            GROUP BY TARONUMCST
+            """,
+            tuple(linked_numbers),
+        )
+        open_item_counts = {
+            str(bal_row.get("customer_number") or "")
+            .strip()
+            .removesuffix(".0"): int(bal_row.get("open_item_count") or 0)
+            for bal_row in balance_rows
+        }
+
+        accounts = []
+        for number in linked_numbers:
+            is_current = number == normalized_customer
+            open_item_count = open_item_counts.get(number, 0)
+            if not is_current and open_item_count <= 0:
+                continue
+            record = linked_by_number[number]
+            accounts.append(
+                {
+                    "customer_number": number,
+                    "customer_name": str(
+                        record.get("customer_name") or ""
+                    ).strip(),
+                    "phone": str(record.get("phone") or "").strip(),
+                    "address_line_1": str(
+                        record.get("address_line_1") or ""
+                    ).strip(),
+                    "city": str(record.get("city") or "").strip(),
+                    "state": str(record.get("state") or "").strip(),
+                    "postal_code": str(
+                        record.get("postal_code") or ""
+                    ).strip(),
+                    "open_item_count": open_item_count,
+                    "is_current_customer": is_current,
+                }
+            )
+        accounts.sort(
+            key=lambda item: (
+                not item["is_current_customer"],
+                item["customer_name"],
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Linked enterprise customer lookup is unavailable: {exc}",
+        ) from exc
+
+    return {
+        "is_enterprise": len(accounts) > 1,
+        "enterprise_number": enterprise_number,
+        "accounts": accounts,
+        "read_only": True,
+    }

@@ -145,6 +145,7 @@ export type LockboxAllocation = {
   open_item_key?: string
   normalized_invoice_number?: string
   invoice_count?: number | null
+  customer_number?: string
 }
 
 export type LockboxTransaction = {
@@ -465,4 +466,23 @@ export type BulkInvoiceOwnerResponse = {
   invoice_count: number
   source_query_count: number
   read_only: boolean
+}
+
+export type LinkedCustomerAccount = {
+  customer_number: string
+  customer_name: string
+  phone: string
+  address_line_1: string
+  city: string
+  state: string
+  postal_code: string
+  open_item_count: number
+  is_current_customer: boolean
+}
+
+export type LinkedCustomerAccountsResponse = {
+  is_enterprise: boolean
+  enterprise_number: string
+  accounts: LinkedCustomerAccount[]
+  read_only?: boolean
 }

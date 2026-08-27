@@ -2405,26 +2405,11 @@
 .lockbox-review-actions button {
   padding: 8px 9px;
   font-size: 11px;
-}
-
-.lockbox-review-routing-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.lockbox-review-customer-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.lockbox-review-customer-actions button {
   min-width: 0;
   white-space: normal;
 }
 
-.lockbox-review-routing-actions .hold {
+.lockbox-review-actions .hold {
   border-color: rgba(231, 165, 71, .45);
   color: #efbb6b;
   background: rgba(211, 142, 45, .1);
@@ -2736,6 +2721,62 @@
   margin-top: 8px;
   color: #e8b96f;
   font-size: 10px;
+}
+
+.lockbox-linked-accounts {
+  grid-column: 1 / -1;
+  padding: 12px;
+  border: 1px solid #283b55;
+  border-radius: 10px;
+  background: rgba(16, 27, 44, .72);
+}
+
+.lockbox-linked-accounts-heading strong,
+.lockbox-linked-accounts-heading span {
+  display: block;
+}
+
+.lockbox-linked-accounts-heading span {
+  margin-top: 4px;
+  color: #7f90a8;
+  font-size: 10px;
+}
+
+.lockbox-linked-account-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.lockbox-linked-account-toggle button {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+}
+
+.lockbox-linked-account-current {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+
+.lockbox-linked-account-current strong,
+.lockbox-linked-account-current span {
+  display: block;
+}
+
+.lockbox-linked-account-current strong {
+  color: #edf4fc;
+}
+
+.lockbox-linked-account-current span {
+  margin-top: 3px;
+  color: #91a3bb;
+  font-size: 10px;
+}
+
+.lockbox-linked-account-actions {
+  margin-top: 10px;
 }
 
 @media (max-width: 1450px) {

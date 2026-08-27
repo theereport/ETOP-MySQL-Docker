@@ -19,6 +19,7 @@ import type {
   CustomerMatchRequest,
   CustomerMatchResponse,
   BulkInvoiceOwnerResponse,
+  LinkedCustomerAccountsResponse,
   DurableLockboxPreparation,
 } from './types'
 
@@ -510,6 +511,19 @@ export async function resolveLockboxInvoiceOwners(
       body: JSON.stringify({ invoice_numbers: invoiceNumbers }),
       signal,
     },
+  )
+  if (!response.ok) throw new Error(await readError(response))
+  return response.json()
+}
+
+export async function getLinkedCustomerAccounts(
+  customerNumber: string,
+  signal?: AbortSignal,
+): Promise<LinkedCustomerAccountsResponse> {
+  const response = await fetch(
+    `${PLATFORM_API_BASE}/customer-match/linked-customers/`
+    + `${encodeURIComponent(customerNumber)}`,
+    { signal },
   )
   if (!response.ok) throw new Error(await readError(response))
   return response.json()

@@ -19,6 +19,7 @@ import {
   appendLockboxCustomerNote,
   getLockboxCustomerNotes,
   getDocumentFileUrl,
+  getLinkedCustomerAccounts,
   saveLockboxTransactionReview,
 } from '../api'
 
@@ -27,6 +28,7 @@ import type {
   LockboxReviewStatus,
   LockboxCustomerNote,
   ReviewedLockboxAllocation,
+  LinkedCustomerAccount,
 } from '../types'
 
 import {
@@ -418,6 +420,14 @@ export default function LockboxReviewWorkspace({
   } | null>(null)
   const [showOpenInvoicePicker, setShowOpenInvoicePicker] = useState(false)
   const [openInvoiceSearch, setOpenInvoiceSearch] = useState('')
+  const [linkedAccounts, setLinkedAccounts] = useState<LinkedCustomerAccount[]>([])
+  const [linkedAccountIndex, setLinkedAccountIndex] = useState(0)
+  const [linkedAccountOpenInvoices, setLinkedAccountOpenInvoices] =
+    useState<LegacyInvoiceDetail[]>([])
+  const [isLoadingLinkedInvoices, setIsLoadingLinkedInvoices] = useState(false)
+  const [linkedInvoiceError, setLinkedInvoiceError] = useState('')
+  const [showLinkedInvoicePicker, setShowLinkedInvoicePicker] = useState(false)
+  const [linkedInvoiceSearch, setLinkedInvoiceSearch] = useState('')
   const [reviewActionModal, setReviewActionModal] =
     useState<ReviewActionModal>(null)
   const reviewActionModalRef = useRef<ReviewActionModal>(null)
@@ -760,6 +770,82 @@ export default function LockboxReviewWorkspace({
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
+    setLinkedAccountIndex(0)
+    setShowLinkedInvoicePicker(false)
+    setLinkedInvoiceSearch('')
+
+    if (!customerNumber.trim()) {
+      setLinkedAccounts([])
+      return
+    }
+
+    const controller = new AbortController()
+    void getLinkedCustomerAccounts(
+      customerNumber.trim(),
+      controller.signal,
+    ).then((response) => {
+      if (controller.signal.aborted) return
+      setLinkedAccounts(response.is_enterprise ? response.accounts : [])
+    }).catch(() => {
+      if (controller.signal.aborted) return
+      setLinkedAccounts([])
+    })
+
+    return () => controller.abort()
+  }, [customerNumber])
+
+  const activeLinkedAccount = linkedAccounts[linkedAccountIndex] || null
+
+  useEffect(() => {
+    setShowLinkedInvoicePicker(false)
+    setLinkedInvoiceSearch('')
+
+    if (
+      !activeLinkedAccount
+      || activeLinkedAccount.is_current_customer
+      || !transaction
+    ) {
+      setLinkedAccountOpenInvoices([])
+      setLinkedInvoiceError('')
+      return
+    }
+
+    const controller = new AbortController()
+    setIsLoadingLinkedInvoices(true)
+    setLinkedInvoiceError('')
+
+    void getLockboxOpenInvoices(
+      activeLinkedAccount.customer_number,
+      normalizeLockboxPaymentDate(transaction.date),
+      controller.signal,
+    ).then((invoices) => {
+      if (controller.signal.aborted) return
+      setLinkedAccountOpenInvoices(invoices ?? [])
+    }).catch((error) => {
+      if (controller.signal.aborted) return
+      setLinkedAccountOpenInvoices([])
+      setLinkedInvoiceError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to load ERP open invoices for this linked account.',
+      )
+    }).finally(() => {
+      if (!controller.signal.aborted) setIsLoadingLinkedInvoices(false)
+    })
+
+    return () => controller.abort()
+  }, [activeLinkedAccount, transaction])
+
+  const goToPreviousLinkedAccount = () => setLinkedAccountIndex((current) => (
+    linkedAccounts.length
+      ? (current - 1 + linkedAccounts.length) % linkedAccounts.length
+      : 0
+  ))
+  const goToNextLinkedAccount = () => setLinkedAccountIndex((current) => (
+    linkedAccounts.length ? (current + 1) % linkedAccounts.length : 0
+  ))
+
+  useEffect(() => {
     const query = customerSearch.trim()
 
     if (
@@ -1009,6 +1095,61 @@ export default function LockboxReviewWorkspace({
     ])
     setStatus('corrected')
     setOpenInvoiceSearch('')
+  }
+
+  const availableLinkedOpenInvoices = useMemo(() => {
+    const search = linkedInvoiceSearch.trim().toLowerCase()
+    return linkedAccountOpenInvoices.filter((invoice) => {
+      const identity = getLegacyOpenItemIdentity(invoice)
+      if (!identity || allocatedInvoiceNumbers.has(identity.key)) {
+        return false
+      }
+      if (!search) return true
+      const effect = getInvoiceBusinessEffect(invoice)
+      return [
+        identity.displayNumber,
+        identity.allocationKind,
+        identity.openItemKey,
+        invoice.reference_number,
+        invoice.due_date,
+        invoice.aging_bucket,
+        invoice.due_date_bucket,
+        effect.businessType,
+        effect.rawTransactionType,
+        effect.amount,
+      ].some((value) => String(value ?? '').toLowerCase().includes(search))
+    })
+  }, [
+    allocatedInvoiceNumbers,
+    linkedAccountOpenInvoices,
+    linkedInvoiceSearch,
+  ])
+
+  const addLinkedOpenInvoice = (
+    invoice: LegacyInvoiceDetail,
+    account: LinkedCustomerAccount,
+  ) => {
+    const identity = getLegacyOpenItemIdentity(invoice)
+    if (!identity || allocatedInvoiceNumbers.has(identity.key)) return
+    const effect = getInvoiceBusinessEffect(invoice)
+    markAllocationDraftDirty(true)
+    setAllocations((current) => [
+      ...current,
+      {
+        invoice_number: identity.displayNumber,
+        net_invoice_amount: effect.amount ?? 0,
+        invoice_page: String(activePage),
+        confidence: 1,
+        allocation_kind: identity.allocationKind,
+        erp_transaction_type: identity.rawTransactionType,
+        open_item_key: identity.openItemKey,
+        normalized_invoice_number: identity.normalizedInvoiceNumber,
+        invoice_count: identity.invoiceCount,
+        customer_number: account.customer_number,
+      },
+    ])
+    setStatus('corrected')
+    setLinkedInvoiceSearch('')
   }
 
   const applyNoRemittance = () => {
@@ -1362,6 +1503,13 @@ export default function LockboxReviewWorkspace({
       const note = `Prepared recommendation applied: ${recommendedRows.length} allocation row(s).`
       return current.trim() ? `${current.trim()}\n${note}` : note
     })
+  }
+
+  const clearAllocationDraft = () => {
+    if (allocations.length === 0) return
+    markAllocationDraftDirty(true)
+    setAllocations([])
+    setStatus('corrected')
   }
 
   const save = async (nextStatus: LockboxReviewStatus) => {
@@ -2327,6 +2475,139 @@ export default function LockboxReviewWorkspace({
                   </div>
                 )}
 
+                {linkedAccounts.length > 1 && (
+                  <div className="lockbox-linked-accounts">
+                    <div className="lockbox-linked-accounts-heading">
+                      <strong>Linked Enterprise Accounts</strong>
+                      <span>
+                        This customer pays as part of an enterprise group.
+                        Toggle to another linked account to add its open
+                        invoices to this check's allocation.
+                      </span>
+                    </div>
+                    <div className="lockbox-linked-account-toggle">
+                      <button
+                        type="button"
+                        className="secondary"
+                        aria-label="Previous linked account"
+                        onClick={goToPreviousLinkedAccount}
+                      >
+                        ‹
+                      </button>
+                      <div className="lockbox-linked-account-current">
+                        <strong>
+                          {activeLinkedAccount?.customer_name || 'Unknown customer'}
+                        </strong>
+                        <span>
+                          #{activeLinkedAccount?.customer_number}
+                          {activeLinkedAccount?.is_current_customer
+                            ? ' · Currently selected'
+                            : ''}
+                          {' · '}
+                          {activeLinkedAccount?.open_item_count ?? 0} open item(s)
+                          {' · '}{linkedAccountIndex + 1} of {linkedAccounts.length}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="secondary"
+                        aria-label="Next linked account"
+                        onClick={goToNextLinkedAccount}
+                      >
+                        ›
+                      </button>
+                    </div>
+                    {activeLinkedAccount && !activeLinkedAccount.is_current_customer && (
+                      <div className="lockbox-linked-account-actions">
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={isLoadingLinkedInvoices}
+                          onClick={() => setShowLinkedInvoicePicker(
+                            (current) => !current,
+                          )}
+                        >
+                          {isLoadingLinkedInvoices
+                            ? 'Loading ERP Open A/R…'
+                            : showLinkedInvoicePicker
+                              ? 'Close ERP Open A/R'
+                              : `+ Add Invoice From #${activeLinkedAccount.customer_number}`}
+                        </button>
+                        {showLinkedInvoicePicker && (
+                          <div className="cash-ai-open-invoice-picker">
+                            <input
+                              value={linkedInvoiceSearch}
+                              onChange={(event) => setLinkedInvoiceSearch(
+                                event.target.value,
+                              )}
+                              placeholder="Search invoice, reference, due date, aging, debit, or credit"
+                              autoFocus
+                            />
+                            {linkedInvoiceError ? (
+                              <div className="cash-ai-open-invoice-state">
+                                {linkedInvoiceError}
+                              </div>
+                            ) : availableLinkedOpenInvoices.length > 0 ? (
+                              <div className="cash-ai-open-invoice-list">
+                                {availableLinkedOpenInvoices.slice(0, 80).map(
+                                  (invoice) => {
+                                    const identity =
+                                      getLegacyOpenItemIdentity(invoice)
+                                    if (!identity) return null
+                                    const effect =
+                                      getInvoiceBusinessEffect(invoice)
+                                    return (
+                                      <button
+                                        type="button"
+                                        className="cash-ai-open-invoice"
+                                        key={identity.key}
+                                        onClick={() => addLinkedOpenInvoice(
+                                          invoice,
+                                          activeLinkedAccount,
+                                        )}
+                                      >
+                                        <strong>
+                                          {identity.allocationKind === 'service_charge'
+                                            ? `SC · ${identity.displayNumber}`
+                                            : identity.displayNumber}
+                                        </strong>
+                                        <span>
+                                          {effect.amount === null
+                                            ? '—'
+                                            : money(effect.amount)}
+                                        </span>
+                                        <small>
+                                          {effect.businessType === 'credit'
+                                            ? 'Credit'
+                                            : identity.allocationKind === 'service_charge'
+                                              ? 'Service charge'
+                                              : 'Debit'}
+                                          {' · Due '}
+                                          {displayDate(invoice.due_date)}
+                                          {' · '}
+                                          {invoice.due_date_bucket
+                                            || invoice.aging_bucket
+                                            || 'No aging bucket'}
+                                        </small>
+                                      </button>
+                                    )
+                                  },
+                                )}
+                              </div>
+                            ) : (
+                              <div className="cash-ai-open-invoice-state">
+                                {isLoadingLinkedInvoices
+                                  ? 'Loading current ERP Open A/R…'
+                                  : 'No additional ERP open items match this search.'}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {invoiceMatchMessage && (
                   <div className={`erp-invoice-match-message ${customerMatchSource === 'invoice' ? 'success' : ''}`}>
                     {invoiceMatchMessage}
@@ -2466,6 +2747,7 @@ export default function LockboxReviewWorkspace({
                               <th>ERP Effect</th>
                               <th>Open Amount</th>
                               <th>Apply Amount</th>
+                              <th>Invoice Date</th>
                               <th>Due Date</th>
                               <th>Aging</th>
                               <th>Confidence</th>
@@ -2586,6 +2868,12 @@ export default function LockboxReviewWorkspace({
                                           : undefined
                                       }
                                     />
+                                  </td>
+                                  <td>
+                                    {displayDate(
+                                      invoice?.invoice_date
+                                      || suggestion?.invoice_date,
+                                    )}
                                   </td>
                                   <td>
                                     {displayDate(
@@ -2750,6 +3038,14 @@ export default function LockboxReviewWorkspace({
                       onClick={() => void loadRecommendation()}
                     >
                       {isLoadingRecommendation ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={allocations.length === 0}
+                      onClick={clearAllocationDraft}
+                    >
+                      Clear
                     </button>
                   </div>
                 </>
@@ -3008,55 +3304,51 @@ export default function LockboxReviewWorkspace({
             </div>
 
             <div className="lockbox-review-actions">
-              <div className="lockbox-review-customer-actions">
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={
-                    isSaving
-                    || isPreparingSelection
-                    || !previousLockboxQueueTransactionId(
-                      queueTransactions,
-                      transaction.transaction_id,
-                    )
-                  }
-                  onClick={() => void goBackWithoutSaving()}
-                >
-                  Back
-                </button>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => void openCustomerNotes()}
-                >
-                  Customer Notes
-                </button>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={openCustomerEmailDraft}
-                >
-                  Email Customer
-                </button>
-              </div>
-              <div className="lockbox-review-routing-actions">
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={isSaving || isPreparingSelection}
-                  onClick={() => void advanceWithoutSaving()}
-                >
-                  Next
-                </button>
-                <button
-                  type="button"
-                  className="secondary hold"
-                  disabled={isSaving || isPreparingSelection}
-                  onClick={() => void save('held')}
-                >
-                  {isSaving ? 'Saving…' : 'Hold'}
-                </button>
-              </div>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void openCustomerNotes()}
+              >
+                Customer Notes
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={openCustomerEmailDraft}
+              >
+                Email Customer
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={
+                  isSaving
+                  || isPreparingSelection
+                  || !previousLockboxQueueTransactionId(
+                    queueTransactions,
+                    transaction.transaction_id,
+                  )
+                }
+                onClick={() => void goBackWithoutSaving()}
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={isSaving || isPreparingSelection}
+                onClick={() => void advanceWithoutSaving()}
+              >
+                Next
+              </button>
+              <button
+                type="button"
+                className="secondary hold"
+                disabled={isSaving || isPreparingSelection}
+                onClick={() => void save('held')}
+              >
+                {isSaving ? 'Saving…' : 'Hold'}
+              </button>
               <button type="button" className="secondary" disabled={isSaving} onClick={() => void save('corrected')}>{isSaving ? 'Saving…' : 'Save Correction'}</button>
               <button type="button" className="primary" disabled={isSaving} onClick={() => void save('approved')}>{isSaving ? 'Saving…' : 'Approve Transaction'}</button>
             </div>
