@@ -48,6 +48,33 @@ Increment 4A admits one exact six- or seven-digit ERP customer number
 (MaddenCo TMCUST.CUNUMBER is decimal(7,0)) read from the check-bounded FOR
 line only after stronger invoice-owner, explicit account, and K&M
 statement evidence is exhausted.
+
+Increment 4D (business decision, under parallel-testing observation):
+partial invoice-owner evidence - some, not all, admitted invoices missing
+current-open ownership - no longer blocks promotion when the selected
+customer basis is payer_supplied_customer_number, km_statement_customer_number,
+learned_payer_bank_account_mapping, or unique_open_ar_bucket_match. The
+missing evidence is most often incomplete or lost remittance detail rather
+than a conflict, and each of these bases already independently and
+uniquely identifies the customer. Every other gate remains enforced
+unchanged, including an actual invoice_owner_conflict and each basis's own
+verified flag. check_for_customer_number and check_phone_number_match are
+deliberately not included in this relaxation. This scope was set by
+explicit business decision pending the results of parallel testing against
+approved PNC workbooks; tighten back to Increment 4A behavior for one or
+more of these bases if that testing shows it should not have promoted.
+
+Increment 4E (business decision, under parallel-testing observation):
+a raw remittance row that could not be uniquely disambiguated to one
+invoice candidate no longer blocks promotion for the direct
+exact_remittance_invoices method when remittance_completion_assessment
+independently confirms the actual allocation is structurally clean -
+every invoice real, currently open, correctly owned, one amount per
+invoice, no removed or conflicting rows. An active
+conflicting_cross_source_amount disagreement between two extraction
+sources is never tolerated by this relaxation and continues to block
+unconditionally, as does any row rejection reason not explicitly
+recognized as tolerable.
 """
 
 from __future__ import annotations
@@ -63,9 +90,9 @@ CONTROL_RULE_VERSION = (
     "ADR-001@0.7.0-wave2-increment3e+BR-LOCKBOX-001..013"
 )
 CONTROL_SERVICE_VERSION = "lockbox-preparation@0.7.0-wave2-increment3e"
-PROJECTION_VERSION = "lockbox-control-projection@0.7.0-wave2-increment4a"
+PROJECTION_VERSION = "lockbox-control-projection@0.7.0-wave2-increment4e"
 FRESH_SOURCE_PROJECTION_VERSION = (
-    "lockbox-fresh-source-projection@0.7.0-wave2-increment4a"
+    "lockbox-fresh-source-projection@0.7.0-wave2-increment4e"
 )
 EXPECTED_TRANSACTION_COUNT = 78
 ACCEPTED_BALANCED_COUNT = 30
@@ -74,6 +101,23 @@ PRIOR_PROJECTED_BALANCED_FLOOR = 43
 PRIOR_PROJECTED_REVIEW_CEILING = 35
 EXPECTED_BOUNDARY_RULE = "next_transaction_information"
 MONEY_TOLERANCE = Decimal("0.01")
+
+# Increment 4D business decision: these strong, invoice-number-independent
+# customer bases already uniquely and independently identify the customer,
+# so partial (not conflicting) invoice-owner evidence on the remittance -
+# most often incomplete or lost remit detail rather than a real problem -
+# no longer blocks promotion for them. check_for_customer_number and
+# check_phone_number_match are deliberately excluded; only
+# unique_current_open_invoice_owner had this tolerance before Increment 4D.
+# Under parallel-testing observation - tighten back per basis if warranted.
+PARTIAL_INVOICE_EVIDENCE_TOLERANT_BASES = frozenset(
+    {
+        "payer_supplied_customer_number",
+        "km_statement_customer_number",
+        "learned_payer_bank_account_mapping",
+        "unique_open_ar_bucket_match",
+    }
+)
 
 PROMOTION_SELECTION_BASES = frozenset(
     {
@@ -329,11 +373,19 @@ def _customer_evidence_is_deterministic(result: Mapping[str, Any]) -> bool:
         str(value)
         for value in evidence.get("failed_selection_gates") or ()
     }
-    if failed_gates & _CUSTOMER_EVIDENCE_STOP_GATES:
+    effective_stop_gates = _CUSTOMER_EVIDENCE_STOP_GATES
+    if selection_basis in PARTIAL_INVOICE_EVIDENCE_TOLERANT_BASES:
+        effective_stop_gates = effective_stop_gates - {
+            "partial_invoice_owner_evidence"
+        }
+    if failed_gates & effective_stop_gates:
         return False
     if bool(evidence.get("invoice_owner_conflict")):
         return False
-    if bool(evidence.get("partial_invoice_owner_evidence")):
+    if (
+        bool(evidence.get("partial_invoice_owner_evidence"))
+        and selection_basis not in PARTIAL_INVOICE_EVIDENCE_TOLERANT_BASES
+    ):
         return False
     if bool(evidence.get("payer_account_directive_conflict")):
         return False
@@ -552,6 +604,72 @@ def _remittance_row_disambiguation_is_verified(
     )
 
 
+_TOLERABLE_ROW_REJECTION_REASONS = frozenset(
+    {
+        "no_governed_invoice_candidate",
+        "multiple_governed_invoice_candidates",
+    }
+)
+
+
+def _row_ambiguity_is_structurally_tolerable(
+    result: Mapping[str, Any],
+) -> bool:
+    """Increment 4E business decision: a raw remittance row that could not
+    be uniquely disambiguated - no candidate found, or more than one
+    candidate with no way to pick - no longer blocks promotion for the
+    direct exact_remittance_invoices method when the actual allocation
+    (not the coarser raw-row reconstruction) is independently confirmed
+    clean by remittance_completion_assessment: every invoice is real,
+    currently open, correctly owned by the selected customer, one amount
+    per invoice, no removed or conflicting rows.
+
+    A genuine disagreement between two extraction sources on a dollar
+    figure (conflicting_cross_source_amount) is never tolerated here - an
+    active conflict is a different, more serious problem than missing
+    evidence, and continues to block unconditionally, as does any
+    row-level rejection reason not explicitly listed above.
+    """
+
+    row_assessment = result.get(
+        "remittance_row_disambiguation_assessment"
+    ) or {}
+    row_assessments = row_assessment.get("row_assessments") or ()
+    if not isinstance(row_assessments, (list, tuple)) or not row_assessments:
+        return False
+    for row in row_assessments:
+        if not isinstance(row, Mapping):
+            return False
+        if (
+            row.get("status") != "resolved"
+            and row.get("rejection_reason")
+            not in _TOLERABLE_ROW_REJECTION_REASONS
+        ):
+            return False
+
+    recommendation = result.get("recommendation") or {}
+    if str(recommendation.get("method") or "") != "exact_remittance_invoices":
+        return False
+
+    assessment = result.get("remittance_completion_assessment") or {}
+    selected_customer, _, _ = _selection(result)
+    return bool(
+        selected_customer
+        and str(assessment.get("selected_customer_number") or "")
+        == selected_customer
+        and bool(assessment.get("invoice_sets_equal"))
+        and bool(assessment.get("one_source_amount_per_invoice"))
+        and bool(assessment.get("one_current_open_item_per_invoice"))
+        and bool(assessment.get("all_items_owned_by_selected_customer"))
+        and assessment.get("boundary_rule") == EXPECTED_BOUNDARY_RULE
+        and bool(assessment.get("boundary_closed"))
+        and int(assessment.get("allocation_conflict_count") or 0) == 0
+        and int(assessment.get("removed_allocation_count") or 0) == 0
+        and int(assessment.get("customer_conflict_count") or 0) == 0
+        and not bool(assessment.get("review_edits_used_as_extraction"))
+    )
+
+
 def _remittance_completion_is_verified(
     result: Mapping[str, Any],
     evidence: Mapping[str, Any],
@@ -634,6 +752,7 @@ def promotion_assessment(
     if (
         int(row_assessment.get("recovered_row_count") or 0) > 0
         and not _remittance_row_disambiguation_is_verified(result)
+        and not _row_ambiguity_is_structurally_tolerable(result)
     ):
         blockers.append("remittance_row_disambiguation_not_verified")
     if (

@@ -1,5 +1,75 @@
 # Changelog
 
+## [0.7.0 Wave 2 Increment 4E] - Structurally-Tolerable Remittance-Row Ambiguity
+
+### Corrected
+- Admits a `prepared_balanced` candidate whose remittance-row OCR
+  reconstruction still has an unresolved row when that row's rejection is
+  `no_governed_invoice_candidate` or `multiple_governed_invoice_candidates`
+  (an ambiguous or absent OCR candidate, with no active disagreement) and
+  the recommendation method is `exact_remittance_invoices` with an
+  otherwise fully clean current-open completion assessment: matching
+  invoice sets, one source amount and one current-open item per admitted
+  invoice, every item owned by the selected customer, the closed
+  next-transaction-information boundary intact, and zero allocation,
+  removal, or customer conflicts.
+- Leaves `conflicting_cross_source_amount` rows fail-closed under every
+  method; an unresolved row disagreeing with another source about the
+  dollar amount is never treated as structurally tolerable, regardless of
+  how clean the rest of the completion assessment is.
+- Business decision, made under active parallel-testing observation:
+  every promoted transaction is still reviewed by a person before any ERP
+  write, so this widens what promotes to Prepared & Balanced without
+  widening what can auto-approve or post.
+
+### Preserved
+- Changes only the row-disambiguation leg of `promotion_assessment`; the
+  Increment 4D customer-evidence override, every other promotion
+  blocker, and the read-only ERP boundary are unchanged.
+- Protects the active PGH-640045 source: after Increment 4D left 3
+  `prepared_balanced` transactions blocked by the evidence gate, this
+  change clears exactly the one (G-7032002) whose only unresolved rows
+  carry a tolerable rejection reason and a clean completion assessment,
+  leaving G-7157006 (an active `conflicting_cross_source_amount` row) and
+  G-7157001 (an unrelated duplicate-phone conflict) blocked.
+
+## [0.7.0 Wave 2 Increment 4D] - Strong-Identity Override of Partial Invoice Evidence
+
+### Corrected
+- Extends the existing `unique_current_open_invoice_owner` override of the
+  `partial_invoice_owner_evidence` stop-gate to three more strong
+  customer-identity bases: `payer_supplied_customer_number`,
+  `km_statement_customer_number`, `learned_payer_bank_account_mapping`,
+  and `unique_open_ar_bucket_match`. When the customer was confidently
+  resolved via one of these four bases, an admitted invoice with only
+  partial current-open ownership evidence no longer blocks promotion to
+  Prepared & Balanced by itself.
+- Fixes both places the stop-gate could fire: the direct
+  `partial_invoice_owner_evidence` evidence flag and the
+  `failed_selection_gates` list carrying the same string.
+- Leaves `check_for_customer_number` and `check_phone_number_match` out of
+  the tolerant set; a check-only or phone-only resolution still fails
+  closed on partial invoice evidence, matching the rationale that this
+  override belongs only to bases strong enough to stand on their own.
+- Business decision, made under active parallel-testing observation: every
+  promoted transaction is still reviewed by a person before any ERP
+  write, so this widens what promotes to Prepared & Balanced without
+  widening what can auto-approve or post.
+
+### Preserved
+- Keeps every other customer-evidence stop gate (invoice-owner conflict,
+  duplicate exact phone, duplicate exact phone/ZIP, payer-account
+  directive conflict, and the per-basis verified-flag checks) fully
+  enforced for all nine selection-basis tiers, including the four newly
+  tolerant ones.
+- Protects the active PGH-640045 source: clears exactly the four
+  transactions (G-7032005, G-7032010, G-7107004, G-7197002) whose only
+  blocker was partial invoice evidence under one of the four tolerant
+  bases, moving the evidence-gate-blocked count from 7 to 3, while
+  leaving G-7032002 blocked (its actual blocker is a separate
+  row-disambiguation gate, addressed in Increment 4E) and G-7157001/
+  G-7157006 blocked under unrelated, unaffected gates.
+
 ## [0.7.0 Cash Application Increment 1 R2] - Enterprise Linking, Statement Summary, and Misc G/L Entry
 
 ### Added

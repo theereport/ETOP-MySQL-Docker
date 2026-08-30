@@ -385,6 +385,126 @@ class ControlProjectionTest(unittest.TestCase):
 
         self.assertTrue(admitted, blockers)
 
+    def _partial_invoice_evidence_candidate(
+        self,
+        *,
+        basis: str,
+        verified_field: str,
+    ) -> dict:
+        control, candidate = snapshots()
+        control_item = control["transactions"][30]
+        candidate_item = deepcopy(candidate["transactions"][30])
+        candidate_item["result"] = result(
+            customer="TOLERANT-BASIS-CUSTOMER",
+            method="exact_remittance_invoices",
+            difference="0.00",
+            allocations=[{"apply_amount": "10.00"}],
+            basis=basis,
+            confidence=1.0,
+            matching_evidence={
+                verified_field: True,
+                "invoice_owner_conflict": False,
+                "partial_invoice_owner_evidence": True,
+                "payer_account_directive_conflict": False,
+                "check_for_customer_conflict": False,
+                "check_phone_number_conflict": False,
+                "learned_payer_bank_account_conflict": False,
+                "unique_open_ar_bucket_match_conflict": False,
+                "failed_selection_gates": [],
+            },
+        )
+        return control_item, candidate_item
+
+    def test_km_statement_customer_number_precedes_partial_invoice_evidence(
+        self,
+    ) -> None:
+        control_item, candidate_item = self._partial_invoice_evidence_candidate(
+            basis="km_statement_customer_number",
+            verified_field="km_statement_customer_verified",
+        )
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+        self.assertTrue(admitted, blockers)
+
+    def test_learned_payer_bank_account_mapping_precedes_partial_invoice_evidence(
+        self,
+    ) -> None:
+        control_item, candidate_item = self._partial_invoice_evidence_candidate(
+            basis="learned_payer_bank_account_mapping",
+            verified_field="learned_payer_bank_account_verified",
+        )
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+        self.assertTrue(admitted, blockers)
+
+    def test_unique_open_ar_bucket_match_precedes_partial_invoice_evidence(
+        self,
+    ) -> None:
+        control_item, candidate_item = self._partial_invoice_evidence_candidate(
+            basis="unique_open_ar_bucket_match",
+            verified_field="unique_open_ar_bucket_match_verified",
+        )
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+        self.assertTrue(admitted, blockers)
+
+    def test_payer_supplied_customer_number_precedes_partial_invoice_evidence(
+        self,
+    ) -> None:
+        control_item, candidate_item = self._partial_invoice_evidence_candidate(
+            basis="payer_supplied_customer_number",
+            verified_field="payer_account_directive_verified",
+        )
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+        self.assertTrue(admitted, blockers)
+
+    def test_unique_open_ar_bucket_match_precedes_partial_invoice_evidence_stop_gate(
+        self,
+    ) -> None:
+        """The failed_selection_gates list is a second, independent path to
+        the same partial_invoice_owner_evidence condition - confirm the
+        Increment 4D tolerance covers this path too, not only the boolean
+        flag checked separately below."""
+        control, candidate = snapshots()
+        control_item = control["transactions"][30]
+        candidate_item = deepcopy(candidate["transactions"][30])
+        candidate_item["result"] = result(
+            customer="TOLERANT-BASIS-CUSTOMER",
+            method="exact_remittance_invoices",
+            difference="0.00",
+            allocations=[{"apply_amount": "10.00"}],
+            basis="unique_open_ar_bucket_match",
+            confidence=1.0,
+            matching_evidence={
+                "unique_open_ar_bucket_match_verified": True,
+                "invoice_owner_conflict": False,
+                "partial_invoice_owner_evidence": True,
+                "failed_selection_gates": ["partial_invoice_owner_evidence"],
+            },
+        )
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+        self.assertTrue(admitted, blockers)
+
+    def test_check_for_customer_number_still_blocked_by_partial_invoice_evidence(
+        self,
+    ) -> None:
+        """Increment 4D deliberately excludes this basis from the tolerance."""
+        control_item, candidate_item = self._partial_invoice_evidence_candidate(
+            basis="check_for_customer_number",
+            verified_field="check_for_customer_verified",
+        )
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+        self.assertFalse(admitted)
+        self.assertIn("customer_evidence_not_deterministic", blockers)
+
+    def test_check_phone_number_match_still_blocked_by_partial_invoice_evidence(
+        self,
+    ) -> None:
+        """Increment 4D deliberately excludes this basis from the tolerance."""
+        control_item, candidate_item = self._partial_invoice_evidence_candidate(
+            basis="check_phone_number_match",
+            verified_field="check_phone_number_verified",
+        )
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+        self.assertFalse(admitted)
+
     def test_current_open_owner_precedes_duplicate_contact_rank_flags(
         self,
     ) -> None:
@@ -772,6 +892,123 @@ class ControlProjectionTest(unittest.TestCase):
             "can_auto_approve": False,
             "erp_write_performed": False,
         }
+
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+
+        self.assertFalse(admitted)
+        self.assertIn("remittance_row_disambiguation_not_verified", blockers)
+
+    def _structurally_tolerable_row_candidate(
+        self, *, unresolved_rejection_reason: str
+    ) -> tuple[dict, dict]:
+        control, candidate = snapshots()
+        control_item = control["transactions"][30]
+        candidate_item = deepcopy(candidate["transactions"][30])
+        candidate_item["result"]["recommendation"]["method"] = (
+            "exact_remittance_invoices"
+        )
+        selected_customer = candidate_item["result"][
+            "customer_resolution"
+        ]["customer_number"]
+        candidate_item["result"][
+            "remittance_row_disambiguation_assessment"
+        ] = {
+            "status": "not_resolved",
+            "rule_version": "BR-LOCKBOX-041@0.7.0-wave2-increment3x",
+            "selected_customer_number": selected_customer,
+            "preserved_rejection_count": 1,
+            "recovered_row_count": 1,
+            "unresolved_row_count": 1,
+            "recovered_total": "10.00",
+            "recovered_allocations": [{
+                "invoice_number": "430630101",
+                "net_invoice_amount": "10.00",
+                "source_rejection_preserved": True,
+                "source_row_disambiguation_rule_version": (
+                    "BR-LOCKBOX-041@0.7.0-wave2-increment3x"
+                ),
+            }],
+            "row_assessments": [
+                {
+                    "status": "resolved",
+                    "rejection_reason": "multiple_governed_invoice_candidates",
+                    "raw_candidate_count": 2,
+                    "governed_candidate_count": 2,
+                    "candidate_match_counts": {
+                        "430630101": 1,
+                        "00053001": 0,
+                    },
+                    "selected_invoice_number": "430630101",
+                    "selected_open_item_key": (
+                        f"{selected_customer}|Debit|430630101"
+                    ),
+                },
+                {
+                    "status": "unresolved",
+                    "rejection_reason": unresolved_rejection_reason,
+                    "raw_candidate_count": 1,
+                    "governed_candidate_count": 0,
+                    "candidate_match_counts": {},
+                    "selected_invoice_number": "",
+                    "selected_open_item_key": "",
+                },
+            ],
+            "all_rows_resolved": False,
+            "original_rejections_preserved": True,
+            "can_auto_approve": False,
+            "erp_write_performed": False,
+        }
+        candidate_item["result"]["remittance_completion_assessment"] = {
+            "status": "not_reconciled",
+            "rule_version": "BR-LOCKBOX-040@0.7.0-wave2-increment3w",
+            "selected_customer_number": selected_customer,
+            "extracted_invoice_count": 2,
+            "source_allocation_row_count": 2,
+            "invoice_sets_equal": True,
+            "one_source_amount_per_invoice": True,
+            "one_current_open_item_per_invoice": True,
+            "all_items_owned_by_selected_customer": True,
+            "source_amounts_match_full_signed_open_amounts": False,
+            "boundary_rule": EXPECTED_BOUNDARY_RULE,
+            "boundary_closed": True,
+            "allocation_conflict_count": 0,
+            "removed_allocation_count": 0,
+            "customer_conflict_count": 0,
+            "review_edits_used_as_extraction": False,
+            "eligible_for_residual_completion": False,
+            "can_auto_approve": False,
+            "erp_write_performed": False,
+        }
+        return control_item, candidate_item
+
+    def test_ambiguous_unresolved_row_with_clean_completion_passes_tolerant_gate(
+        self,
+    ) -> None:
+        control_item, candidate_item = self._structurally_tolerable_row_candidate(
+            unresolved_rejection_reason="no_governed_invoice_candidate",
+        )
+
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+
+        self.assertTrue(admitted, blockers)
+
+    def test_multiple_candidates_unresolved_row_with_clean_completion_passes_tolerant_gate(
+        self,
+    ) -> None:
+        control_item, candidate_item = self._structurally_tolerable_row_candidate(
+            unresolved_rejection_reason="multiple_governed_invoice_candidates",
+        )
+
+        admitted, blockers = promotion_assessment(control_item, candidate_item)
+
+        self.assertTrue(admitted, blockers)
+
+    def test_conflicting_cross_source_amount_still_blocked_despite_clean_completion(
+        self,
+    ) -> None:
+        control_item, candidate_item = self._structurally_tolerable_row_candidate(
+            unresolved_rejection_reason="conflicting_cross_source_amount",
+        )
 
         admitted, blockers = promotion_assessment(control_item, candidate_item)
 
