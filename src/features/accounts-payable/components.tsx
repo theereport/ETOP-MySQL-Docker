@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type {
+  APERPEvidenceResponse,
   APGovernance,
   APInvoiceDetailResponse,
   APInvoiceSummary,
@@ -308,18 +309,111 @@ function FieldValue({ value }: { value: string | number | boolean | null }) {
   return <>{String(value)}</>
 }
 
+type ErpMatchResult =
+  | { kind: 'not_found' }
+  | { kind: 'matched' }
+  | {
+      kind: 'mismatch'
+      amountMismatch: boolean
+      dueDateMismatch: boolean
+      erpAmount: number | string | null
+      erpDueDate: number | string | null
+    }
+
+function evaluateErpMatch(
+  invoice: APInvoiceDetailResponse,
+  erpMatch: APERPEvidenceResponse,
+): ErpMatchResult {
+  const header = erpMatch.posted_headers[0]
+  if (!header) {
+    return { kind: 'not_found' }
+  }
+  const erpAmount = header.invoice_amount
+  const erpDueDate = header.due_date
+  const amountMismatch =
+    typeof erpAmount === 'number' &&
+    invoice.total_amount != null &&
+    Math.abs(erpAmount - invoice.total_amount) > 0.01
+  const dueDateMismatch =
+    typeof erpDueDate === 'string' &&
+    invoice.due_date != null &&
+    erpDueDate !== invoice.due_date
+  if (amountMismatch || dueDateMismatch) {
+    return { kind: 'mismatch', amountMismatch, dueDateMismatch, erpAmount, erpDueDate }
+  }
+  return { kind: 'matched' }
+}
+
+function ErpMatchPanel({
+  invoice,
+  erpMatch,
+  erpMatchStatus,
+}: {
+  invoice: APInvoiceDetailResponse
+  erpMatch: APERPEvidenceResponse | null
+  erpMatchStatus: string
+}) {
+  if (erpMatchStatus === 'idle') {
+    return null
+  }
+  return (
+    <section className="ap-detail-section ap-erp-match">
+      <div className="ap-section-heading">
+        <h3>ERP match</h3>
+      </div>
+      {erpMatchStatus === 'loading' && <p className="ap-empty-inline">Checking MaddenCo…</p>}
+      {erpMatchStatus === 'error' && (
+        <p className="ap-empty-inline">Unable to check this invoice against MaddenCo.</p>
+      )}
+      {erpMatchStatus === 'success' && erpMatch && (() => {
+        const result = evaluateErpMatch(invoice, erpMatch)
+        return (
+          <>
+            {result.kind === 'not_found' && (
+              <Message kind="notice">No matching PMHD record was found in MaddenCo for this vendor/invoice number.</Message>
+            )}
+            {result.kind === 'matched' && (
+              <Message kind="success">Amount and due date match the posted MaddenCo record.</Message>
+            )}
+            {result.kind === 'mismatch' && (
+              <Message kind="error">
+                <span>This invoice differs from the posted MaddenCo record:</span>
+                <ul>
+                  {result.amountMismatch && (
+                    <li>Amount: extracted {formatCurrency(invoice.total_amount)} vs. ERP {formatCurrency(typeof result.erpAmount === 'number' ? result.erpAmount : null)}</li>
+                  )}
+                  {result.dueDateMismatch && (
+                    <li>Due date: extracted {formatDate(invoice.due_date)} vs. ERP {formatDate(typeof result.erpDueDate === 'string' ? result.erpDueDate : null)}</li>
+                  )}
+                </ul>
+              </Message>
+            )}
+            {erpMatch.warnings.length > 0 && (
+              <Message kind="notice"><ul>{erpMatch.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></Message>
+            )}
+          </>
+        )
+      })()}
+    </section>
+  )
+}
+
 export function InvoiceDetail({
   invoice,
   busy,
   error,
   onClose,
   onRetry,
+  erpMatch,
+  erpMatchStatus,
 }: {
   invoice: APInvoiceDetailResponse | null
   busy: boolean
   error: string
   onClose: () => void
   onRetry: () => void
+  erpMatch: APERPEvidenceResponse | null
+  erpMatchStatus: string
 }) {
   return (
     <aside className="ap-detail" aria-label="Invoice intelligence detail" aria-busy={busy}>
@@ -361,6 +455,8 @@ export function InvoiceDetail({
           {invoice.warnings.length > 0 && (
             <Message kind="notice"><ul>{invoice.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></Message>
           )}
+
+          <ErpMatchPanel invoice={invoice} erpMatch={erpMatch} erpMatchStatus={erpMatchStatus} />
 
           <section className="ap-detail-section">
             <div className="ap-section-heading">

@@ -1329,6 +1329,46 @@ class AccountsPayableRepository:
             connection.close()
         return [self._control_review_from_row(row) for row in rows]
 
+    def approval_time_stats(self, intended_action: str) -> dict[str, Any]:
+        """Average hours from a control case's creation to its first
+        recorded review disposition, for cases opened with the given
+        intended_action. Both tables are append-only local evidence, so
+        this is a real, computable metric with no ERP dependency."""
+
+        self.initialize()
+        connection = self._connection()
+        try:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS case_count,
+                    AVG(
+                        julianday(first_review.created_at)
+                        - julianday(c.created_at)
+                    ) * 24.0 AS avg_hours,
+                    MAX(first_review.created_at) AS latest_reviewed_at
+                FROM ap_control_cases c
+                JOIN (
+                    SELECT control_case_id, MIN(created_at) AS created_at
+                    FROM ap_control_reviews
+                    GROUP BY control_case_id
+                ) first_review
+                    ON first_review.control_case_id = c.control_case_id
+                WHERE c.intended_action = ?;
+                """,
+                (intended_action,),
+            ).fetchone()
+        finally:
+            connection.close()
+        case_count = int(row["case_count"] or 0)
+        return {
+            "case_count": case_count,
+            "average_hours": (
+                float(row["avg_hours"]) if row["avg_hours"] is not None else None
+            ),
+            "latest_reviewed_at": row["latest_reviewed_at"],
+        }
+
     def create_cash_scenario(
         self,
         record: dict[str, Any],

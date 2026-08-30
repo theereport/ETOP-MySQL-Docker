@@ -418,5 +418,103 @@ class ERPEvidenceGatewayTests(unittest.TestCase):
         self.assertFalse(response.governance.erp_write)
 
 
+class FakeRepositoryWithGLAccountMaster(FakeRepository):
+    def get_ap_gl_distributions(self, vendor_number: int, invoice_number: str):
+        self.ap_query_count += 1
+        return ([{
+            "sequence_number": "1",
+            "payment_number": 1,
+            "invoice_amount": 390.23,
+            "quantity": 0,
+            "description": None,
+            "invoice_date": "20260827",
+            "gl_division": 59,
+            "gl_department": None,
+            "gl_account": 5050,
+            "accounting_period": 8,
+            "accounting_year": 2026,
+            "program_code": "E",
+        }], True)
+
+    def get_gl_account_descriptions(self, division_and_account):
+        self.gl_account_lookup_calls = getattr(self, "gl_account_lookup_calls", 0) + 1
+        self.gl_account_lookup_args = division_and_account
+        return {("59", "5050"): "TRUCK EXPENSE - REPAIRS"}
+
+
+class ERPEvidenceGLAccountDescriptionTests(unittest.TestCase):
+    def test_gl_distribution_carries_chart_of_accounts_description(self) -> None:
+        repository = FakeRepositoryWithGLAccountMaster()
+        service = ERPEvidenceService(
+            repository=repository,
+            customer_source=FakeCustomerSource(),
+            ap_source=FakeAPSource(),
+            clock=lambda: "2026-08-07T12:00:00+00:00",
+        )
+
+        response = service.ap_invoice("ap-invoice-" + "1" * 24)
+
+        self.assertEqual(len(response.gl_distributions), 1)
+        line = response.gl_distributions[0]
+        self.assertEqual(line.gl_division, "59")
+        self.assertEqual(line.gl_account, "5050")
+        self.assertIsNone(line.description)
+        self.assertEqual(line.gl_account_description, "TRUCK EXPENSE - REPAIRS")
+        self.assertEqual(repository.gl_account_lookup_args, [(59, 5050)])
+
+    def test_missing_account_master_row_leaves_description_none_not_fabricated(
+        self,
+    ) -> None:
+        class RepositoryWithNoMatch(FakeRepositoryWithGLAccountMaster):
+            def get_gl_account_descriptions(self, division_and_account):
+                return {}
+
+        repository = RepositoryWithNoMatch()
+        service = ERPEvidenceService(
+            repository=repository,
+            customer_source=FakeCustomerSource(),
+            ap_source=FakeAPSource(),
+            clock=lambda: "2026-08-07T12:00:00+00:00",
+        )
+
+        response = service.ap_invoice("ap-invoice-" + "1" * 24)
+
+        self.assertIsNone(response.gl_distributions[0].gl_account_description)
+
+    def test_missing_lookup_method_degrades_gracefully(self) -> None:
+        # A repository double that doesn't implement the new method at all
+        # (e.g. an older/unrelated fake) must not break GL distribution
+        # evidence - the description is simply unavailable.
+        class RepositoryWithoutLookup(FakeRepository):
+            def get_ap_gl_distributions(self, vendor_number: int, invoice_number: str):
+                self.ap_query_count += 1
+                return ([{
+                    "sequence_number": "1",
+                    "payment_number": 1,
+                    "invoice_amount": 100.0,
+                    "quantity": 1,
+                    "description": None,
+                    "invoice_date": "20260827",
+                    "gl_division": 59,
+                    "gl_department": None,
+                    "gl_account": 9999,
+                    "accounting_period": 8,
+                    "accounting_year": 2026,
+                    "program_code": "E",
+                }], True)
+
+        repository = RepositoryWithoutLookup()
+        service = ERPEvidenceService(
+            repository=repository,
+            customer_source=FakeCustomerSource(),
+            ap_source=FakeAPSource(),
+            clock=lambda: "2026-08-07T12:00:00+00:00",
+        )
+
+        response = service.ap_invoice("ap-invoice-" + "1" * 24)
+
+        self.assertIsNone(response.gl_distributions[0].gl_account_description)
+
+
 if __name__ == "__main__":
     unittest.main()

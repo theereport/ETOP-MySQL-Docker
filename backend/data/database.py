@@ -70,6 +70,9 @@ def initialize_database() -> None:
         initialize_cash_flow_forecasting_database,
     )
     from modules.job_queue.repository import initialize_job_queue_database
+    from modules.accounts_payable.erp_ledger_repository import (
+        initialize_accounts_payable_erp_ledger_database,
+    )
     from modules.pricing_contracts.notes_repository import (
         initialize_pricing_contracts_database,
     )
@@ -97,3 +100,4 @@ def initialize_database() -> None:
     initialize_general_ledger_database()
     initialize_cash_flow_forecasting_database()
     initialize_job_queue_database()
+    initialize_accounts_payable_erp_ledger_database()

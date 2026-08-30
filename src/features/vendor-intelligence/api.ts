@@ -1,6 +1,7 @@
 import { ApiError, requestJson } from '../../api/client'
 import type {
   CreateVendorNoteRequest,
+  GLDistributionLine,
   VendorEvidenceResponse,
   VendorNoteHistoryResponse,
   VendorNoteRecord,
@@ -62,6 +63,25 @@ export function getVendorNotes(
     `/vendor-intelligence/vendors/${vendor}/notes`,
     { signal },
   )
+}
+
+export function getVendorInvoiceGLDistributions(
+  vendorNumber: number | string,
+  invoiceNumber: string,
+  signal?: AbortSignal,
+): Promise<GLDistributionLine[]> {
+  // Reuses the existing, already-built erp_evidence per-invoice evidence
+  // endpoint (also used by accounts_payable's ERP Evidence tab) rather
+  // than adding a new backend route - gl_distributions is one field on
+  // that response, the rest is ignored here.
+  const params = new URLSearchParams({
+    vendor_number: String(vendorNumber),
+    invoice_number: invoiceNumber,
+  })
+  return vendorIntelligenceRequest<{ gl_distributions: GLDistributionLine[] }>(
+    `/erp-evidence/accounts-payable/invoice-evidence?${params.toString()}`,
+    { signal },
+  ).then((response) => response.gl_distributions)
 }
 
 export function createVendorNote(

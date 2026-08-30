@@ -1924,10 +1924,42 @@
   line-height: 1.55;
 }
 
+.ap-capture-actions-column {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
 .ap-capture-actions {
   flex: none;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.ap-capture-dropzone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 260px;
+  min-height: 130px;
+  padding: 16px;
+  border: 2px dashed #b7c5d3;
+  border-radius: 10px;
+  background: #f7fafc;
+  color: #6b788d;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+
+.ap-capture-dropzone.is-active {
+  border-color: #146f66;
+  background: #eef9f6;
+  color: #146f66;
 }
 
 .ap-capture-message {
@@ -2329,6 +2361,65 @@
   color: #7b622f;
   font-size: .6rem;
   line-height: 1.4;
+}
+
+.ap-vendor-search {
+  position: relative;
+}
+
+.ap-vendor-search-results {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #d7dee6;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(20, 30, 45, 0.14);
+}
+
+.ap-vendor-search-results .ap-empty-inline {
+  padding: 8px 10px;
+  margin: 0;
+}
+
+.ap-vendor-search-results button {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid #eef1f5;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ap-vendor-search-results button:last-child {
+  border-bottom: 0;
+}
+
+.ap-vendor-search-results button:hover {
+  background: #f2f6fb;
+}
+
+.ap-vendor-search-results button strong {
+  flex: 0 0 auto;
+  font-size: .68rem;
+}
+
+.ap-vendor-search-results button span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #4d5a6c;
+  font-size: .66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ap-capture-review input,
@@ -3042,5 +3133,121 @@
 
   .ap-detail-summary > div:first-child {
     border-top: 0;
+  }
+}
+
+.ap-warehouse-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.ap-warehouse-boundary p {
+  color: #536176;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.ap-warehouse-division-filter {
+  display: grid;
+  gap: 6px;
+  max-width: 220px;
+  margin-top: 10px;
+  color: #34465a;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.ap-warehouse-division-filter select {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #cbd4de;
+  border-radius: 6px;
+  background: #fff;
+  color: #1d2e42;
+  font: inherit;
+}
+
+.ap-warehouse-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.ap-warehouse-card-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ap-warehouse-card {
+  display: grid;
+  gap: 6px;
+  padding: 11px;
+  border: 1px solid #dce3e9;
+  border-radius: 7px;
+  background: #fbfcfd;
+  color: #26384d;
+  font-size: 10px;
+}
+
+.ap-warehouse-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.ap-warehouse-card-amounts {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #59697d;
+  font-weight: 700;
+}
+
+.ap-warehouse-card small {
+  color: #68778a;
+}
+
+.ap-warehouse-card > .ap-secondary-button {
+  justify-self: start;
+}
+
+.ap-warehouse-action-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed #dce3e9;
+}
+
+.ap-warehouse-action-form label {
+  display: grid;
+  gap: 4px;
+  color: #34465a;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.ap-warehouse-action-form input,
+.ap-warehouse-action-form select {
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid #cbd4de;
+  border-radius: 6px;
+  background: #fff;
+  color: #1d2e42;
+  font: inherit;
+}
+
+.ap-warehouse-action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 1080px) {
+  .ap-warehouse-columns {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

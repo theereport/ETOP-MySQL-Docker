@@ -460,6 +460,38 @@ class ERPEvidenceRepository:
         )
         return rows[: self.AP_GL_LIMIT], len(rows) <= self.AP_GL_LIMIT
 
+    def get_gl_account_descriptions(
+        self, division_and_account: list[tuple[int, int]]
+    ) -> dict[tuple[str, str], str]:
+        """GMGM (chart of accounts) description for each distinct
+        (division, account) pair - confirmed live that GMNBDPT is
+        uniformly 0 within a division, so department is not part of the
+        match. PMGLDS's own PMGDSC line-memo is usually blank; this is a
+        separate, additional field (gl_account_description), not a
+        replacement for it."""
+
+        pairs = sorted(set(division_and_account))
+        if not pairs:
+            return {}
+        predicate = " OR ".join(["(GMNBDIV = %s AND GMNB = %s)"] * len(pairs))
+        parameters: tuple[Any, ...] = tuple(
+            value for pair in pairs for value in pair
+        )
+        rows = self.database.fetch_all(
+            f"""
+            SELECT GMNBDIV AS gl_division, GMNB AS gl_account,
+                   TRIM(GMDCRACT) AS description
+            FROM GMGM
+            WHERE {predicate}
+            """,
+            parameters,
+        )
+        return {
+            (str(row["gl_division"]), str(row["gl_account"])): row["description"]
+            for row in rows
+            if row.get("description")
+        }
+
     def get_ap_input_headers(
         self, vendor_number: int, invoice_number: str
     ) -> tuple[list[dict[str, Any]], bool]:

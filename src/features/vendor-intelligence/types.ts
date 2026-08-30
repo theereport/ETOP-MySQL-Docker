@@ -138,6 +138,20 @@ export interface PaidPayableInvoice {
   discount_taken: number | null
 }
 
+export interface GLDistributionLine {
+  sequence_number: string | null
+  payment_number: number | null
+  invoice_amount: number | null
+  quantity: number | null
+  description: string | null
+  gl_division: string | null
+  gl_department: string | null
+  gl_account: string | null
+  gl_account_description: string | null
+  accounting_period: number | null
+  accounting_year: number | null
+}
+
 export interface PayablesEvidence {
   open_invoice_count: number
   open_invoice_total: number

@@ -16,10 +16,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from data.database import get_connection
 from sql_workspace import execute_mysql_query
 from core.sql_validator import normalize_and_validate_sql
 
+from .repository import _connection
 from .schemas import (
     AutomationDefinition,
     RunAutomationResponse,
@@ -290,7 +290,7 @@ def _load_saved_report_sql(report_id: str) -> tuple[str, str]:
             "Select a saved report before running this automation."
         )
 
-    with get_connection() as connection:
+    with _connection() as connection:
         row = connection.execute(
             """
             SELECT

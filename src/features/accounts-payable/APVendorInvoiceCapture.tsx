@@ -5,8 +5,9 @@ import {
   useRef,
   useState,
 } from 'react'
-import type { ChangeEvent } from 'react'
+import type { ChangeEvent, DragEvent } from 'react'
 
+import APVendorNumberSearchField from './APVendorNumberSearchField'
 import {
   getAPVendorInvoiceFileUrl,
   getAPVendorInvoiceJob,
@@ -126,6 +127,8 @@ export default function APVendorInvoiceCapture({
   const [correctedFields, setCorrectedFields] = useState<Record<string, string>>({})
   const [unavailableFields, setUnavailableFields] = useState<string[]>([])
   const [syncResult, setSyncResult] = useState<APSyncResponse | null>(null)
+  const [isDragActive, setIsDragActive] = useState(false)
+  const dragDepth = useRef(0)
   const selectedJob = useMemo(
     () => jobs.find((job) => job.job_id === selectedJobId) ?? null,
     [jobs, selectedJobId],
@@ -326,41 +329,103 @@ export default function APVendorInvoiceCapture({
     }
   }
 
-  async function uploadFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
+  function isPdfFile(file: File): boolean {
+    return file.name.toLowerCase().endsWith('.pdf')
+      && (!file.type || ['application/pdf', 'application/x-pdf', 'application/octet-stream'].includes(file.type))
+  }
+
+  async function uploadFiles(files: File[]) {
+    if (files.length === 0) return
     setActionMessage('')
     setActionTone('success')
     setActionError('')
     setSyncResult(null)
-    if (
-      !file.name.toLowerCase().endsWith('.pdf')
-      || (file.type && !['application/pdf', 'application/x-pdf', 'application/octet-stream'].includes(file.type))
-    ) {
+
+    const accepted: File[] = []
+    const failures: string[] = []
+    files.forEach((file) => {
+      if (!isPdfFile(file)) {
+        failures.push(`${file.name} — not a PDF`)
+      } else if (file.size === 0 || file.size > MAX_VENDOR_INVOICE_BYTES) {
+        failures.push(`${file.name} — empty or over 50 MB`)
+      } else {
+        accepted.push(file)
+      }
+    })
+
+    if (accepted.length === 0) {
       setActionStatus('error')
-      setActionError('Vendor Invoice Dataset & OCR accepts PDF files only.')
+      setActionError(
+        failures.length > 0
+          ? `No files uploaded: ${failures.join('; ')}.`
+          : 'Vendor Invoice Dataset & OCR accepts PDF files only.',
+      )
       return
     }
-    if (file.size === 0 || file.size > MAX_VENDOR_INVOICE_BYTES) {
-      setActionStatus('error')
-      setActionError('Select a non-empty PDF no larger than 50 MB.')
-      return
-    }
+
     setActionStatus('loading')
-    try {
-      const intake = await uploadAPVendorInvoice(file)
-      setActionStatus(intake.intake_status === 'failed' ? 'error' : 'success')
-      setActionTone('warning')
-      setActionMessage(intake.intake_status === 'failed' ? '' : intake.message)
-      if (intake.intake_status === 'failed') setActionError(intake.job.message)
-      await loadDataset()
-      selectJob(intake.job.job_id)
-    } catch (error) {
-      setActionStatus('error')
-      setActionError(errorMessage(error, 'Unable to preserve or process this vendor invoice.'))
-      await loadDataset()
+    let succeeded = 0
+    let lastJobId: string | null = null
+    for (const file of accepted) {
+      try {
+        const intake = await uploadAPVendorInvoice(file)
+        lastJobId = intake.job.job_id
+        if (intake.intake_status === 'failed') {
+          failures.push(`${file.name} — ${intake.job.message}`)
+        } else {
+          succeeded += 1
+        }
+      } catch (error) {
+        failures.push(`${file.name} — ${errorMessage(error, 'upload failed')}`)
+      }
     }
+
+    await loadDataset()
+    if (lastJobId) selectJob(lastJobId)
+
+    setActionStatus(succeeded > 0 ? 'success' : 'error')
+    if (succeeded > 0) {
+      setActionTone('warning')
+      setActionMessage(
+        succeeded === 1 && failures.length === 0
+          ? 'Vendor invoice preserved and processed.'
+          : `${succeeded} of ${files.length} vendor invoice${files.length === 1 ? '' : 's'} preserved and processed.`,
+      )
+    }
+    if (failures.length > 0) {
+      setActionError(
+        `${failures.length} file${failures.length === 1 ? '' : 's'} not uploaded: ${failures.join('; ')}`,
+      )
+    }
+  }
+
+  function uploadFile(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    void uploadFiles(files)
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    dragDepth.current += 1
+    setIsDragActive(true)
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setIsDragActive(false)
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    dragDepth.current = 0
+    setIsDragActive(false)
+    void uploadFiles(Array.from(event.dataTransfer.files ?? []))
   }
 
   async function reprocess() {
@@ -507,14 +572,25 @@ export default function APVendorInvoiceCapture({
             on insufficient pages, review field evidence, then synchronize the current evidence into AP.
           </p>
         </div>
-        <div className="ap-capture-actions">
-          <button type="button" className="ap-primary-button" disabled={actionStatus === 'loading'} onClick={() => inputRef.current?.click()}>
-            {actionStatus === 'loading' ? 'Working…' : 'Upload vendor invoice'}
-          </button>
-          <input ref={inputRef} hidden type="file" accept="application/pdf,.pdf" onChange={(event) => void uploadFile(event)} />
-          <button type="button" className="ap-secondary-button" disabled={datasetStatus === 'loading'} onClick={() => void loadDataset()}>
-            {datasetStatus === 'loading' ? 'Refreshing…' : 'Refresh dataset'}
-          </button>
+        <div className="ap-capture-actions-column">
+          <div className="ap-capture-actions">
+            <button type="button" className="ap-primary-button" disabled={actionStatus === 'loading'} onClick={() => inputRef.current?.click()}>
+              {actionStatus === 'loading' ? 'Working…' : 'Upload vendor invoice'}
+            </button>
+            <input ref={inputRef} hidden type="file" accept="application/pdf,.pdf" multiple onChange={uploadFile} />
+            <button type="button" className="ap-secondary-button" disabled={datasetStatus === 'loading'} onClick={() => void loadDataset()}>
+              {datasetStatus === 'loading' ? 'Refreshing…' : 'Refresh dataset'}
+            </button>
+          </div>
+          <div
+            className={`ap-capture-dropzone${isDragActive ? ' is-active' : ''}`}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            <span>Drag and drop one or more PDF files here to upload them all at once</span>
+          </div>
         </div>
       </div>
 
@@ -650,12 +726,25 @@ export default function APVendorInvoiceCapture({
                             <div className={`ap-capture-review-field ${isUnavailable ? 'is-unavailable' : ''}`} key={fieldName}>
                               <label>
                                 <span>{FIELD_LABELS[fieldName]}</span>
-                                <input
-                                  value={correctedFields[fieldName] ?? ''}
-                                  placeholder={isUnavailable ? 'Marked unavailable' : undefined}
-                                  disabled={isUnavailable}
-                                  onChange={(event) => setCorrectedFields((current) => ({ ...current, [fieldName]: event.target.value }))}
-                                />
+                                {fieldName === 'vendor_number' ? (
+                                  <APVendorNumberSearchField
+                                    value={correctedFields.vendor_number ?? ''}
+                                    disabled={isUnavailable}
+                                    onChangeText={(nextValue) => setCorrectedFields((current) => ({ ...current, vendor_number: nextValue }))}
+                                    onSelect={(vendorNumber, vendorName) => setCorrectedFields((current) => ({
+                                      ...current,
+                                      vendor_number: vendorNumber,
+                                      ...(vendorName ? { vendor_name: vendorName } : {}),
+                                    }))}
+                                  />
+                                ) : (
+                                  <input
+                                    value={correctedFields[fieldName] ?? ''}
+                                    placeholder={isUnavailable ? 'Marked unavailable' : undefined}
+                                    disabled={isUnavailable}
+                                    onChange={(event) => setCorrectedFields((current) => ({ ...current, [fieldName]: event.target.value }))}
+                                  />
+                                )}
                               </label>
                               <button
                                 type="button"

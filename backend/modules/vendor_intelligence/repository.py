@@ -191,6 +191,21 @@ class VendorRepository:
         *,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        # PMHD retains full AP history, not just open items - PMHNBCHK
+        # (check number) is populated once an invoice has been paid.
+        # Confirmed live this session (accounts_payable's own open-ledger
+        # cache work): without this filter, "open payables" silently
+        # included already-paid invoices, e.g. showing a vendor's most
+        # recent 100 PMHD rows regardless of payment status rather than
+        # its genuinely open ones.
+        #
+        # PMHNBCHK = 0 alone is still not sufficient: a voided entry never
+        # gets a check number either, so it stays "unpaid" forever.
+        # PMHCODSEL = 'V' marks these - confirmed live that 12,166 of
+        # 12,289 such rows carry a non-zero PMHGLREFVD (void GL reference)
+        # versus zero of the genuinely open rows, and the 'V' rows carry
+        # nonsense dates (1950-2034) versus the real open rows' 2024-2026
+        # range.
         return madden_database.fetch_all(
             """
             SELECT
@@ -204,6 +219,8 @@ class VendorRepository:
                 PMHYR
             FROM PMHD
             WHERE PMHNBVND = %s
+                AND (PMHNBCHK = 0 OR PMHNBCHK IS NULL)
+                AND (PMHCODSEL IS NULL OR TRIM(PMHCODSEL) != 'V')
             ORDER BY PMHDTEINV DESC
             LIMIT %s
             """,

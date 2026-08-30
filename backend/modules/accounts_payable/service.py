@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+import core.jobs as job_queue
+
 from .extraction import (
     PROVISIONAL_OCR_REVIEW_THRESHOLD,
     PROVISIONAL_OCR_THRESHOLD_SOURCE,
+)
+from .erp_ledger_repository import (
+    AccountsPayableErpLedgerRepository,
+    accounts_payable_erp_ledger_repository,
+    parse_madden_date,
+)
+from .erp_ledger_scan import (
+    scan_gl_divisions_for_open_invoices,
+    scan_open_ap_ledger,
+    scan_vendor_terms_codes,
 )
 from .repository import (
     AccountsPayableRepository,
@@ -51,6 +64,9 @@ from .schemas import (
     APVendorCashIntelligenceResponse,
     APVendorInsight,
     APTimelineEvent,
+    APWarehouseApprovalActionRecord,
+    APWarehouseApprovalItem,
+    APWarehouseApprovalQueueResponse,
     AccountsPayableMetrics,
     DeferredCapability,
     SourceCoverageItem,
@@ -90,6 +106,49 @@ def _float(value: Any) -> float | None:
     return float(value) if value is not None else None
 
 
+def _clean_gl_code(value: Any) -> str | None:
+    """Stringifies a GL division/account/department value without treating
+    a genuine 0 as missing - these arrive as NOT NULL decimal columns from
+    MaddenCo, so `Decimal(0) or None` would wrongly discard a real code."""
+
+    return str(value).strip() or None if value is not None else None
+
+
+def _default_on_ledger_job_started(job_id: str) -> None:
+    job_queue.enqueue(
+        job_id,
+        "accounts_payable_erp_ledger_refresh",
+        "AP open-ledger ERP refresh",
+    )
+    job_queue.mark_running(job_id)
+
+
+def _default_on_ledger_job_complete(
+    job_id: str,
+    result: dict[str, Any] | None,
+    error: BaseException | None,
+) -> None:
+    if error is not None:
+        job_queue.mark_failed(job_id, message=str(error))
+        return
+    result = result or {}
+    divisions_populated = result.get("divisions_populated")
+    division_suffix = (
+        f", {divisions_populated} GL divisions matched"
+        if divisions_populated
+        else ""
+    )
+    job_queue.mark_completed(
+        job_id,
+        message=(
+            f"{result.get('total_count', 0)} open invoices, "
+            f"${result.get('total_balance', 0):,.2f} balance{division_suffix}"
+        ),
+        result_module="Accounts Payable",
+        result_reference=job_id,
+    )
+
+
 class AccountsPayableService:
     """Build read-only AP intelligence from existing document evidence."""
 
@@ -104,6 +163,25 @@ class AccountsPayableService:
         control_review_id_factory: Callable[[], str] | None = None,
         cash_scenario_id_factory: Callable[[], str] | None = None,
         exception_action_id_factory: Callable[[], str] | None = None,
+        erp_ledger_repository: AccountsPayableErpLedgerRepository = (
+            accounts_payable_erp_ledger_repository
+        ),
+        open_ledger_scan: Callable[[], list[dict[str, Any]]] = (
+            scan_open_ap_ledger
+        ),
+        vendor_terms_scan: Callable[[], list[dict[str, Any]]] = (
+            scan_vendor_terms_codes
+        ),
+        gl_division_scan: Callable[
+            [list[str], list[int]], list[dict[str, Any]]
+        ] = scan_gl_divisions_for_open_invoices,
+        on_ledger_job_started: Callable[[str], None] = (
+            _default_on_ledger_job_started
+        ),
+        on_ledger_job_complete: Callable[
+            [str, dict[str, Any] | None, BaseException | None], None
+        ] = _default_on_ledger_job_complete,
+        warehouse_action_id_factory: Callable[[], str] | None = None,
     ) -> None:
         self._repository = repository
         self._source = source
@@ -122,6 +200,19 @@ class AccountsPayableService:
         )
         self._exception_action_id_factory = exception_action_id_factory or (
             lambda: f"ap-exception-action-{uuid4().hex}"
+        )
+        self._erp_ledger_repository = erp_ledger_repository
+        self._open_ledger_scan = open_ledger_scan
+        self._vendor_terms_scan = vendor_terms_scan
+        self._gl_division_scan = gl_division_scan
+        self._on_ledger_job_started = on_ledger_job_started
+        self._on_ledger_job_complete = on_ledger_job_complete
+        self._warehouse_action_id_factory = warehouse_action_id_factory or (
+            lambda: f"ap-warehouse-action-{uuid4().hex}"
+        )
+        self._erp_ledger_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="etop-ap-erp-ledger",
         )
 
     @staticmethod
@@ -1477,6 +1568,333 @@ class AccountsPayableService:
             ),
         )
 
+    def refresh_erp_ledger(self, *, background: bool = True) -> dict[str, Any]:
+        job_id = f"ap-erp-ledger-refresh-{uuid4().hex}"
+        self._on_ledger_job_started(job_id)
+        if background:
+            self._erp_ledger_executor.submit(
+                self._run_erp_ledger_refresh_job,
+                job_id,
+            )
+            return {"job_id": job_id, "status": "queued"}
+        result = self._execute_erp_ledger_refresh()
+        self._on_ledger_job_complete(job_id, result, None)
+        return {"job_id": job_id, "status": "completed", **result}
+
+    def _run_erp_ledger_refresh_job(self, job_id: str) -> None:
+        try:
+            result = self._execute_erp_ledger_refresh()
+        except Exception as error:  # noqa: BLE001 - always reported, never lost
+            self._on_ledger_job_complete(job_id, None, error)
+            return
+        self._on_ledger_job_complete(job_id, result, None)
+
+    def _execute_erp_ledger_refresh(self) -> dict[str, Any]:
+        ledger_rows = self._open_ledger_scan()
+        terms_rows = self._vendor_terms_scan()
+        ledger_count = self._erp_ledger_repository.replace_open_ledger(
+            ledger_rows
+        )
+        self._erp_ledger_repository.replace_vendor_terms_cache(terms_rows)
+        divisions_populated = self._refresh_open_ledger_divisions(ledger_rows)
+        summary = self._erp_ledger_repository.open_ledger_summary(
+            self._clock().date()
+        )
+        return {
+            "ledger_count": ledger_count,
+            "divisions_populated": divisions_populated,
+            **summary,
+        }
+
+    def _refresh_open_ledger_divisions(
+        self, ledger_rows: list[dict[str, Any]]
+    ) -> int:
+        """Scopes the PMGLDS division scan to just the vendors/years behind
+        currently open invoices, then keeps only GL lines matching an open
+        invoice identity - a vendor's full-year GL activity from the scan
+        includes paid invoices too, which must never receive GL detail
+        here. When more than one GL line exists for an invoice, the line
+        with the largest PMGAMTINV is used - a disclosed simplification,
+        not a guarantee of the "true" distribution line. Account and
+        department are taken from that same winning line."""
+
+        open_keys: set[tuple[str, str]] = set()
+        vendor_numbers: set[str] = set()
+        years: set[int] = set()
+        for row in ledger_rows:
+            vendor_number = str(row.get("PMHNBVND") or "").strip()
+            invoice_number = str(row.get("PMHNBINV") or "").strip()
+            if not vendor_number or vendor_number == "0" or not invoice_number:
+                continue
+            open_keys.add((vendor_number, invoice_number))
+            vendor_numbers.add(vendor_number)
+            invoice_date = parse_madden_date(row.get("PMHDTEINV"))
+            if invoice_date is not None:
+                years.add(invoice_date.year)
+
+        if not open_keys or not vendor_numbers or not years:
+            return 0
+
+        division_rows = self._gl_division_scan(
+            sorted(vendor_numbers), sorted(years)
+        )
+        best: dict[tuple[str, str], tuple[float, str, str | None, str | None]] = {}
+        for row in division_rows:
+            vendor_number = str(row.get("PMGNBVND") or "").strip()
+            invoice_number = str(row.get("PMGNBINV") or "").strip()
+            key = (vendor_number, invoice_number)
+            if key not in open_keys:
+                continue
+            # PMGNBGLDV/PMGNBGL/PMGNBGLDP are NOT NULL decimal columns - a
+            # genuine value of 0 (e.g. department 0) is a valid GL code,
+            # not a missing one. `x or ""` would wrongly treat Decimal(0)
+            # as falsy and drop it, so None is checked explicitly instead.
+            division = _clean_gl_code(row.get("PMGNBGLDV"))
+            if not division:
+                continue
+            account = _clean_gl_code(row.get("PMGNBGL"))
+            department = _clean_gl_code(row.get("PMGNBGLDP"))
+            amount = float(row.get("PMGAMTINV") or 0)
+            existing = best.get(key)
+            if existing is None or amount > existing[0]:
+                best[key] = (amount, division, account, department)
+
+        gl_fields = {
+            key: (division, account, department)
+            for key, (_, division, account, department) in best.items()
+        }
+        return self._erp_ledger_repository.update_open_ledger_gl_fields(
+            gl_fields
+        )
+
+    def _erp_ledger_metrics(self) -> dict[str, APMetric]:
+        summary = self._erp_ledger_repository.open_ledger_summary(
+            self._clock().date()
+        )
+        refreshed_at = summary["refreshed_at"]
+
+        def unavailable(label: str) -> APMetric:
+            return APMetric(
+                value=None,
+                status="unavailable",
+                source=None,
+                as_of=None,
+                explanation=(
+                    f"{label} is unavailable until the ERP open-ledger cache "
+                    "has been refreshed at least once. Trigger a refresh from "
+                    "the Executive Dashboard."
+                ),
+            )
+
+        if refreshed_at is None:
+            return {
+                "current_ap_balance": unavailable("Current AP balance"),
+                "due_today_count": unavailable("Invoices due today"),
+                "due_today_amount": unavailable("Amount due today"),
+                "past_due_count": unavailable("Past-due invoice count"),
+                "past_due_amount": unavailable("Past-due amount"),
+                "due_within_7_days_amount": unavailable(
+                    "Cash required within seven days"
+                ),
+            }
+
+        def available(value: int | float, explanation: str) -> APMetric:
+            return APMetric(
+                value=value,
+                status="available",
+                source="accounts_payable.erp_open_ledger_cache",
+                as_of=refreshed_at,
+                explanation=explanation,
+            )
+
+        return {
+            "current_ap_balance": available(
+                round(summary["total_balance"], 2),
+                (
+                    f"Sum of open PMHD invoices net of discount "
+                    f"({summary['total_count']} invoices cached); excludes "
+                    f"{summary['on_hold_count']} on-hold invoices totaling "
+                    f"${summary['on_hold_amount']:,.2f}, disclosed separately."
+                ),
+            ),
+            "due_today_count": available(
+                summary["due_today_count"],
+                "Open, not-on-hold invoices whose PMHD due date is today.",
+            ),
+            "due_today_amount": available(
+                round(summary["due_today_amount"], 2),
+                "Net amount for invoices due today, excluding on-hold invoices.",
+            ),
+            "past_due_count": available(
+                summary["past_due_count"],
+                "Open, not-on-hold invoices whose PMHD due date is before today.",
+            ),
+            "past_due_amount": available(
+                round(summary["past_due_amount"], 2),
+                "Net amount for past-due invoices, excluding on-hold invoices.",
+            ),
+            "due_within_7_days_amount": available(
+                round(summary["due_within_7_days_amount"], 2),
+                (
+                    "Net amount due today through 7 days from today, "
+                    "excluding on-hold invoices."
+                ),
+            ),
+        }
+
+    def _average_approval_time_metric(self) -> APMetric:
+        stats = self._repository.approval_time_stats("approval_review")
+        if stats["case_count"] == 0 or stats["average_hours"] is None:
+            return APMetric(
+                value=None,
+                status="unavailable",
+                source=None,
+                as_of=None,
+                explanation="No reviewed approval-readiness cases exist yet.",
+            )
+        return APMetric(
+            value=round(stats["average_hours"], 2),
+            status="available",
+            source="accounts_payable.local_projection",
+            as_of=stats["latest_reviewed_at"],
+            explanation=(
+                "Average hours from control-case creation to its first "
+                "recorded review disposition, across approval-review cases. "
+                "This is local review-readiness turnaround, not a governed "
+                "invoice-approval SLA."
+            ),
+        )
+
+    def list_vendor_terms_reference(self) -> list[dict[str, Any]]:
+        return self._erp_ledger_repository.list_vendor_terms_reference()
+
+    def upsert_vendor_terms_reference(self, terms_code: str, fields: dict[str, Any]) -> None:
+        self._erp_ledger_repository.upsert_vendor_terms_reference(
+            terms_code=terms_code,
+            discount_percent=fields["discount_percent"],
+            num_periods=fields.get("num_periods"),
+            num_months=fields.get("num_months"),
+            num_days=fields.get("num_days"),
+            second_period=fields.get("second_period"),
+            third_period=fields.get("third_period"),
+            next_period=fields.get("next_period"),
+            day_of_month=fields.get("day_of_month"),
+            cutoff_day=fields.get("cutoff_day"),
+            description=fields.get("description", ""),
+        )
+
+    def warehouse_approval_queue(
+        self, division: str | None
+    ) -> APWarehouseApprovalQueueResponse:
+        result = self._erp_ledger_repository.warehouse_approval_queue(division)
+        buckets: dict[str, list[APWarehouseApprovalItem]] = {
+            "needs_approval": [],
+            "approved_by_warehouse": [],
+            "approved_and_entered_by_ap": [],
+        }
+        for row in result["items"]:
+            item = APWarehouseApprovalItem(
+                vendor_number=row["vendor_number"],
+                vendor_name=row["vendor_name"],
+                invoice_number=row["invoice_number"],
+                invoice_date=row["invoice_date"],
+                due_date=row["due_date"],
+                amount_invoiced=row["amount_invoiced"],
+                amount_discount=row["amount_discount"],
+                on_hold=bool(row["on_hold"]),
+                gl_account=row["gl_account"],
+                gl_division=row["gl_division"],
+                gl_department=row["gl_department"],
+                status=row["status"],
+                last_actor_identity=row["last_actor_identity"],
+                last_action_at=row["last_action_at"],
+                linked_ap_invoice_id=row["linked_ap_invoice_id"],
+            )
+            buckets[item.status].append(item)
+        return APWarehouseApprovalQueueResponse(
+            division=division,
+            available_divisions=result["available_divisions"],
+            needs_approval=buckets["needs_approval"],
+            approved_by_warehouse=buckets["approved_by_warehouse"],
+            approved_and_entered_by_ap=buckets["approved_and_entered_by_ap"],
+            governance=self.governance(),
+        )
+
+    def record_warehouse_approval_action(
+        self,
+        *,
+        vendor_number: str,
+        invoice_number: str,
+        to_status: str,
+        actor_identity: str,
+        notes: str,
+    ) -> APWarehouseApprovalActionRecord:
+        record = self._erp_ledger_repository.record_warehouse_approval_action(
+            action_id=self._warehouse_action_id_factory(),
+            vendor_number=vendor_number,
+            invoice_number=invoice_number,
+            to_status=to_status,
+            actor_identity=actor_identity,
+            actor_identity_source="operator_supplied",
+            notes=notes,
+            created_at=self._clock().isoformat(),
+        )
+        return APWarehouseApprovalActionRecord(**record)
+
+    def _discounts_available_metric(self) -> APMetric:
+        ledger_refreshed_at = self._erp_ledger_repository.open_ledger_refreshed_at()
+        if ledger_refreshed_at is None:
+            return APMetric(
+                value=None,
+                status="unavailable",
+                source=None,
+                as_of=None,
+                explanation=(
+                    "Eligible payment discounts is unavailable until the ERP "
+                    "open-ledger cache has been refreshed at least once."
+                ),
+            )
+        summary = self._erp_ledger_repository.discount_eligibility_summary(
+            self._clock().date()
+        )
+        if not summary["has_reference_data"]:
+            return APMetric(
+                value=None,
+                status="unavailable",
+                source=None,
+                as_of=None,
+                explanation=(
+                    "No vendor terms reference data has been entered yet. "
+                    "Add terms codes under Vendor Intelligence to compute "
+                    "eligible payment discounts."
+                ),
+            )
+        excluded = summary["excluded_codes"]
+        explanation = (
+            f"Sum of discount-eligible amounts for open, not-on-hold "
+            f"invoices still inside a flat N-days-from-invoice-date "
+            f"discount window ({summary['eligible_count']} invoices)."
+        )
+        if excluded:
+            codes = ", ".join(
+                f"{row['terms_code']} ({row['description']})" if row["description"]
+                else row["terms_code"]
+                for row in excluded
+            )
+            explanation += (
+                f" {len(excluded)} discount-bearing terms code(s) use "
+                f"day-of-month/cutoff logic, not yet modeled, and are "
+                f"excluded from this figure rather than counted as zero: "
+                f"{codes}."
+            )
+        return APMetric(
+            value=round(summary["eligible_amount"], 2),
+            status="partial" if excluded else "available",
+            source="accounts_payable.erp_open_ledger_cache",
+            as_of=ledger_refreshed_at,
+            explanation=explanation,
+        )
+
     def overview(self) -> APOverviewResponse:
         rows = self._repository.list_all_invoices()
         generated_at = self._clock().astimezone(UTC).isoformat()
@@ -1507,17 +1925,6 @@ class AccountsPayableService:
                 source="accounts_payable.local_projection",
                 as_of=source_as_of,
                 explanation=explanation,
-            )
-
-        def unavailable_metric(label: str) -> APMetric:
-            return APMetric(
-                value=None,
-                status="unavailable",
-                source=None,
-                as_of=None,
-                explanation=(
-                    f"{label} is unavailable until authoritative ERP AP open-item/payment evidence is connected."
-                ),
             )
 
         ocr_average = (
@@ -1586,27 +1993,9 @@ class AccountsPayableService:
                         "non-open items."
                     ),
                 ),
-                current_ap_balance=unavailable_metric("Current AP balance"),
-                due_today_count=unavailable_metric("Invoices due today"),
-                due_today_amount=unavailable_metric("Amount due today"),
-                past_due_count=unavailable_metric("Past-due invoice count"),
-                past_due_amount=unavailable_metric("Past-due amount"),
-                due_within_7_days_amount=unavailable_metric(
-                    "Cash required within seven days"
-                ),
-                discounts_available=unavailable_metric(
-                    "Eligible payment discounts"
-                ),
-                average_approval_time=APMetric(
-                    value=None,
-                    status="unavailable",
-                    source=None,
-                    as_of=None,
-                    explanation=(
-                        "Average approval time is unavailable until a governed "
-                        "approval workflow and event history are connected."
-                    ),
-                ),
+                **self._erp_ledger_metrics(),
+                discounts_available=self._discounts_available_metric(),
+                average_approval_time=self._average_approval_time_metric(),
             ),
             source_coverage=self.source_coverage(),
             governance=self.governance(),

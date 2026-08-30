@@ -7,6 +7,9 @@ import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from modules.accounts_payable.erp_ledger_repository import (
+    AccountsPayableErpLedgerRepository,
+)
 from modules.accounts_payable.repository import AccountsPayableRepository
 from modules.accounts_payable.schemas import APCashScenarioCreate
 from modules.accounts_payable.service import AccountsPayableService
@@ -42,6 +45,13 @@ class AccountsPayableVendorCashTests(unittest.TestCase):
             clock=lambda: datetime(2026, 8, 6, 20, 0, tzinfo=UTC),
             id_factory=lambda: "sync-vendor-cash",
             cash_scenario_id_factory=lambda: next(scenario_ids),
+            erp_ledger_repository=AccountsPayableErpLedgerRepository(
+                connection_factory
+            ),
+            open_ledger_scan=lambda: [],
+            vendor_terms_scan=lambda: [],
+            on_ledger_job_started=lambda job_id: None,
+            on_ledger_job_complete=lambda job_id, result, error: None,
         )
 
     def tearDown(self) -> None:

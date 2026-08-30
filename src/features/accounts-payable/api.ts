@@ -1,10 +1,16 @@
 import { API_BASE, ApiError, requestJson } from '../../api/client'
 import type {
+  APErpLedgerRefreshResponse,
   APInvoiceDetailResponse,
   APInvoiceListResponse,
   APInvoiceQuery,
   APOverviewResponse,
   APSyncResponse,
+  APVendorTermsReferenceListResponse,
+  APVendorTermsReferenceUpsert,
+  APWarehouseApprovalActionCreate,
+  APWarehouseApprovalActionRecord,
+  APWarehouseApprovalQueueResponse,
   APControlCaseDetail,
   APControlCaseListResponse,
   CreateAPControlCaseRequest,
@@ -53,8 +59,7 @@ function requireArray(value: unknown, context: string, field: string): unknown[]
   return Array.isArray(value) ? value : invalidContract(context, field)
 }
 
-function validateSharedEnvelope(payload: JsonRecord, context: string): void {
-  requireString(payload.contract_version, context, 'contract_version')
+function validateSourceCoverageAndDeferred(payload: JsonRecord, context: string): void {
   const coverage = requireArray(payload.source_coverage, context, 'source_coverage')
   coverage.forEach((value) => {
     const source = requireRecord(value, context, 'source coverage item')
@@ -63,15 +68,6 @@ function validateSharedEnvelope(payload: JsonRecord, context: string): void {
     requireString(source.status, context, 'source coverage status')
     requireString(source.explanation, context, 'source coverage explanation')
   })
-  const governance = requireRecord(payload.governance, context, 'governance')
-  requireString(governance.erp_access, context, 'governance.erp_access')
-  requireString(governance.approval_effect, context, 'governance.approval_effect')
-  requireString(governance.payment_effect, context, 'governance.payment_effect')
-  requireString(governance.source_authority, context, 'governance.source_authority')
-  requireArray(governance.statements, context, 'governance.statements')
-  if (typeof governance.erp_write !== 'boolean' || typeof governance.automatic_approval !== 'boolean') {
-    invalidContract(context, 'governance authority flags')
-  }
   const deferred = requireArray(payload.deferred_capabilities, context, 'deferred_capabilities')
   deferred.forEach((value) => {
     const capability = requireRecord(value, context, 'deferred capability')
@@ -81,6 +77,44 @@ function validateSharedEnvelope(payload: JsonRecord, context: string): void {
     requireString(capability.reason, context, 'deferred capability reason')
     requireArray(capability.missing_sources, context, 'deferred capability missing_sources')
   })
+}
+
+// Used by endpoints backed by the full APGovernance contract (overview,
+// invoices, sync, control cases). Vendor/cash and exception-operations
+// responses carry their own narrower, bespoke governance shapes
+// (APVendorCashGovernance / APExceptionOperationsGovernance on the
+// backend) and are validated separately - they were never meant to
+// satisfy this fuller contract.
+function validateSharedEnvelope(payload: JsonRecord, context: string): void {
+  requireString(payload.contract_version, context, 'contract_version')
+  validateSourceCoverageAndDeferred(payload, context)
+  const governance = requireRecord(payload.governance, context, 'governance')
+  requireString(governance.erp_access, context, 'governance.erp_access')
+  requireString(governance.approval_effect, context, 'governance.approval_effect')
+  requireString(governance.payment_effect, context, 'governance.payment_effect')
+  requireString(governance.source_authority, context, 'governance.source_authority')
+  requireArray(governance.statements, context, 'governance.statements')
+  if (typeof governance.erp_write !== 'boolean' || typeof governance.automatic_approval !== 'boolean') {
+    invalidContract(context, 'governance authority flags')
+  }
+}
+
+function validateVendorCashGovernance(payload: JsonRecord, context: string): void {
+  requireString(payload.contract_version, context, 'contract_version')
+  validateSourceCoverageAndDeferred(payload, context)
+  const governance = requireRecord(payload.governance, context, 'governance')
+  requireString(governance.classification, context, 'governance.classification')
+  requireString(governance.cash_requirement_authority, context, 'governance.cash_requirement_authority')
+  requireArray(governance.statements, context, 'governance.statements')
+  if (
+    typeof governance.current_payable_status_known !== 'boolean' ||
+    typeof governance.vendor_performance_score !== 'boolean' ||
+    typeof governance.payment_proposal !== 'boolean' ||
+    typeof governance.payment_authorization !== 'boolean' ||
+    typeof governance.erp_write !== 'boolean'
+  ) {
+    invalidContract(context, 'governance authority flags')
+  }
 }
 
 const overviewMetricKeys = [
@@ -301,7 +335,7 @@ function validateControlCaseDetail(payload: unknown): APControlCaseDetail {
 
 function validateVendorCashIntelligence(payload: unknown): APVendorCashIntelligenceResponse {
   const record = requireRecord(payload, 'vendor and cash intelligence', 'root object')
-  validateSharedEnvelope(record, 'vendor and cash intelligence')
+  validateVendorCashGovernance(record, 'vendor and cash intelligence')
   requireString(record.generated_at, 'vendor and cash intelligence', 'generated_at')
   requireString(record.as_of_date, 'vendor and cash intelligence', 'as_of_date')
   const coverage = requireRecord(record.coverage, 'vendor and cash intelligence', 'coverage')
@@ -731,6 +765,124 @@ export function syncAccountsPayableInvoices(
     method: 'POST',
     signal,
   }).then(validateSync)
+}
+
+function validateErpLedgerRefresh(payload: unknown): APErpLedgerRefreshResponse {
+  const record = requireRecord(payload, 'erp-ledger-refresh', 'root object')
+  const jobId = requireString(record.job_id, 'erp-ledger-refresh', 'job_id')
+  const status = requireString(record.status, 'erp-ledger-refresh', 'status')
+  if (status !== 'queued' && status !== 'completed') {
+    invalidContract('erp-ledger-refresh', 'status')
+  }
+  return { job_id: jobId, status: status as 'queued' | 'completed' }
+}
+
+export function refreshAccountsPayableErpLedger(
+  signal?: AbortSignal,
+): Promise<APErpLedgerRefreshResponse> {
+  return requestJson<unknown>('/accounts-payable/erp-ledger/refresh', {
+    method: 'POST',
+    signal,
+  }).then(validateErpLedgerRefresh)
+}
+
+function validateVendorTermsReference(
+  payload: unknown,
+): APVendorTermsReferenceListResponse {
+  const record = requireRecord(payload, 'vendor-terms-reference', 'root object')
+  const items = requireArray(record.items, 'vendor-terms-reference', 'items')
+  return { items: items as APVendorTermsReferenceListResponse['items'] }
+}
+
+export function getAPVendorTermsReference(
+  signal?: AbortSignal,
+): Promise<APVendorTermsReferenceListResponse> {
+  return requestJson<unknown>('/accounts-payable/vendor-terms-reference', {
+    signal,
+  }).then(validateVendorTermsReference)
+}
+
+export function upsertAPVendorTermsReference(
+  termsCode: string,
+  payload: APVendorTermsReferenceUpsert,
+): Promise<void> {
+  return requestJson<void>(
+    `/accounts-payable/vendor-terms-reference/${encodeURIComponent(termsCode)}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+  )
+}
+
+function validateWarehouseApprovalGovernance(value: unknown, context: string): void {
+  const governance = requireRecord(value, context, 'governance')
+  requireString(governance.erp_access, context, 'governance.erp_access')
+  requireString(governance.approval_effect, context, 'governance.approval_effect')
+  requireString(governance.payment_effect, context, 'governance.payment_effect')
+  requireString(governance.source_authority, context, 'governance.source_authority')
+  requireArray(governance.statements, context, 'governance.statements')
+  if (typeof governance.erp_write !== 'boolean' || typeof governance.automatic_approval !== 'boolean') {
+    invalidContract(context, 'governance authority flags')
+  }
+}
+
+function validateWarehouseApprovalItem(value: unknown, context: string): void {
+  const item = requireRecord(value, context, 'warehouse approval item')
+  requireString(item.vendor_number, context, 'vendor_number')
+  requireString(item.invoice_number, context, 'invoice_number')
+  requireString(item.status, context, 'status')
+  if (typeof item.amount_invoiced !== 'number' || typeof item.amount_discount !== 'number') {
+    invalidContract(context, 'amount fields')
+  }
+  if (typeof item.on_hold !== 'boolean') {
+    invalidContract(context, 'on_hold')
+  }
+}
+
+function validateWarehouseApprovalQueue(payload: unknown): APWarehouseApprovalQueueResponse {
+  const record = requireRecord(payload, 'warehouse approval queue', 'root object')
+  requireString(record.contract_version, 'warehouse approval queue', 'contract_version')
+  requireArray(record.available_divisions, 'warehouse approval queue', 'available_divisions')
+  const buckets = ['needs_approval', 'approved_by_warehouse', 'approved_and_entered_by_ap'] as const
+  buckets.forEach((bucket) => {
+    const items = requireArray(record[bucket], 'warehouse approval queue', bucket)
+    items.forEach((item) => validateWarehouseApprovalItem(item, 'warehouse approval queue'))
+  })
+  validateWarehouseApprovalGovernance(record.governance, 'warehouse approval queue')
+  return record as unknown as APWarehouseApprovalQueueResponse
+}
+
+function validateWarehouseApprovalAction(payload: unknown): APWarehouseApprovalActionRecord {
+  const record = requireRecord(payload, 'warehouse approval action', 'root object')
+  requireString(record.action_id, 'warehouse approval action', 'action_id')
+  requireString(record.vendor_number, 'warehouse approval action', 'vendor_number')
+  requireString(record.invoice_number, 'warehouse approval action', 'invoice_number')
+  requireString(record.from_status, 'warehouse approval action', 'from_status')
+  requireString(record.to_status, 'warehouse approval action', 'to_status')
+  requireString(record.actor_identity, 'warehouse approval action', 'actor_identity')
+  requireString(record.actor_identity_source, 'warehouse approval action', 'actor_identity_source')
+  requireString(record.created_at, 'warehouse approval action', 'created_at')
+  return record as unknown as APWarehouseApprovalActionRecord
+}
+
+export function getAPWarehouseApprovalQueue(
+  division: string | null,
+  signal?: AbortSignal,
+): Promise<APWarehouseApprovalQueueResponse> {
+  const params = division ? `?division=${encodeURIComponent(division)}` : ''
+  return requestJson<unknown>(
+    `/accounts-payable/warehouse-approval-queue${params}`,
+    { signal },
+  ).then(validateWarehouseApprovalQueue)
+}
+
+export function createAPWarehouseApprovalAction(
+  payload: APWarehouseApprovalActionCreate,
+  signal?: AbortSignal,
+): Promise<APWarehouseApprovalActionRecord> {
+  return requestJson<unknown>('/accounts-payable/warehouse-approval-queue/actions', {
+    method: 'POST',
+    body: payload,
+    signal,
+  }).then(validateWarehouseApprovalAction)
 }
 
 export function syncAccountsPayableInvoiceJob(

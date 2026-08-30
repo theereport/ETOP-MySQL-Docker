@@ -7,6 +7,9 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from modules.accounts_payable.erp_ledger_repository import (
+    AccountsPayableErpLedgerRepository,
+)
 from modules.accounts_payable.repository import AccountsPayableRepository
 from modules.accounts_payable.schemas import (
     APControlCaseCreate,
@@ -61,6 +64,13 @@ class AccountsPayableControlTests(unittest.TestCase):
             id_factory=lambda: "sync-controls",
             control_case_id_factory=lambda: next(case_ids),
             control_review_id_factory=lambda: next(review_ids),
+            erp_ledger_repository=AccountsPayableErpLedgerRepository(
+                connection_factory
+            ),
+            open_ledger_scan=lambda: [],
+            vendor_terms_scan=lambda: [],
+            on_ledger_job_started=lambda job_id: None,
+            on_ledger_job_complete=lambda job_id, result, error: None,
         )
 
     def tearDown(self) -> None:
@@ -122,6 +132,85 @@ class AccountsPayableControlTests(unittest.TestCase):
         self.assertEqual(len(reviewed.reviews), 1)
         self.assertEqual(reviewed.reviews[0].approval_effect, "none")
         self.assertEqual(reviewed.reviews[0].payment_effect, "none")
+
+    def test_approval_time_stats_computes_average_hours_to_first_review(
+        self,
+    ) -> None:
+        invoice_id = self._sync_complete_invoice()
+        created = self.service.create_control_case(
+            invoice_id,
+            APControlCaseCreate(
+                intended_action="approval_review",
+                requested_by="AP Specialist",
+                assigned_reviewer="Accounting Manager",
+                notes="Prepare document evidence for governed approval.",
+            ),
+        )
+        reviewed = self.service.create_control_review(
+            created.control_case_id,
+            APControlReviewCreate(
+                reviewer_identity="Accounting Manager",
+                disposition="evidence_ready",
+                notes="Available document evidence is complete for the next governed step.",
+            ),
+        )
+
+        stats = self.repository.approval_time_stats("approval_review")
+
+        case_created_at = datetime.fromisoformat(created.created_at)
+        review_created_at = datetime.fromisoformat(
+            reviewed.reviews[0].created_at
+        )
+        expected_hours = (
+            review_created_at - case_created_at
+        ).total_seconds() / 3600.0
+
+        self.assertEqual(stats["case_count"], 1)
+        self.assertAlmostEqual(stats["average_hours"], expected_hours, places=6)
+        self.assertEqual(
+            stats["latest_reviewed_at"], reviewed.reviews[0].created_at
+        )
+
+    def test_approval_time_stats_is_empty_with_no_reviewed_cases(self) -> None:
+        stats = self.repository.approval_time_stats("approval_review")
+
+        self.assertEqual(stats["case_count"], 0)
+        self.assertIsNone(stats["average_hours"])
+
+    def test_average_approval_time_metric_reflects_local_evidence(self) -> None:
+        invoice_id = self._sync_complete_invoice()
+        created = self.service.create_control_case(
+            invoice_id,
+            APControlCaseCreate(
+                intended_action="approval_review",
+                requested_by="AP Specialist",
+                assigned_reviewer="Accounting Manager",
+                notes="Prepare document evidence for governed approval.",
+            ),
+        )
+        self.service.create_control_review(
+            created.control_case_id,
+            APControlReviewCreate(
+                reviewer_identity="Accounting Manager",
+                disposition="evidence_ready",
+                notes="Available document evidence is complete for the next governed step.",
+            ),
+        )
+
+        metric = self.service.overview().metrics.average_approval_time
+
+        self.assertEqual(metric.status, "available")
+        self.assertIsNotNone(metric.value)
+        self.assertGreaterEqual(metric.value, 0)
+        self.assertEqual(metric.source, "accounts_payable.local_projection")
+
+    def test_average_approval_time_metric_unavailable_without_reviews(
+        self,
+    ) -> None:
+        metric = self.service.overview().metrics.average_approval_time
+
+        self.assertEqual(metric.status, "unavailable")
+        self.assertIsNone(metric.value)
 
     def test_self_review_blocks_evidence_ready_disposition(self) -> None:
         invoice_id = self._sync_complete_invoice()

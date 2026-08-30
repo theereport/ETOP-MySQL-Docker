@@ -7,9 +7,11 @@ import {
 } from 'react'
 import type { FormEvent } from 'react'
 import {
+  getAPErpInvoiceEvidence,
   getAccountsPayableInvoice,
   getAccountsPayableInvoices,
   getAccountsPayableOverview,
+  refreshAccountsPayableErpLedger,
   syncAccountsPayableInvoices,
 } from './api'
 import {
@@ -24,6 +26,7 @@ import {
 import { errorMessage, formatDateTime, isAbortError } from './format'
 import type {
   AccountsPayableWorkspaceProps,
+  APERPEvidenceResponse,
   APInvoiceDetailResponse,
   APInvoiceListResponse,
   APInvoiceSummary,
@@ -38,6 +41,7 @@ import APExceptionOperationsCenter from './APExceptionOperationsCenter'
 import APERPEvidenceWorkspace from './APERPEvidenceWorkspace'
 import APVendorSpendIntelligence from './APVendorSpendIntelligence'
 import APVendorInvoiceCapture from './APVendorInvoiceCapture'
+import APWarehouseApprovalQueue from './APWarehouseApprovalQueue'
 import './AccountsPayableWorkspace.css'
 
 type AsyncStatus = 'idle' | 'loading' | 'success' | 'error'
@@ -55,6 +59,7 @@ const workspaceViews: Array<{
   { id: 'exception_operations', label: 'Exception Operations', description: 'Deterministic queue and append-only follow-up' },
   { id: 'duplicates', label: 'Duplicate Detection', description: 'Invoices with duplicate candidate evidence' },
   { id: 'approvals', label: 'Approval Center', description: 'Evidence readiness and professional review dispositions' },
+  { id: 'warehouse_approval', label: 'Warehouse Approval', description: 'Every open ERP invoice, bucketed by warehouse-review status' },
   { id: 'payment_controls', label: 'Payment Controls', description: 'Segregation and payment-preparation readiness' },
   { id: 'vendor_intelligence', label: 'Vendor Intelligence', description: 'Document-evidence volume, quality, and exception patterns' },
   { id: 'cash_planning', label: 'Cash Planning', description: 'Due-window evidence and immutable analytical scenarios' },
@@ -88,9 +93,13 @@ export default function AccountsPayableWorkspace({
   const [invoiceDetail, setInvoiceDetail] = useState<APInvoiceDetailResponse | null>(null)
   const [detailStatus, setDetailStatus] = useState<AsyncStatus>('idle')
   const [detailError, setDetailError] = useState('')
+  const [erpMatch, setErpMatch] = useState<APERPEvidenceResponse | null>(null)
+  const [erpMatchStatus, setErpMatchStatus] = useState<AsyncStatus>('idle')
   const [syncStatus, setSyncStatus] = useState<AsyncStatus>('idle')
   const [syncResult, setSyncResult] = useState<APSyncResponse | null>(null)
   const [syncError, setSyncError] = useState('')
+  const [ledgerRefreshStatus, setLedgerRefreshStatus] = useState<AsyncStatus>('idle')
+  const [ledgerRefreshError, setLedgerRefreshError] = useState('')
   const [controlRefreshKey, setControlRefreshKey] = useState(0)
   const overviewGeneration = useRef(0)
   const listGeneration = useRef(0)
@@ -98,6 +107,7 @@ export default function AccountsPayableWorkspace({
   const overviewAbort = useRef<AbortController | null>(null)
   const listAbort = useRef<AbortController | null>(null)
   const detailAbort = useRef<AbortController | null>(null)
+  const erpMatchAbort = useRef<AbortController | null>(null)
   const syncAbort = useRef<AbortController | null>(null)
 
   const heading = viewHeading(view)
@@ -203,7 +213,10 @@ export default function AccountsPayableWorkspace({
       if (event.key === 'Escape') {
         setSelectedId(null)
         setInvoiceDetail(null)
+        setErpMatch(null)
+        setErpMatchStatus('idle')
         detailAbort.current?.abort()
+        erpMatchAbort.current?.abort()
       }
     }
     window.addEventListener('keydown', closeOnEscape)
@@ -214,6 +227,7 @@ export default function AccountsPayableWorkspace({
     overviewAbort.current?.abort()
     listAbort.current?.abort()
     detailAbort.current?.abort()
+    erpMatchAbort.current?.abort()
     syncAbort.current?.abort()
   }, [])
 
@@ -226,6 +240,9 @@ export default function AccountsPayableWorkspace({
     setStatusFilter('')
     setSelectedId(null)
     setInvoiceDetail(null)
+    setErpMatch(null)
+    setErpMatchStatus('idle')
+    erpMatchAbort.current?.abort()
     setDetailStatus('idle')
     setDetailError('')
     detailAbort.current?.abort()
@@ -249,6 +266,7 @@ export default function AccountsPayableWorkspace({
 
   const openInvoice = useCallback(async (invoice: APInvoiceSummary) => {
     detailAbort.current?.abort()
+    erpMatchAbort.current?.abort()
     const controller = new AbortController()
     const generation = detailGeneration.current + 1
     detailGeneration.current = generation
@@ -257,6 +275,8 @@ export default function AccountsPayableWorkspace({
     setInvoiceDetail(null)
     setDetailStatus('loading')
     setDetailError('')
+    setErpMatch(null)
+    setErpMatchStatus('idle')
 
     try {
       const response = await getAccountsPayableInvoice(invoice.ap_invoice_id, controller.signal)
@@ -265,6 +285,28 @@ export default function AccountsPayableWorkspace({
       }
       setInvoiceDetail(response)
       setDetailStatus('success')
+
+      if (response.vendor_number && response.invoice_number) {
+        const erpController = new AbortController()
+        erpMatchAbort.current = erpController
+        setErpMatchStatus('loading')
+        try {
+          const evidence = await getAPErpInvoiceEvidence(
+            invoice.ap_invoice_id,
+            erpController.signal,
+          )
+          if (detailGeneration.current !== generation) {
+            return
+          }
+          setErpMatch(evidence)
+          setErpMatchStatus('success')
+        } catch (erpError) {
+          if (isAbortError(erpError) || detailGeneration.current !== generation) {
+            return
+          }
+          setErpMatchStatus('error')
+        }
+      }
     } catch (error) {
       if (isAbortError(error) || detailGeneration.current !== generation) {
         return
@@ -276,11 +318,14 @@ export default function AccountsPayableWorkspace({
 
   function closeDetail() {
     detailAbort.current?.abort()
+    erpMatchAbort.current?.abort()
     detailGeneration.current += 1
     setSelectedId(null)
     setInvoiceDetail(null)
     setDetailStatus('idle')
     setDetailError('')
+    setErpMatch(null)
+    setErpMatchStatus('idle')
   }
 
   async function runSync() {
@@ -319,6 +364,23 @@ export default function AccountsPayableWorkspace({
     }
   }
 
+  async function runErpLedgerRefresh() {
+    if (ledgerRefreshStatus === 'loading') {
+      return
+    }
+    setLedgerRefreshStatus('loading')
+    setLedgerRefreshError('')
+    try {
+      await refreshAccountsPayableErpLedger()
+      setLedgerRefreshStatus('success')
+    } catch (error) {
+      setLedgerRefreshStatus('error')
+      setLedgerRefreshError(
+        errorMessage(error, 'Unable to start the ERP open-ledger refresh.'),
+      )
+    }
+  }
+
   function refreshCurrentView() {
     if (selectedId) {
       closeDetail()
@@ -339,6 +401,8 @@ export default function AccountsPayableWorkspace({
     setOffset(0)
     setSelectedId(null)
     setInvoiceDetail(null)
+    setErpMatch(null)
+    setErpMatchStatus('idle')
     setView('invoices')
   }
 
@@ -367,6 +431,14 @@ export default function AccountsPayableWorkspace({
           </button>
           <button
             type="button"
+            className="ap-secondary-button"
+            onClick={() => void runErpLedgerRefresh()}
+            disabled={ledgerRefreshStatus === 'loading'}
+          >
+            {ledgerRefreshStatus === 'loading' ? 'Starting…' : 'Refresh ERP ledger'}
+          </button>
+          <button
+            type="button"
             className="ap-primary-button"
             onClick={() => void runSync()}
             disabled={syncStatus === 'loading'}
@@ -375,6 +447,15 @@ export default function AccountsPayableWorkspace({
           </button>
         </div>
       </header>
+
+      {ledgerRefreshStatus === 'success' && (
+        <Message kind="success">
+          ERP open-ledger refresh started. This scans MaddenCo's full open
+          payables ledger and can take a minute or two — you'll get a
+          notification when it completes.
+        </Message>
+      )}
+      {ledgerRefreshError && <Message kind="error">{ledgerRefreshError}</Message>}
 
       <div className="ap-governance-strip">
         <span><i /> Local invoice intelligence</span>
@@ -568,6 +649,9 @@ export default function AccountsPayableWorkspace({
         {view === 'approvals' && (
           <APControlCenter key={`approval-${controlRefreshKey}`} mode="approval_review" />
         )}
+        {view === 'warehouse_approval' && (
+          <APWarehouseApprovalQueue refreshKey={controlRefreshKey} />
+        )}
         {view === 'payment_controls' && (
           <APControlCenter key={`payment-${controlRefreshKey}`} mode="payment_preparation" />
         )}
@@ -602,6 +686,8 @@ export default function AccountsPayableWorkspace({
                 void openInvoice(summary)
               }
             }}
+            erpMatch={erpMatch}
+            erpMatchStatus={erpMatchStatus}
           />
         </div>
       )}

@@ -288,6 +288,7 @@ class APGLDistributionEvidence(BaseModel):
     gl_division: str | None
     gl_department: str | None
     gl_account: str | None
+    gl_account_description: str | None
     accounting_period: int | None
     accounting_year: int | None
     program_code: str | None

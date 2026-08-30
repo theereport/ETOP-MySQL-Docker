@@ -13,11 +13,17 @@ from .schemas import (
     APCashScenarioCreate,
     APCashScenarioHistoryResponse,
     APCashScenarioRecord,
+    APErpLedgerRefreshResponse,
     APInvoiceDetailResponse,
     APInvoiceListResponse,
     APOverviewResponse,
     APSyncResponse,
     APVendorCashIntelligenceResponse,
+    APVendorTermsReferenceListResponse,
+    APVendorTermsReferenceUpsert,
+    APWarehouseApprovalActionCreate,
+    APWarehouseApprovalActionRecord,
+    APWarehouseApprovalQueueResponse,
     APExceptionActionCreate,
     APExceptionActionHistoryResponse,
     APExceptionActionRecord,
@@ -86,6 +92,76 @@ def sync_exact_vendor_invoice_evidence(
 @router.get("/overview", response_model=APOverviewResponse)
 def get_accounts_payable_overview() -> APOverviewResponse:
     return accounts_payable_service.overview()
+
+
+@router.post(
+    "/erp-ledger/refresh",
+    response_model=APErpLedgerRefreshResponse,
+)
+def refresh_accounts_payable_erp_ledger() -> APErpLedgerRefreshResponse:
+    """Scans MaddenCo's open AP ledger (PMHD) and vendor terms codes
+    (PMVEND) in the background and returns immediately - the scan takes
+    1-2+ minutes, so this never blocks the request the way
+    cash_flow_forecasting's equivalent endpoint does. Progress and
+    completion surface through the platform job queue."""
+
+    return accounts_payable_service.refresh_erp_ledger()
+
+
+@router.get(
+    "/vendor-terms-reference",
+    response_model=APVendorTermsReferenceListResponse,
+)
+def list_accounts_payable_vendor_terms_reference() -> APVendorTermsReferenceListResponse:
+    return APVendorTermsReferenceListResponse(
+        items=accounts_payable_service.list_vendor_terms_reference()
+    )
+
+
+@router.put(
+    "/vendor-terms-reference/{terms_code}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def upsert_accounts_payable_vendor_terms_reference(
+    payload: APVendorTermsReferenceUpsert,
+    terms_code: str = Path(min_length=1, max_length=20),
+) -> None:
+    accounts_payable_service.upsert_vendor_terms_reference(
+        terms_code, payload.model_dump()
+    )
+
+
+@router.get(
+    "/warehouse-approval-queue",
+    response_model=APWarehouseApprovalQueueResponse,
+)
+def get_accounts_payable_warehouse_approval_queue(
+    division: str | None = Query(default=None, max_length=20),
+) -> APWarehouseApprovalQueueResponse:
+    """Every currently-open ERP invoice (same open-ledger cache the
+    dashboard uses), bucketed by warehouse-approval status. This is
+    evidence/documentation only - it never gates, blocks, or replaces AP's
+    own entry of an invoice, matching the Approval Center's existing
+    governance posture."""
+
+    return accounts_payable_service.warehouse_approval_queue(division)
+
+
+@router.post(
+    "/warehouse-approval-queue/actions",
+    response_model=APWarehouseApprovalActionRecord,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_accounts_payable_warehouse_approval_action(
+    payload: APWarehouseApprovalActionCreate,
+) -> APWarehouseApprovalActionRecord:
+    return accounts_payable_service.record_warehouse_approval_action(
+        vendor_number=payload.vendor_number,
+        invoice_number=payload.invoice_number,
+        to_status=payload.to_status,
+        actor_identity=payload.actor_identity,
+        notes=payload.notes,
+    )
 
 
 @router.get(

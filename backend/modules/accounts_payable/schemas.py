@@ -239,6 +239,98 @@ class APInvoiceDetailResponse(APInvoiceSummary):
     evidence_revision_count: int
 
 
+class APErpLedgerRefreshResponse(BaseModel):
+    job_id: str
+    status: Literal["queued", "completed"]
+
+
+class APVendorTermsReferenceRecord(BaseModel):
+    terms_code: str
+    discount_percent: float
+    num_periods: int | None = None
+    num_months: int | None = None
+    num_days: int | None = None
+    second_period: int | None = None
+    third_period: int | None = None
+    next_period: int | None = None
+    day_of_month: int | None = None
+    cutoff_day: int | None = None
+    description: str
+    updated_at: str
+
+
+class APVendorTermsReferenceListResponse(BaseModel):
+    items: list[APVendorTermsReferenceRecord]
+
+
+class APVendorTermsReferenceUpsert(BaseModel):
+    discount_percent: float = 0
+    num_periods: int | None = None
+    num_months: int | None = None
+    num_days: int | None = None
+    second_period: int | None = None
+    third_period: int | None = None
+    next_period: int | None = None
+    day_of_month: int | None = None
+    cutoff_day: int | None = None
+    description: str = ""
+
+
+WarehouseApprovalStatus = Literal[
+    "needs_approval",
+    "approved_by_warehouse",
+    "approved_and_entered_by_ap",
+]
+
+
+class APWarehouseApprovalItem(BaseModel):
+    vendor_number: str
+    vendor_name: str | None = None
+    invoice_number: str
+    invoice_date: str | None = None
+    due_date: str | None = None
+    amount_invoiced: float
+    amount_discount: float
+    on_hold: bool
+    gl_account: str | None = None
+    gl_division: str | None = None
+    gl_department: str | None = None
+    status: WarehouseApprovalStatus
+    last_actor_identity: str | None = None
+    last_action_at: str | None = None
+    linked_ap_invoice_id: str | None = None
+
+
+class APWarehouseApprovalQueueResponse(BaseModel):
+    contract_version: str = "accounts-payable-warehouse-approval-queue.v1"
+    division: str | None = None
+    available_divisions: list[str]
+    needs_approval: list[APWarehouseApprovalItem]
+    approved_by_warehouse: list[APWarehouseApprovalItem]
+    approved_and_entered_by_ap: list[APWarehouseApprovalItem]
+    governance: APGovernance
+
+
+class APWarehouseApprovalActionCreate(BaseModel):
+    vendor_number: str = Field(min_length=1)
+    invoice_number: str = Field(min_length=1)
+    to_status: WarehouseApprovalStatus
+    actor_identity: str = Field(min_length=1)
+    notes: str = ""
+
+
+class APWarehouseApprovalActionRecord(BaseModel):
+    action_id: str
+    vendor_number: str
+    invoice_number: str
+    from_status: WarehouseApprovalStatus
+    to_status: WarehouseApprovalStatus
+    actor_identity: str
+    actor_identity_source: Literal["operator_supplied", "sso"]
+    notes: str
+    created_at: str
+
+
 class APSyncResponse(BaseModel):
     contract_version: str = CONTRACT_VERSION
     status: Literal["completed", "completed_with_warnings"]

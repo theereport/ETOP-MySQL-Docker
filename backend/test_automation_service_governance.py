@@ -4,8 +4,8 @@ import json
 import sqlite3
 import sys
 import tempfile
-import types
 import unittest
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -31,12 +31,23 @@ def _get_connection() -> sqlite3.Connection:
     return connection
 
 
-data_package = types.ModuleType("data")
-data_database = types.ModuleType("data.database")
-data_database.get_connection = _get_connection
-data_package.database = data_database
-sys.modules.setdefault("data", data_package)
-sys.modules.setdefault("data.database", data_database)
+@contextmanager
+def _test_connection():
+    """Guarantees the connection is closed - sqlite3.Connection's own
+    context-manager protocol only commits/rolls back, it never closes,
+    which otherwise locks the temp workbench.db open on Windows."""
+
+    connection = _get_connection()
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
+import modules.automations.repository as automations_repository  # noqa: E402
+
+_REAL_GET_CONNECTION = automations_repository.get_connection
 
 from modules.automations.repository import (  # noqa: E402
     AutomationStateConflict,
@@ -64,7 +75,12 @@ from modules.automations.validation import (  # noqa: E402
 
 
 def _initialize_database(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
+    # sqlite3.Connection's context-manager protocol only commits/rolls
+    # back on exit, it never closes - without the explicit close() below,
+    # this connection stays open for the rest of the process and Windows
+    # refuses to delete the temp directory in tearDown (WinError 32).
+    connection = sqlite3.connect(path)
+    try:
         connection.executescript(
             """
             CREATE TABLE automations (
@@ -108,6 +124,9 @@ def _initialize_database(path: Path) -> None:
             );
             """
         )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def _automation(
@@ -167,9 +186,22 @@ class AutomationGovernanceTests(unittest.TestCase):
         self.temp_directory = tempfile.TemporaryDirectory()
         _DATABASE_PATH = Path(self.temp_directory.name) / "workbench.db"
         _initialize_database(_DATABASE_PATH)
+        # Rebinding the name inside modules.automations.repository's own
+        # namespace (rather than sys.modules["data.database"] before
+        # import) is what actually isolates these tests: repository.py's
+        # functions look up `get_connection` as a bare module-global at
+        # call time, so this works regardless of whether the real
+        # data.database module was already imported by something else in
+        # this same pytest process. The prior sys.modules.setdefault
+        # approach was a no-op whenever that was already true, and every
+        # automation these tests created (including a permanently
+        # "running" execution row) was silently written into and executed
+        # against the real workbench.db by the live scheduler.
+        automations_repository.get_connection = _get_connection
 
     def tearDown(self) -> None:
         global _DATABASE_PATH
+        automations_repository.get_connection = _REAL_GET_CONNECTION
         _DATABASE_PATH = None
         self.temp_directory.cleanup()
 
@@ -240,7 +272,7 @@ class AutomationGovernanceTests(unittest.TestCase):
         ):
             save_automation(automation)
 
-        with _get_connection() as connection:
+        with _test_connection() as connection:
             connection.execute(
                 """
                 INSERT INTO reports (id, name, sql_text)
@@ -258,7 +290,7 @@ class AutomationGovernanceTests(unittest.TestCase):
         earlier = save_automation(_automation("automation-2"))
         earlier.next_run_at = "2026-01-01T14:15:00+01:00"
 
-        with _get_connection() as connection:
+        with _test_connection() as connection:
             for item in (saved, earlier):
                 connection.execute(
                     """
@@ -331,7 +363,7 @@ class AutomationGovernanceTests(unittest.TestCase):
         self.assertEqual(persisted.last_run_status, "failed")
         self.assertIsNone(persisted.next_run_at)
 
-        with _get_connection() as connection:
+        with _test_connection() as connection:
             row = connection.execute(
                 """
                 SELECT status, error_details
@@ -350,7 +382,7 @@ class AutomationGovernanceTests(unittest.TestCase):
         paused.status = "paused"
         paused.next_run_at = None
 
-        with _get_connection() as connection:
+        with _test_connection() as connection:
             connection.execute(
                 """
                 UPDATE automations
@@ -407,7 +439,7 @@ class AutomationGovernanceTests(unittest.TestCase):
         )
         legacy.next_run_at = "2026-08-06T08:30:00-04:00"
 
-        with _get_connection() as connection:
+        with _test_connection() as connection:
             connection.execute(
                 """
                 INSERT INTO automations (

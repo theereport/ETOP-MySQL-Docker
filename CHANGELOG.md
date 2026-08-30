@@ -1,5 +1,233 @@
 # Changelog
 
+## [0.7.0 Automation] - Test-Data Leak Cleanup, Connection Leak Fix, Quarantine Reactivation
+
+### Corrected
+- `test_automation_service_governance.py`'s database sandbox used
+  `sys.modules.setdefault("data.database", ...)` *before* importing
+  `modules.automations.repository`, which only isolates the test if
+  `data.database` had never been imported yet in that interpreter. Once
+  any other test file (or the real backend) had already imported it in
+  the same pytest process, the guard was a silent no-op and the test's
+  fixture automation ("Governed Automation", `SELECT 1`, daily 8:30am)
+  was written straight into the real `workbench.db` - and the live
+  scheduler thread then actually ran it on schedule, producing real
+  executions and real exported files on disk. Fixed by rebinding
+  `modules.automations.repository.get_connection` directly (an
+  import-order-independent approach) in `setUp`/`tearDown` instead.
+  The two contaminated `automation-1`/`automation-2` rows and their
+  execution history were deleted via the real `DELETE /automations/{id}`
+  endpoint (which was itself unaffected and working correctly).
+- Every `with get_connection() as connection:` in
+  `modules/automations/repository.py` (16 sites) and `service.py` (1
+  site) leaked the connection - `sqlite3.Connection`'s context-manager
+  protocol only commits/rolls back on exit, it never closes. On Windows
+  this is why the governance test suite's `tearDown` failed with
+  `WinError 32` even after fixing the isolation bug; on Linux the leak is
+  silent until the process runs out of file descriptors. Fixed with a
+  `_connection()` wrapper that guarantees `close()`; the test file had
+  the identical bug in its own two connection helpers and got the same
+  fix. `modules/reports/service.py` has 6 sites with this same pattern -
+  flagged, not fixed here.
+- Two real automations were quarantined (`status: "error"`) and had
+  simply never been manually reactivated - `status` is a one-way latch
+  that nothing clears automatically, even after a later successful run,
+  which is why the catalog showed ERROR badges with SUCCESS runs listed
+  underneath. "Prior Day Missing Credit Card Auth" failed once on
+  2026-08-12 and sat quarantined since. "Sold Stock Transfer Report" was
+  retroactively quarantined on 2026-08-25, the day a stricter
+  `next_run_at` format check shipped, and its legacy definition didn't
+  satisfy it. Both re-validate clean today and were reactivated through
+  the same `POST /automations` path the UI's "Activate" button uses
+  (fetch current definition, flip `status` to `active`, resubmit) - both
+  now show real, freshly-computed `next_run_at` values.
+
+## [0.7.0 AP Increment 10] - Multi-File Drag-and-Drop Upload; GL Department Zero Fix
+
+### Added
+- Vendor Invoice Dataset & OCR now has a drag-and-drop zone next to the
+  upload button that accepts multiple PDF files at once (the file picker
+  also now allows multi-select) - each is preserved and processed
+  sequentially, with a combined result message (e.g. "2 of 2 vendor
+  invoices preserved and processed.") and per-file failure detail when
+  some are rejected. Confirmed live: a real duplicate two-file drop
+  processed both to completion, and a corrupt two-file drop correctly
+  preserved both while reporting per-file "could not be opened" reasons.
+
+### Corrected
+- The Warehouse Approval Queue's GL account/division/department all come
+  from NOT NULL decimal columns in `PMGLDS`, so a genuine value of `0`
+  (department 0 is common) arrives as `Decimal(0)` from the MySQL driver -
+  falsy in Python. The prior `x or None` pattern wrongly discarded it as
+  "missing" and showed "Department unavailable" instead of the real `0`.
+  Fixed with an explicit `is not None` check; will show correctly on the
+  next ERP ledger refresh.
+
+## [0.7.0 AP Increment 9] - Voided PMHD Entries Excluded from Open Ledger
+
+### Corrected
+- `accounts_payable`, `cash_flow_forecasting`, and `vendor_intelligence` all
+  scan `PMHD` filtered to `PMHNBCHK = 0 OR NULL` ("unpaid"), but a voided
+  entry never gets a check number either, so it stayed "unpaid" forever.
+  `PMHCODSEL = 'V'` marks these - confirmed live that 12,166 of 12,289 such
+  rows carry a non-zero `PMHGLREFVD` (void GL reference) versus zero of the
+  genuinely open rows, and the `'V'` rows carried nonsense dates spanning
+  1950-2034 (surfaced by real decades-old "invoices" in the new Warehouse
+  Approval Queue) versus the real open rows' 2024-2026 range. Excluding
+  them moves the real open balance from $90.9M/40,725 invoices to
+  $93.0M/28,814 invoices (voided entries net negative, so removing them
+  raises the balance) - confirmed live via a full refresh after the fix.
+- The GL-division scan behind the Warehouse Approval Queue now also
+  captures the GL account and department from the same winning
+  distribution line (largest `PMGAMTINV`), shown on each queue card as
+  "Account · Division · Department".
+
+## [0.7.0 AP Increment 8] - Warehouse Approval Queue
+
+### Added
+- A new "Warehouse Approval" tab pulls in every currently-open ERP
+  invoice from the same open-ledger cache the Executive Dashboard uses,
+  filterable by GL division, bucketed into Needs Approval / Approved by
+  Warehouse / Approved & Entered by A/P. A warehouse manager can review
+  and advance an invoice's status before A/P ever keys it in from OCR
+  capture; an invoice leaves the queue automatically once MaddenCo shows
+  it paid (it simply stops appearing in the open-ledger cache), with no
+  explicit "closed" step. This is evidence/documentation only, matching
+  the existing Approval Center's governance posture - it never blocks,
+  gates, or replaces A/P's own entry of an invoice.
+- New append-only `ap_warehouse_approval_actions` table (mirrors
+  `ap_control_reviews`'s append-only trigger pattern) records each status
+  change with an operator-supplied actor identity; an
+  `actor_identity_source` column is ready for real Microsoft/Outlook SSO
+  identity later without a schema change, though only
+  `operator_supplied` is used today. An invoice's current status is
+  always derived from its latest action, never stored redundantly.
+- The ERP ledger refresh job (triggered by the existing "Refresh ERP
+  ledger" button) now also scopes and runs a targeted `PMGLDS` scan
+  (vendor + accounting year, using the table's only secondary index) to
+  populate a per-invoice GL division - confirmed live: vendor 6245's
+  invoices matched division "59" (one exception matched "21", a
+  different account on that specific invoice), and a full-scale refresh
+  against the real ~41K open invoices matched 40,692 of them to a
+  division in one job run. When an invoice has more than one GL line,
+  the line with the largest `PMGAMTINV` is used - a disclosed
+  simplification, not a guarantee of the "true" distribution line.
+
+## [0.7.0 Vendor Intelligence] - GL Posting Detail on Open Payables
+
+### Added
+- Each open payable invoice on a vendor's page now has a "▸ GL" toggle
+  that fetches and shows exactly what the invoice posts to (GL account,
+  division, department, quantity, amount, period/year) - reuses the
+  existing `erp_evidence` per-invoice evidence endpoint (also used by
+  Accounts Payable's ERP Evidence tab), so no new backend route was
+  needed for the toggle itself.
+- `erp_evidence`'s GL distribution evidence now also carries
+  `gl_account_description` (from `GMGM`, the chart-of-accounts master),
+  e.g. "TRUCK EXPENSE - REPAIRS" for account 5050 - confirmed live
+  against the same MaddenCo screen this was requested from. `PMGLDS`'s
+  own per-line memo field is usually blank; this is a new, separate
+  field alongside it, not a replacement - never fabricated when the
+  account master has no matching row.
+
+## [0.7.0 AP Increment 7] - Vendor Number Search on Extraction Review
+
+### Added
+- The "Vendor number" field in Vendor Invoice Dataset & OCR's extraction
+  review now searches MaddenCo live as you type (by vendor number or
+  name/sort-name substring, reusing the existing
+  `erp_evidence` vendor search already built for the ERP Evidence tab -
+  no new backend endpoint needed) and lets you pick the real vendor,
+  auto-filling both vendor number and vendor name from the authoritative
+  record instead of trusting the OCR guess. Confirmed live: replaced an
+  OCR misread ("osile Motors Inc.") with the real match (6245, JINKS
+  MOBILE REPAIR) in one search.
+
+## [0.7.0 Vendor Intelligence] - Open Payables Excluded Paid Invoices
+
+### Corrected
+- `vendor_intelligence`'s per-vendor open-payables query
+  (`get_open_payable_invoices`) had the same `PMHNBCHK` gap already found
+  and fixed twice today in `accounts_payable` and `cash_flow_forecasting`:
+  no filter for whether an invoice had been paid. A real vendor lookup
+  live (vendor #6245) showed 100 invoices / $60,332.46 "open" before this
+  fix; filtered to genuinely unpaid, the real figure is 12 invoices /
+  $3,496.18 - confirmed both by a direct query and live in the Vendors
+  workspace.
+
+### Preserved
+- Changes only the `WHERE` clause; `get_paid_payable_invoices` (which
+  queries the separate `PTHD` payment-history table) is unaffected.
+
+## [0.7.0 AP Increment 6] - ERP Open-Ledger, Discount Eligibility, and Approval-Time Metrics
+
+### Added
+- `accounts_payable` now has real, live ERP connectivity for the first time
+  - a new invoice-level cache of MaddenCo's open AP ledger (`PMHD`),
+  refreshed by a background job (via the platform job queue, not a blocking
+  request) that unlocks five previously-permanent "Unavailable" Executive
+  Dashboard tiles: Current AP Balance, Invoices/Amount Due Today, Past-Due
+  count/amount, and Cash Required in 7 Days. On-hold invoices are broken
+  out separately rather than hidden inside or excluded from these figures.
+- Average Approval Time is now real, computed from existing local
+  `ap_control_cases`/`ap_control_reviews` timestamps (average hours from
+  case creation to first recorded review disposition) - no new
+  infrastructure was needed for this one.
+- Discounts Available is now real once a vendor terms code carries a flat
+  "N days from invoice date" discount rule. A local, user-editable Vendor
+  Terms Reference table (new section under Vendor Intelligence) replaces
+  the nonexistent MaddenCo terms-code decode table; a discount-bearing
+  code that instead relies on day-of-month/cutoff ("proximo") logic is
+  disclosed and excluded rather than silently counted as zero.
+- Invoice Intelligence's invoice detail view now automatically surfaces
+  the existing `erp_evidence` per-invoice ERP lookup as a compact "ERP
+  match" panel (matched / amount or due-date mismatch / not found in ERP),
+  instead of requiring a manual trip to the separate ERP Evidence tab.
+
+### Corrected
+- Live verification caught two real defects before they reached the
+  dashboard: (1) `PMHD`'s real key includes a payment-split number
+  (`PMHNBPMT`) not originally selected, causing invoices with multiple
+  payment splits to collide on the new cache's key - fixed by aggregating
+  split rows per invoice; (2) the initial live scan showed $7.26B across
+  5.39M "open" invoices - `PMHD` retains full AP history, not just open
+  items, and `PMHNBCHK` (check number) is the real paid/unpaid signal.
+  Filtered to unpaid, the real balance is $90.9M across ~41K invoices,
+  verified against an independent direct query.
+- The same `PMHNBCHK` gap was found in `cash_flow_forecasting`'s existing
+  AP cash-flow projection (`ap_due_date_cache_source.py`), which had no
+  such filter either - every AP forecast produced before this fix
+  materially overstated projected AP outflow. Fixed alongside this work;
+  see the Cash Application Increment 1 R3 entry below for detail.
+
+### Preserved
+- Changes no invoice approval, payment authorization, or ERP-write
+  behavior - every new metric and the ERP match panel are read-only
+  evidence, matching this module's existing governance statements.
+- The five newly-real dashboard tiles report `unavailable` with an
+  action-oriented reason (run the refresh) rather than a vague "not
+  connected" message until the cache has been refreshed at least once.
+
+## [0.7.0 Cash Application Increment 1 R3] - AP Cash Flow Forecast Excluded Paid Invoices
+
+### Corrected
+- `cash_flow_forecasting`'s open-AP due-date scan (`PMHD`) had no filter for
+  whether an invoice had already been paid. Confirmed live: `PMHD` retains
+  full AP history, not just open items, and `PMHNBCHK` (check number) is
+  populated once an invoice is paid - ~5.39M of ~5.44M rows already carried
+  one. The unfiltered scan was projecting $7.26B across 5.39M rows as future
+  AP cash outflow; filtered to genuinely unpaid (`PMHNBCHK = 0` or `NULL`),
+  the real figure is $90.9M across ~41K invoices - verified against an
+  independent direct query of the same live data. Every AP cash-flow
+  forecast produced before this fix materially overstated projected AP
+  outflow.
+
+### Preserved
+- Changes only the `WHERE` clause of the existing PMHD scan
+  (`ap_due_date_cache_source.py`); the cache schema, refresh trigger, and
+  weekly-bucketing logic are unchanged. No AR, GL, bank-balance, or "other"
+  cash-flow category is affected.
+
 ## [0.7.0 Platform Core Increment 1] - Background Job Queue and Completion Notifications
 
 ### Added

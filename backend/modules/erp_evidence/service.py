@@ -684,7 +684,21 @@ class ERPEvidenceService:
         )
         posted_headers = [self._ap_posted_header(row) for row in posted_headers_raw]
         posted_details = [self._ap_detail(row) for row in posted_details_raw]
-        gl_distributions = [self._ap_gl_distribution(row) for row in gl_raw]
+        gl_account_pairs = [
+            (int(row["gl_division"]), int(row["gl_account"]))
+            for row in gl_raw
+            if row.get("gl_division") is not None and row.get("gl_account") is not None
+        ]
+        try:
+            gl_account_descriptions = self.repository.get_gl_account_descriptions(
+                gl_account_pairs
+            )
+        except Exception:
+            gl_account_descriptions = {}
+        gl_distributions = [
+            self._ap_gl_distribution(row, gl_account_descriptions)
+            for row in gl_raw
+        ]
         input_headers = [self._ap_input_header(row) for row in input_headers_raw]
         input_details = [self._ap_detail(row) for row in input_details_raw]
         payment_splits = [self._ap_payment_split(row) for row in payment_splits_raw]
@@ -968,7 +982,17 @@ class ERPEvidenceService:
         )
 
     @staticmethod
-    def _ap_gl_distribution(row: dict[str, Any]) -> APGLDistributionEvidence:
+    def _ap_gl_distribution(
+        row: dict[str, Any],
+        account_descriptions: dict[tuple[str, str], str] | None = None,
+    ) -> APGLDistributionEvidence:
+        gl_division = _optional_text(row.get("gl_division"))
+        gl_account = _optional_text(row.get("gl_account"))
+        account_description = (
+            (account_descriptions or {}).get((gl_division or "", gl_account or ""))
+            if gl_division and gl_account
+            else None
+        )
         return APGLDistributionEvidence(
             sequence_number=_optional_text(row.get("sequence_number")),
             payment_number=_optional_int(row.get("payment_number")),
@@ -976,9 +1000,10 @@ class ERPEvidenceService:
             quantity=_number(row.get("quantity")),
             description=_optional_text(row.get("description")),
             invoice_date=_date_text(row.get("invoice_date")),
-            gl_division=_optional_text(row.get("gl_division")),
+            gl_division=gl_division,
             gl_department=_optional_text(row.get("gl_department")),
-            gl_account=_optional_text(row.get("gl_account")),
+            gl_account=gl_account,
+            gl_account_description=account_description,
             accounting_period=_optional_int(row.get("accounting_period")),
             accounting_year=_optional_int(row.get("accounting_year")),
             program_code=_optional_text(row.get("program_code")),

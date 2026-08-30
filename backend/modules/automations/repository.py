@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from calendar import monthrange
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -13,10 +14,31 @@ from .schemas import (
 )
 
 
+@contextmanager
+def _connection():
+    """Wraps get_connection() to guarantee the connection is closed.
+
+    sqlite3.Connection's own context-manager protocol only commits or
+    rolls back the open transaction on exit - it never closes the
+    connection. Every `with _connection() as connection:` call in this
+    module was leaking a file handle. On Windows this locks workbench.db
+    open indefinitely (confirmed live: TemporaryDirectory.cleanup() in
+    this module's own tests fails with WinError 32 because a prior
+    connection was never released); on Linux the leak is silent until the
+    process exhausts its file-descriptor limit."""
+
+    connection = get_connection()
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
 def initialize_automations_database() -> None:
     """Startup migration hook for the shared SQLite initialization boundary."""
 
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS automations (
@@ -230,7 +252,7 @@ def validate_repository_bindings(
     if automation.source_type != "report":
         return
 
-    with get_connection() as connection:
+    with _connection() as connection:
         report_exists = _saved_report_exists(
             connection,
             automation.report_id,
@@ -276,7 +298,7 @@ def save_automation(
         by_alias=True,
     )
 
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
 
         running = connection.execute(
@@ -366,7 +388,7 @@ def save_automation(
 def get_automation(
     automation_id: str,
 ) -> AutomationDefinition | None:
-    with get_connection() as connection:
+    with _connection() as connection:
         row = connection.execute(
             """
             SELECT definition_json
@@ -385,7 +407,7 @@ def get_automation(
 
 
 def list_automations() -> list[AutomationDefinition]:
-    with get_connection() as connection:
+    with _connection() as connection:
         rows = connection.execute(
             """
             SELECT definition_json
@@ -403,7 +425,7 @@ def list_automations() -> list[AutomationDefinition]:
 
 
 def delete_automation(automation_id: str) -> bool:
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
 
         running = connection.execute(
@@ -442,7 +464,7 @@ def list_due_automations(
         current = current.astimezone()
     current_utc = current.astimezone(UTC)
 
-    with get_connection() as connection:
+    with _connection() as connection:
         rows = connection.execute(
             """
             SELECT
@@ -486,7 +508,7 @@ def update_after_run(
     status: str,
     completed_at: datetime,
 ) -> AutomationDefinition:
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """
@@ -549,7 +571,7 @@ def update_after_run(
 def create_execution(
     execution: AutomationExecution,
 ) -> bool:
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         cursor = connection.execute(
             """
@@ -610,7 +632,7 @@ def finish_execution(
     message: str,
     error_details: str,
 ) -> None:
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute(
             """
             UPDATE automation_executions
@@ -643,7 +665,7 @@ def finish_execution(
 def list_executions(
     limit: int = 250,
 ) -> list[AutomationExecution]:
-    with get_connection() as connection:
+    with _connection() as connection:
         rows = connection.execute(
             """
             SELECT
@@ -688,7 +710,7 @@ def list_executions(
 
 
 def clear_executions() -> int:
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         running = connection.execute(
             """
@@ -752,7 +774,7 @@ def recover_interrupted_executions(
         completed_at = completed_at.astimezone()
     completed_iso = completed_at.isoformat()
 
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         rows = connection.execute(
             """
@@ -850,7 +872,7 @@ def quarantine_automation(
 ) -> bool:
     now = _now_iso()
 
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """
@@ -897,7 +919,7 @@ def quarantine_invalid_active_automations() -> list[str]:
 
     now = _now_iso()
 
-    with get_connection() as connection:
+    with _connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         rows = connection.execute(
             """
@@ -984,7 +1006,7 @@ def automation_service_health(
 ) -> dict[str, object]:
     automations = list_automations()
 
-    with get_connection() as connection:
+    with _connection() as connection:
         running_row = connection.execute(
             """
             SELECT COUNT(*) AS count

@@ -204,6 +204,11 @@ export interface APInvoiceDetailResponse extends APInvoiceSummary {
   evidence_revision_count: number
 }
 
+export interface APErpLedgerRefreshResponse {
+  job_id: string
+  status: 'queued' | 'completed'
+}
+
 export interface APSyncResponse {
   contract_version: string
   status: string
@@ -477,6 +482,91 @@ export interface APControlCaseListResponse {
   warnings: string[]
 }
 
+export interface APVendorTermsReferenceRecord {
+  terms_code: string
+  discount_percent: number
+  num_periods: number | null
+  num_months: number | null
+  num_days: number | null
+  second_period: number | null
+  third_period: number | null
+  next_period: number | null
+  day_of_month: number | null
+  cutoff_day: number | null
+  description: string
+  updated_at: string
+}
+
+export interface APVendorTermsReferenceListResponse {
+  items: APVendorTermsReferenceRecord[]
+}
+
+export interface APVendorTermsReferenceUpsert {
+  discount_percent: number
+  num_periods: number | null
+  num_months: number | null
+  num_days: number | null
+  second_period: number | null
+  third_period: number | null
+  next_period: number | null
+  day_of_month: number | null
+  cutoff_day: number | null
+  description: string
+}
+
+export type WarehouseApprovalStatus =
+  | 'needs_approval'
+  | 'approved_by_warehouse'
+  | 'approved_and_entered_by_ap'
+
+export interface APWarehouseApprovalItem {
+  vendor_number: string
+  vendor_name: string | null
+  invoice_number: string
+  invoice_date: string | null
+  due_date: string | null
+  amount_invoiced: number
+  amount_discount: number
+  on_hold: boolean
+  gl_account: string | null
+  gl_division: string | null
+  gl_department: string | null
+  status: WarehouseApprovalStatus
+  last_actor_identity: string | null
+  last_action_at: string | null
+  linked_ap_invoice_id: string | null
+}
+
+export interface APWarehouseApprovalQueueResponse {
+  contract_version: string
+  division: string | null
+  available_divisions: string[]
+  needs_approval: APWarehouseApprovalItem[]
+  approved_by_warehouse: APWarehouseApprovalItem[]
+  approved_and_entered_by_ap: APWarehouseApprovalItem[]
+  governance: APGovernance
+}
+
+export interface APWarehouseApprovalActionCreate {
+  vendor_number: string
+  invoice_number: string
+  to_status: WarehouseApprovalStatus
+  actor_identity: string
+  notes?: string
+}
+
+export interface APWarehouseApprovalActionRecord {
+  action_id: string
+  vendor_number: string
+  invoice_number: string
+  from_status: WarehouseApprovalStatus
+  to_status: WarehouseApprovalStatus
+  actor_identity: string
+  actor_identity_source: 'operator_supplied' | 'sso'
+  notes: string
+  created_at: string
+}
+
 export interface APVendorInsight {
   vendor_key: string
   identity_basis: 'vendor_number' | 'vendor_name' | 'unidentified'
@@ -726,6 +816,7 @@ export type APWorkspaceView =
   | 'exception_operations'
   | 'duplicates'
   | 'approvals'
+  | 'warehouse_approval'
   | 'payment_controls'
   | 'vendor_intelligence'
   | 'cash_planning'

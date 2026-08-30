@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
+import APVendorTermsReference from './APVendorTermsReference'
 import {
   createAPCashScenario,
   getAPCashScenarios,
@@ -153,6 +154,7 @@ export default function APVendorCashIntelligence({
               </table>
             </div>
           )}
+          <APVendorTermsReference />
         </>
       ) : (
         <>
