@@ -42,6 +42,8 @@ import {
   getWorkflowToken,
   WORKFLOW_SESSION_EVENT,
 } from './features/workflow-foundation'
+import { getJobQueueSummary } from './features/job-queue'
+import type { JobQueueSummary } from './features/job-queue'
 import EnterpriseDashboard from "./features/enterprise-dashboard/EnterpriseDashboard";
 import EnterpriseDocuments from './modules/document-intelligence'
 import {
@@ -150,6 +152,16 @@ function App() {
     notifications: number
     tasks: number
   } | null>(null)
+  const [jobQueueSummary, setJobQueueSummary] = useState<JobQueueSummary | null>(null)
+  const [jobToasts, setJobToasts] = useState<Array<{
+    id: string
+    title: string
+    message: string
+    severity: 'success' | 'critical'
+    resultModule: string | null
+  }>>([])
+  const toastedJobIdsRef = useRef<Set<string>>(new Set())
+  const jobToastTimersRef = useRef<Map<string, number>>(new Map())
   const [enterpriseSearchTarget, setEnterpriseSearchTarget] =
     useState<SearchResult | null>(null)
 
@@ -554,9 +566,88 @@ function App() {
     }
   }, [canAccess, platformRefresh])
 
-  const unreadNotificationCount = durableBadgeCounts?.notifications ?? getNotifications().filter(
+  useEffect(() => {
+    let active = true
+
+    async function pollJobQueue() {
+      if (!getWorkflowToken()) {
+        return
+      }
+      try {
+        const summary = await getJobQueueSummary()
+        if (!active) return
+        setJobQueueSummary(summary)
+
+        const freshlyCompleted = summary.recent
+          .map((job) => ({
+            job,
+            completionKey: `${job.job_id}:${job.completed_at ?? ''}`,
+          }))
+          .filter(({ completionKey }) => !toastedJobIdsRef.current.has(completionKey))
+        if (freshlyCompleted.length > 0) {
+          freshlyCompleted.forEach(({ completionKey }) =>
+            toastedJobIdsRef.current.add(completionKey),
+          )
+          setJobToasts((current) => [
+            ...current,
+            ...freshlyCompleted.map(({ job, completionKey }) => ({
+              id: completionKey,
+              title: job.status === 'failed' ? `${job.title} failed` : `${job.title} completed`,
+              message: job.message ?? '',
+              severity: (job.status === 'failed' ? 'critical' : 'success') as
+                | 'success'
+                | 'critical',
+              resultModule: job.result_module,
+            })),
+          ])
+        }
+      } catch {
+        if (active) setJobQueueSummary(null)
+      }
+    }
+
+    void pollJobQueue()
+    const intervalId = window.setInterval(() => {
+      void pollJobQueue()
+    }, 8000)
+    return () => {
+      active = false
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  function dismissJobToast(toastId: string) {
+    const timeoutId = jobToastTimersRef.current.get(toastId)
+    if (timeoutId !== undefined) {
+      window.clearTimeout(timeoutId)
+      jobToastTimersRef.current.delete(toastId)
+    }
+    setJobToasts((current) => current.filter((toast) => toast.id !== toastId))
+  }
+
+  useEffect(() => {
+    const scheduled = jobToastTimersRef.current
+    jobToasts.forEach((toast) => {
+      if (scheduled.has(toast.id)) return
+      scheduled.set(
+        toast.id,
+        window.setTimeout(() => {
+          scheduled.delete(toast.id)
+          dismissJobToast(toast.id)
+        }, 7000),
+      )
+    })
+  }, [jobToasts])
+
+  function openJobToastTarget(toast: { resultModule: string | null }) {
+    if (toast.resultModule) {
+      openModule(toast.resultModule)
+    }
+  }
+
+  const unreadNotificationCount = (durableBadgeCounts?.notifications ?? getNotifications().filter(
     (item) => !item.read,
-  ).length
+  ).length) + (jobQueueSummary?.unacknowledged_count ?? 0)
   const openTaskCount = durableBadgeCounts?.tasks ?? getTasks().filter(
     (item) => item.status !== 'Completed',
   ).length
@@ -1575,6 +1666,45 @@ function App() {
           onClose={closePlatformCenter}
           onOpenModule={openModule}
         />
+      )}
+
+      {jobToasts.length > 0 && (
+        <div className="job-toast-stack" role="status" aria-live="polite">
+          {jobToasts.map((toast) => (
+            <article
+              key={toast.id}
+              className={`job-toast ${toast.severity}`}
+            >
+              <span className="job-toast-icon">
+                {toast.severity === 'critical' ? '!' : '✓'}
+              </span>
+              <div className="job-toast-copy">
+                <strong>{toast.title}</strong>
+                {toast.message && <p>{toast.message}</p>}
+              </div>
+              {toast.resultModule && (
+                <button
+                  type="button"
+                  className="job-toast-view"
+                  onClick={() => {
+                    openJobToastTarget(toast)
+                    dismissJobToast(toast.id)
+                  }}
+                >
+                  View
+                </button>
+              )}
+              <button
+                type="button"
+                className="job-toast-dismiss"
+                aria-label="Dismiss"
+                onClick={() => dismissJobToast(toast.id)}
+              >
+                ×
+              </button>
+            </article>
+          ))}
+        </div>
       )}
 
       <footer className="desktop-statusbar">

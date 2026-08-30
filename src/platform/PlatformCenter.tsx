@@ -24,6 +24,7 @@ import {
   getWorkflowToken,
   markWorkflowNotificationRead,
 } from '../features/workflow-foundation'
+import { acknowledgeJobQueueItem, getJobQueueJobs } from '../features/job-queue'
 
 type Props = {
   mode: PlatformCenterMode
@@ -47,12 +48,16 @@ export default function PlatformCenter({
   const [workflowTasks, setWorkflowTasks] = useState<PlatformTask[] | null>(null)
   const [workflowError, setWorkflowError] = useState('')
   const [workflowLoading, setWorkflowLoading] = useState(false)
+  const [jobQueueNotifications, setJobQueueNotifications] = useState<PlatformNotification[]>([])
   const searchRequestId = useRef(0)
 
   const localNotifications = getNotifications()
   const localTasks = getTasks()
   const signedInToWorkflow = Boolean(getWorkflowToken())
-  const notifications = signedInToWorkflow ? workflowNotifications ?? [] : localNotifications
+  const baseNotifications = signedInToWorkflow ? workflowNotifications ?? [] : localNotifications
+  const notifications = [...jobQueueNotifications, ...baseNotifications].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )
   const tasks = signedInToWorkflow ? workflowTasks ?? [] : localTasks
   const timeline = getTimeline()
 
@@ -115,6 +120,36 @@ export default function PlatformCenter({
   }, [mode, refresh, signedInToWorkflow])
 
   useEffect(() => {
+    if (mode !== 'notifications' || !getWorkflowToken()) {
+      return undefined
+    }
+    let active = true
+    void getJobQueueJobs()
+      .then((jobs) => {
+        if (!active) return
+        setJobQueueNotifications(
+          jobs
+            .filter((job) => job.status === 'completed' || job.status === 'failed')
+            .map((job) => ({
+              id: job.job_id,
+              title: job.status === 'failed' ? `${job.title} failed` : `${job.title} completed`,
+              message: job.message ?? '',
+              createdAt: job.completed_at ?? job.created_at,
+              severity: job.status === 'failed' ? 'critical' : 'success',
+              read: job.acknowledged_at !== null,
+              module: job.result_module ?? undefined,
+            })),
+        )
+      })
+      .catch(() => {
+        if (active) setJobQueueNotifications([])
+      })
+    return () => {
+      active = false
+    }
+  }, [mode, refresh])
+
+  useEffect(() => {
     if (mode !== 'search' || !query.trim()) {
       searchRequestId.current += 1
       const resetTimeout = window.setTimeout(() => {
@@ -164,16 +199,21 @@ export default function PlatformCenter({
   }
 
   async function markAllRead() {
+    await Promise.all(
+      jobQueueNotifications
+        .filter((item) => !item.read)
+        .map((item) => acknowledgeJobQueueItem(item.id)),
+    )
     if (signedInToWorkflow) {
       await Promise.all(
-        notifications
+        baseNotifications
           .filter((item) => !item.read)
           .map((item) => markWorkflowNotificationRead(item.id)),
       )
       setRefresh((value) => value + 1)
       return
     }
-    saveNotifications(notifications.map((item) => ({ ...item, read: true })))
+    saveNotifications(baseNotifications.map((item) => ({ ...item, read: true })))
     setRefresh((value) => value + 1)
   }
 

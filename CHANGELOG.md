@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.7.0 Platform Core Increment 1] - Background Job Queue and Completion Notifications
+
+### Added
+- `job_queue` module: a generic, durable job-tracking table
+  (`queued`/`running`/`completed`/`failed`) any module can report
+  background-job progress into, exposed at `/api/v1/platform/job-queue`
+  under the baseline `dashboard` access grant every signed-in user
+  already has - the same grant `platform_search` already piggybacks on,
+  so no access-control wiring was needed. Fail-closed restart recovery
+  marks any job still queued/running at startup as interrupted rather
+  than silently resuming or replaying it, matching `automations`'
+  existing recovery convention.
+- Lockbox preparation's existing background executor now reports into
+  the job queue through two optional coordinator hooks
+  (`on_job_queued`/`on_job_complete`), so a batch already running in the
+  background (started from `DurableLockboxPreparationCoordinator`) is now
+  tracked end to end without touching its execution or promotion logic.
+- A real, durable notification path for background work: the header
+  notification bell and panel now reflect actual job completions (title,
+  balanced/exception counts) alongside Work Management's existing
+  durable notifications, and a new toast appears at the top of the
+  screen the instant a background job finishes - with a "View" action
+  that opens the module the job belongs to - so a job started in one
+  module surfaces the moment it completes no matter which module is open.
+
+### Preserved
+- Changes no Lockbox extraction, customer resolution, allocation,
+  preparation, approval, export, posting, or ERP-write behavior; the two
+  new coordinator hooks default to `None` and are no-ops unless supplied.
+- Adds no new access-control module and no changes to
+  `workflow_foundation`'s module grants or route policy.
+
 ## [0.7.0 Wave 2 Increment 4E] - Structurally-Tolerable Remittance-Row Ambiguity
 
 ### Corrected

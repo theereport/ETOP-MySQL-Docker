@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import date
 from decimal import Decimal
@@ -97,6 +98,11 @@ class DurableLockboxPreparationCoordinator:
         *,
         read_workers: int = DEFAULT_READ_WORKERS,
         recover_on_startup: bool = True,
+        on_job_queued: Callable[[str], None] | None = None,
+        on_job_complete: (
+            Callable[[str, dict[str, Any] | None, BaseException | None], None]
+            | None
+        ) = None,
     ) -> None:
         if read_workers < 1 or read_workers > MAX_READ_WORKERS:
             raise ValueError(
@@ -105,6 +111,8 @@ class DurableLockboxPreparationCoordinator:
         self.repository = repository
         self.provider = provider or UnconfiguredReadOnlyPreparationProvider()
         self.read_workers = read_workers
+        self._on_job_queued = on_job_queued
+        self._on_job_complete = on_job_complete
         self._job_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="etop-lockbox-job",
@@ -162,14 +170,35 @@ class DurableLockboxPreparationCoordinator:
             if existing and not existing.done():
                 return self.repository.get_job(job_id)
             if background:
-                self._active[job_id] = self._job_executor.submit(
+                if self._on_job_queued is not None:
+                    self._on_job_queued(job_id)
+                future = self._job_executor.submit(
                     self._run_job,
                     job_id,
                     retry_exceptions,
                 )
+                if self._on_job_complete is not None:
+                    future.add_done_callback(
+                        lambda completed, job_id=job_id: self._notify_job_complete(
+                            job_id,
+                            completed,
+                        )
+                    )
+                self._active[job_id] = future
                 return self.repository.get_job(job_id)
 
         return self._run_job(job_id, retry_exceptions)
+
+    def _notify_job_complete(
+        self,
+        job_id: str,
+        future: Future[dict[str, Any]],
+    ) -> None:
+        if self._on_job_complete is None:
+            return
+        error = future.exception()
+        result = None if error is not None else future.result()
+        self._on_job_complete(job_id, result, error)
 
     def resume_recovered(self) -> list[dict[str, Any]]:
         return [

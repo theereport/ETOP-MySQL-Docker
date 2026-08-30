@@ -1076,6 +1076,83 @@ class DurablePreparationTest(unittest.TestCase):
         self.assertEqual(provider.customer_load_calls, 1)
         self.assertEqual(provider.open_ar_load_calls, 1)
 
+    def test_job_queue_hooks_fire_once_on_successful_background_run(self) -> None:
+        repository = self.repository()
+        queued_job_ids: list[str] = []
+        completions: list[tuple[str, dict | None, BaseException | None]] = []
+        completed_event = threading.Event()
+
+        def on_job_queued(job_id: str) -> None:
+            queued_job_ids.append(job_id)
+
+        def on_job_complete(
+            job_id: str,
+            result: dict | None,
+            error: BaseException | None,
+        ) -> None:
+            completions.append((job_id, result, error))
+            completed_event.set()
+
+        coordinator = DurableLockboxPreparationCoordinator(
+            repository,
+            FakeReadOnlyProvider(),
+            on_job_queued=on_job_queued,
+            on_job_complete=on_job_complete,
+        )
+        try:
+            started = coordinator.start(build_request(1), background=True)
+            job_id = started["job_id"]
+            self.assertTrue(completed_event.wait(timeout=10))
+        finally:
+            coordinator.shutdown()
+
+        self.assertEqual(queued_job_ids, [job_id])
+        self.assertEqual(len(completions), 1)
+        completed_job_id, result, error = completions[0]
+        self.assertEqual(completed_job_id, job_id)
+        self.assertIsNone(error)
+        self.assertTrue(result["complete"])
+
+    def test_job_queue_hooks_forward_exception_on_failed_background_run(
+        self,
+    ) -> None:
+        repository = self.repository()
+        completions: list[tuple[str, dict | None, BaseException | None]] = []
+        completed_event = threading.Event()
+
+        def on_job_complete(
+            job_id: str,
+            result: dict | None,
+            error: BaseException | None,
+        ) -> None:
+            completions.append((job_id, result, error))
+            completed_event.set()
+
+        coordinator = DurableLockboxPreparationCoordinator(
+            repository,
+            FakeReadOnlyProvider(),
+            on_job_complete=on_job_complete,
+        )
+        try:
+            registered = repository.register(build_request(1))
+            job_id = registered["job_id"]
+
+            def failing_run_job(job_id: str, retry_exceptions: bool) -> dict:
+                raise RuntimeError("simulated coordinator crash")
+
+            coordinator._run_job = failing_run_job  # type: ignore[assignment]
+            coordinator.resume(job_id, background=True)
+            self.assertTrue(completed_event.wait(timeout=10))
+        finally:
+            coordinator.shutdown()
+
+        self.assertEqual(len(completions), 1)
+        completed_job_id, result, error = completions[0]
+        self.assertEqual(completed_job_id, job_id)
+        self.assertIsNone(result)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertEqual(str(error), "simulated coordinator crash")
+
     def test_begin_run_preserves_complete_remittance_evidence(self) -> None:
         repository = self.repository()
         original = build_request(1)

@@ -55,6 +55,8 @@ from modules.document_intelligence.lockbox_preparation.contracts import (
 from modules.document_intelligence.lockbox_preparation.source_loader import (
     SavedLockboxSourceLoader,
 )
+from modules.job_queue.service import job_queue_service
+import core.jobs as job_queue
 
 from decimal import Decimal
 from modules.document_intelligence.services import (
@@ -188,6 +190,7 @@ for module_path in (
     "modules.pricing_contracts",
     "modules.general_ledger",
     "modules.cash_flow_forecasting",
+    "modules.job_queue",
 ):
     module_registry.register(app, module_path)
 
@@ -208,9 +211,41 @@ lockbox_preparation_repository = LockboxPreparationRepository()
 lockbox_preparation_provider = ExistingReadOnlyPreparationProvider(
     receivables_repository=receivables_repository,
 )
+
+job_queue_service.recover_interrupted()
+
+
+def _on_lockbox_job_queued(job_id: str) -> None:
+    snapshot = lockbox_preparation_repository.get_job(job_id)
+    title = f"Lockbox batch {snapshot.get('source_reference') or job_id}"
+    job_queue.enqueue(job_id, "lockbox_preparation", title)
+    job_queue.mark_running(job_id)
+
+
+def _on_lockbox_job_complete(
+    job_id: str,
+    result: dict | None,
+    error: BaseException | None,
+) -> None:
+    if error is not None:
+        job_queue.mark_failed(job_id, message=str(error))
+        return
+    result = result or {}
+    balanced_count = result.get("balanced_count")
+    exception_count = result.get("exception_count")
+    job_queue.mark_completed(
+        job_id,
+        message=f"{balanced_count} balanced, {exception_count} need review",
+        result_module="Lockbox Automation",
+        result_reference=job_id,
+    )
+
+
 lockbox_preparation_coordinator = DurableLockboxPreparationCoordinator(
     repository=lockbox_preparation_repository,
     provider=lockbox_preparation_provider,
+    on_job_queued=_on_lockbox_job_queued,
+    on_job_complete=_on_lockbox_job_complete,
 )
 lockbox_preparation_service = DurableLockboxPreparationService(
     coordinator=lockbox_preparation_coordinator,

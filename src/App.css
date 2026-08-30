@@ -1607,3 +1607,108 @@ button {
   }
 }
 .platform-badge-button{position:relative}.platform-badge-button>span{position:absolute;right:-4px;top:-5px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#d94a4a;color:#fff;font-size:10px;font-weight:800;display:grid;place-items:center;border:2px solid #16283a}
+
+.job-toast-stack {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.job-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--desktop-panel-raised, #172235);
+  border: 1px solid var(--desktop-border, #263349);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  animation: job-toast-in 160ms ease-out;
+}
+
+.job-toast.success {
+  border-left: 3px solid var(--desktop-green, #28c781);
+}
+
+.job-toast.critical {
+  border-left: 3px solid var(--desktop-red, #ef6b73);
+}
+
+.job-toast-icon {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--desktop-bg, #080d17);
+}
+
+.job-toast.success .job-toast-icon {
+  background: var(--desktop-green, #28c781);
+}
+
+.job-toast.critical .job-toast-icon {
+  background: var(--desktop-red, #ef6b73);
+}
+
+.job-toast-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--desktop-text, #e6edf7);
+}
+
+.job-toast-copy strong {
+  display: block;
+  font-size: 13px;
+}
+
+.job-toast-copy p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--desktop-muted, #8796ad);
+}
+
+.job-toast-view,
+.job-toast-dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--desktop-border, #263349);
+  border-radius: 6px;
+  color: var(--desktop-text, #e6edf7);
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.job-toast-dismiss {
+  padding: 2px 7px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.job-toast-view:hover,
+.job-toast-dismiss:hover {
+  background: var(--desktop-accent-soft, rgba(120, 104, 255, 0.16));
+}
+
+@keyframes job-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

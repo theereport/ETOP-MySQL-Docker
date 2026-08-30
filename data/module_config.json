@@ -11,6 +11,7 @@
   "freight_logistics": true,
   "general_ledger": true,
   "inventory_purchasing": true,
+  "job_queue": true,
   "payment_notes": true,
   "platform_search": true,
   "pricing_contracts": true,
