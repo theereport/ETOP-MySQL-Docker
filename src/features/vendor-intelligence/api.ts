@@ -65,23 +65,24 @@ export function getVendorNotes(
   )
 }
 
-export function getVendorInvoiceGLDistributions(
+export function getVendorGLDistributionsBatch(
   vendorNumber: number | string,
-  invoiceNumber: string,
+  invoiceNumbers: string[],
   signal?: AbortSignal,
-): Promise<GLDistributionLine[]> {
-  // Reuses the existing, already-built erp_evidence per-invoice evidence
-  // endpoint (also used by accounts_payable's ERP Evidence tab) rather
-  // than adding a new backend route - gl_distributions is one field on
-  // that response, the rest is ignored here.
+): Promise<Record<string, GLDistributionLine[]>> {
+  // Lean batched sibling of getVendorInvoiceGLDistributions - one query
+  // for a whole vendor's open-payables list instead of one full
+  // invoice-evidence assembly (vendor master, PO match, input headers,
+  // etc.) per invoice, which was confirmed live to take 10+ seconds
+  // across ~9 concurrent invoices for a single vendor.
   const params = new URLSearchParams({
     vendor_number: String(vendorNumber),
-    invoice_number: invoiceNumber,
+    invoice_numbers: invoiceNumbers.join(','),
   })
-  return vendorIntelligenceRequest<{ gl_distributions: GLDistributionLine[] }>(
-    `/erp-evidence/accounts-payable/invoice-evidence?${params.toString()}`,
+  return vendorIntelligenceRequest<{ items: Record<string, GLDistributionLine[]> }>(
+    `/erp-evidence/accounts-payable/gl-distributions?${params.toString()}`,
     { signal },
-  ).then((response) => response.gl_distributions)
+  ).then((response) => response.items)
 }
 
 export function createVendorNote(

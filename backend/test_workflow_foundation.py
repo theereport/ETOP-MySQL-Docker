@@ -10,9 +10,11 @@ from urllib.parse import unquote, urlsplit
 from modules.workflow_foundation.access_policy import required_modules_for_path
 from modules.workflow_foundation.repository import (
     WorkflowFoundationConflict,
+    WorkflowFoundationNotFound,
     WorkflowFoundationRepository,
 )
 from modules.workflow_foundation.schemas import (
+    AdminPasswordSet,
     BootstrapRequest,
     InvitationActivationRequest,
     InvitationCreate,
@@ -20,6 +22,8 @@ from modules.workflow_foundation.schemas import (
     InvitationRevokeRequest,
     LoginRequest,
     ModuleAccessReplace,
+    PasswordResetActivationRequest,
+    PasswordResetTokenRequest,
     TaskAssignmentCreate,
     TaskCreate,
     TaskTransitionCreate,
@@ -462,6 +466,153 @@ class WorkflowFoundationTests(unittest.TestCase):
         )
         self.assertTrue(
             any(event["event_type"] == "identity.invitation_revoked" for event in events)
+        )
+
+    def test_password_reset_link_is_hashed_expiring_single_use_and_revokes_sessions(
+        self,
+    ) -> None:
+        user = self.create_user("reset_user", "workflow_observer")
+        user_token = self.login("reset_user")
+        reset = self.service.request_password_reset(
+            self.coordinator.token, user.user_id
+        )
+        token = unquote(
+            urlsplit(reset.reset_link).fragment.removeprefix("reset-password=")
+        )
+        self.assertGreaterEqual(len(token), 32)
+        connection = self.connection_factory()
+        try:
+            stored = connection.execute(
+                "SELECT token_hash FROM wf_password_reset_tokens WHERE reset_id = ?",
+                (reset.reset_id,),
+            ).fetchone()[0]
+            self.assertNotEqual(stored, token)
+            self.assertEqual(len(stored), 64)
+        finally:
+            connection.close()
+
+        preview = self.service.preview_password_reset(
+            PasswordResetTokenRequest(token=token)
+        )
+        self.assertEqual(preview.username, "reset_user")
+
+        activated = self.service.activate_password_reset(
+            PasswordResetActivationRequest(
+                token=token,
+                password="reset-controlled-password",
+            )
+        )
+        self.assertEqual(activated.user.user_id, user.user_id)
+
+        with self.assertRaises(WorkflowAuthenticationRequired):
+            self.service.current_session(user_token)
+        with self.assertRaises(WorkflowAuthenticationRequired):
+            self.service.login(
+                LoginRequest(
+                    username="reset_user",
+                    password="controlled-user-password",
+                )
+            )
+        self.assertEqual(
+            self.service.login(
+                LoginRequest(
+                    username="reset_user",
+                    password="reset-controlled-password",
+                )
+            ).user.user_id,
+            user.user_id,
+        )
+        with self.assertRaises(WorkflowFoundationConflict):
+            self.service.activate_password_reset(
+                PasswordResetActivationRequest(
+                    token=token,
+                    password="another-controlled-password",
+                )
+            )
+        events = self.repository.list_audit(
+            subject_type="user_account",
+            subject_id=user.user_id,
+            limit=10,
+        )
+        self.assertTrue(
+            any(
+                event["event_type"] == "identity.password_reset_completed"
+                for event in events
+            )
+        )
+
+    def test_expired_password_reset_fails_closed(self) -> None:
+        user = self.create_user("expiring_reset_user", "workflow_observer")
+        reset = self.service.request_password_reset(
+            self.coordinator.token, user.user_id
+        )
+        token = unquote(
+            urlsplit(reset.reset_link).fragment.removeprefix("reset-password=")
+        )
+        later = datetime(2026, 8, 8, 19, 0, tzinfo=UTC)
+        self.repository._clock = lambda: later
+        self.service._clock = lambda: later
+        with self.assertRaises(WorkflowFoundationConflict):
+            self.service.preview_password_reset(PasswordResetTokenRequest(token=token))
+
+    def test_unrecognized_password_reset_token_is_not_found(self) -> None:
+        with self.assertRaises(WorkflowFoundationNotFound):
+            self.service.preview_password_reset(
+                PasswordResetTokenRequest(token="x" * 32)
+            )
+
+    def test_admin_can_reset_own_password_via_link(self) -> None:
+        reset = self.service.request_password_reset(
+            self.coordinator.token, self.coordinator.user.user_id
+        )
+        token = unquote(
+            urlsplit(reset.reset_link).fragment.removeprefix("reset-password=")
+        )
+        activated = self.service.activate_password_reset(
+            PasswordResetActivationRequest(
+                token=token,
+                password="coordinator-new-password",
+            )
+        )
+        self.assertEqual(activated.user.user_id, self.coordinator.user.user_id)
+
+    def test_admin_can_set_password_directly_with_version_conflict_check(self) -> None:
+        user = self.create_user("direct_set_user", "workflow_observer")
+        user_token = self.login("direct_set_user")
+        profile = next(
+            item
+            for item in self.service.security_users(self.coordinator.token).users
+            if item.user.user_id == user.user_id
+        )
+        self.assertEqual(profile.credential_version, 1)
+        with self.assertRaises(WorkflowFoundationConflict):
+            self.service.set_user_password(
+                self.coordinator.token,
+                user.user_id,
+                AdminPasswordSet(
+                    new_password="stale-version-password",
+                    expected_version=profile.credential_version + 1,
+                ),
+            )
+        updated = self.service.set_user_password(
+            self.coordinator.token,
+            user.user_id,
+            AdminPasswordSet(
+                new_password="admin-set-password",
+                expected_version=profile.credential_version,
+            ),
+        )
+        self.assertEqual(updated.credential_version, 2)
+        with self.assertRaises(WorkflowAuthenticationRequired):
+            self.service.current_session(user_token)
+        self.assertEqual(
+            self.service.login(
+                LoginRequest(
+                    username="direct_set_user",
+                    password="admin-set-password",
+                )
+            ).user.user_id,
+            user.user_id,
         )
 
     def test_module_toggles_are_versioned_and_new_modules_default_deny(self) -> None:

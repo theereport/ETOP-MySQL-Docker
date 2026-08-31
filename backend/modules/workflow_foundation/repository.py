@@ -283,6 +283,7 @@ class WorkflowFoundationRepository:
                         ),
                         status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
                         status_version INTEGER NOT NULL DEFAULT 1 CHECK (status_version >= 1),
+                        credential_version INTEGER NOT NULL DEFAULT 1 CHECK (credential_version >= 1),
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         FOREIGN KEY (person_id) REFERENCES wf_persons(person_id)
@@ -445,6 +446,46 @@ class WorkflowFoundationRepository:
                     BEFORE DELETE ON wf_invitation_events
                     BEGIN
                         SELECT RAISE(ABORT, 'Invitation events are append-only.');
+                    END;
+
+                    CREATE TABLE IF NOT EXISTS wf_password_reset_tokens (
+                        reset_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        token_hash TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
+                        status TEXT NOT NULL CHECK (
+                            status IN ('pending', 'activated', 'revoked', 'expired')
+                        ),
+                        created_by_user_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        activated_at TEXT,
+                        FOREIGN KEY (user_id) REFERENCES wf_user_accounts(user_id),
+                        FOREIGN KEY (created_by_user_id) REFERENCES wf_user_accounts(user_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS wf_password_reset_events (
+                        reset_event_id TEXT PRIMARY KEY,
+                        reset_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL CHECK (
+                            event_type IN ('created', 'activated', 'expired')
+                        ),
+                        actor_user_id TEXT,
+                        created_at TEXT NOT NULL,
+                        details_json TEXT NOT NULL,
+                        FOREIGN KEY (reset_id) REFERENCES wf_password_reset_tokens(reset_id),
+                        FOREIGN KEY (actor_user_id) REFERENCES wf_user_accounts(user_id)
+                    );
+
+                    CREATE TRIGGER IF NOT EXISTS wf_password_reset_events_no_update
+                    BEFORE UPDATE ON wf_password_reset_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'Password reset events are append-only.');
+                    END;
+
+                    CREATE TRIGGER IF NOT EXISTS wf_password_reset_events_no_delete
+                    BEFORE DELETE ON wf_password_reset_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'Password reset events are append-only.');
                     END;
 
                     CREATE TABLE IF NOT EXISTS wf_definitions (
@@ -636,6 +677,11 @@ class WorkflowFoundationRepository:
                     connection.execute(
                         "ALTER TABLE wf_user_accounts "
                         "ADD COLUMN status_version INTEGER NOT NULL DEFAULT 1"
+                    )
+                if "credential_version" not in account_columns:
+                    connection.execute(
+                        "ALTER TABLE wf_user_accounts "
+                        "ADD COLUMN credential_version INTEGER NOT NULL DEFAULT 1"
                     )
                 connection.executemany(
                     """
@@ -1318,7 +1364,7 @@ class WorkflowFoundationRepository:
     ) -> dict[str, Any]:
         status_row = connection.execute(
             """
-            SELECT status_version FROM wf_user_accounts WHERE user_id = ?
+            SELECT status_version, credential_version FROM wf_user_accounts WHERE user_id = ?
             """,
             (user_id,),
         ).fetchone()
@@ -1332,6 +1378,7 @@ class WorkflowFoundationRepository:
             "permissions": permission,
             "access_version": permission["access_version"],
             "status_version": status_row["status_version"],
+            "credential_version": status_row["credential_version"],
         }
 
     def list_security_users(self) -> list[dict[str, Any]]:
@@ -2096,6 +2143,310 @@ class WorkflowFoundationRepository:
             raise WorkflowFoundationConflict(
                 "The invited username was activated elsewhere or now conflicts with an account."
             ) from exc
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _password_reset_summary(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "reset_id": row["reset_id"],
+            "user_id": row["user_id"],
+            "status": row["status"],
+            "created_by_user_id": row["created_by_user_id"],
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+            "activated_at": row["activated_at"],
+        }
+
+    def _expire_pending_password_resets(
+        self,
+        connection: sqlite3.Connection,
+        now: str,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT * FROM wf_password_reset_tokens
+            WHERE status = 'pending' AND expires_at <= ?
+            ORDER BY created_at, reset_id
+            """,
+            (now,),
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                """
+                UPDATE wf_password_reset_tokens SET status = 'expired'
+                WHERE reset_id = ? AND status = 'pending'
+                """,
+                (row["reset_id"],),
+            )
+            connection.execute(
+                """
+                INSERT INTO wf_password_reset_events(
+                    reset_event_id, reset_id, event_type,
+                    actor_user_id, created_at, details_json
+                ) VALUES (?, ?, 'expired', NULL, ?, ?)
+                """,
+                (
+                    self._id("PRE"),
+                    row["reset_id"],
+                    now,
+                    self._canonical_json({"reason": "configured_expiration"}),
+                ),
+            )
+            self._append_audit(
+                connection,
+                event_type="identity.password_reset_expired",
+                actor_user_id=None,
+                subject_type="password_reset",
+                subject_id=row["reset_id"],
+                correlation_id=self._id("COR"),
+                details={"user_id": row["user_id"], "token_retained": False},
+                occurred_at=now,
+            )
+
+    def create_password_reset(
+        self,
+        *,
+        user_id: str,
+        token_hash: str,
+        expires_at: str,
+        actor_user_id: str,
+    ) -> dict[str, Any]:
+        connection = self._connection()
+        now = self._now()
+        reset_id = self._id("PWR")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._expire_pending_password_resets(connection, now)
+            if connection.execute(
+                "SELECT 1 FROM wf_user_accounts WHERE user_id = ?",
+                (user_id,),
+            ).fetchone() is None:
+                raise WorkflowFoundationNotFound(f"Workflow user {user_id} was not found.")
+            connection.execute(
+                """
+                INSERT INTO wf_password_reset_tokens(
+                    reset_id, user_id, token_hash, status,
+                    created_by_user_id, created_at, expires_at, activated_at
+                ) VALUES (?, ?, ?, 'pending', ?, ?, ?, NULL)
+                """,
+                (reset_id, user_id, token_hash, actor_user_id, now, expires_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO wf_password_reset_events(
+                    reset_event_id, reset_id, event_type,
+                    actor_user_id, created_at, details_json
+                ) VALUES (?, ?, 'created', ?, ?, ?)
+                """,
+                (
+                    self._id("PRE"),
+                    reset_id,
+                    actor_user_id,
+                    now,
+                    self._canonical_json(
+                        {
+                            "user_id": user_id,
+                            "expires_at": expires_at,
+                            "token_stored_as": "sha256",
+                        }
+                    ),
+                ),
+            )
+            self._append_audit(
+                connection,
+                event_type="identity.password_reset_requested",
+                actor_user_id=actor_user_id,
+                subject_type="user_account",
+                subject_id=user_id,
+                correlation_id=self._id("COR"),
+                details={
+                    "reset_id": reset_id,
+                    "expires_at": expires_at,
+                    "token_stored_as": "sha256",
+                    "authority_effect": "none",
+                },
+                occurred_at=now,
+            )
+            connection.commit()
+            row = connection.execute(
+                "SELECT * FROM wf_password_reset_tokens WHERE reset_id = ?",
+                (reset_id,),
+            ).fetchone()
+            return self._password_reset_summary(row)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def password_reset_for_token_hash(self, token_hash: str) -> dict[str, Any] | None:
+        connection = self._connection()
+        now = self._now()
+        try:
+            with connection:
+                self._expire_pending_password_resets(connection, now)
+            row = connection.execute(
+                "SELECT * FROM wf_password_reset_tokens WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            return self._password_reset_summary(row) if row else None
+        finally:
+            connection.close()
+
+    def activate_password_reset(
+        self,
+        *,
+        token_hash: str,
+        password_salt: str,
+        password_hash: str,
+    ) -> str:
+        connection = self._connection()
+        now = self._now()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._expire_pending_password_resets(connection, now)
+            reset = connection.execute(
+                "SELECT * FROM wf_password_reset_tokens WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            if reset is None:
+                raise WorkflowFoundationNotFound(
+                    "The password reset token was not recognized by this local ETOP instance."
+                )
+            if reset["status"] != "pending":
+                raise WorkflowFoundationConflict(
+                    "This password reset link is expired or has already been used."
+                )
+            user_id = reset["user_id"]
+            changed = connection.execute(
+                """
+                UPDATE wf_user_accounts
+                SET password_salt = ?, password_hash = ?,
+                    credential_version = credential_version + 1, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (password_salt, password_hash, now, user_id),
+            ).rowcount
+            if changed != 1:
+                raise WorkflowFoundationNotFound(f"Workflow user {user_id} was not found.")
+            connection.execute(
+                """
+                UPDATE wf_sessions SET revoked_at = ?
+                WHERE user_id = ? AND revoked_at IS NULL
+                """,
+                (now, user_id),
+            )
+            changed = connection.execute(
+                """
+                UPDATE wf_password_reset_tokens
+                SET status = 'activated', activated_at = ?
+                WHERE reset_id = ? AND status = 'pending'
+                """,
+                (now, reset["reset_id"]),
+            ).rowcount
+            if changed != 1:
+                raise WorkflowFoundationConflict(
+                    "This password reset link was activated by another request."
+                )
+            connection.execute(
+                """
+                INSERT INTO wf_password_reset_events(
+                    reset_event_id, reset_id, event_type,
+                    actor_user_id, created_at, details_json
+                ) VALUES (?, ?, 'activated', ?, ?, ?)
+                """,
+                (
+                    self._id("PRE"),
+                    reset["reset_id"],
+                    user_id,
+                    now,
+                    self._canonical_json(
+                        {"user_id": user_id, "sessions_revoked": True, "token_reusable": False}
+                    ),
+                ),
+            )
+            self._append_audit(
+                connection,
+                event_type="identity.password_reset_completed",
+                actor_user_id=user_id,
+                subject_type="user_account",
+                subject_id=user_id,
+                correlation_id=self._id("COR"),
+                details={
+                    "reset_id": reset["reset_id"],
+                    "sessions_revoked": True,
+                    "token_reusable": False,
+                    "authority_effect": "none",
+                },
+                occurred_at=now,
+            )
+            connection.commit()
+            return user_id
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def set_user_password(
+        self,
+        *,
+        user_id: str,
+        password_salt: str,
+        password_hash: str,
+        expected_version: int,
+        actor_user_id: str,
+    ) -> dict[str, Any]:
+        connection = self._connection()
+        now = self._now()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT credential_version FROM wf_user_accounts WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                raise WorkflowFoundationNotFound(f"Workflow user {user_id} was not found.")
+            if row["credential_version"] != expected_version:
+                raise WorkflowFoundationConflict(
+                    "The account credential changed. Refresh before setting a new password."
+                )
+            next_version = expected_version + 1
+            connection.execute(
+                """
+                UPDATE wf_user_accounts
+                SET password_salt = ?, password_hash = ?,
+                    credential_version = ?, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (password_salt, password_hash, next_version, now, user_id),
+            )
+            connection.execute(
+                """
+                UPDATE wf_sessions SET revoked_at = ?
+                WHERE user_id = ? AND revoked_at IS NULL
+                """,
+                (now, user_id),
+            )
+            self._append_audit(
+                connection,
+                event_type="identity.password_set_by_admin",
+                actor_user_id=actor_user_id,
+                subject_type="user_account",
+                subject_id=user_id,
+                correlation_id=self._id("COR"),
+                details={
+                    "credential_version": next_version,
+                    "sessions_revoked": True,
+                    "authority_effect": "none",
+                },
+                occurred_at=now,
+            )
+            connection.commit()
+            return self.get_security_user(user_id)
         except Exception:
             connection.rollback()
             raise

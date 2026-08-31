@@ -14,6 +14,7 @@ class ERPEvidenceRepository:
     AP_HEADER_LIMIT = 25
     AP_DETAIL_LIMIT = 100
     AP_GL_LIMIT = 100
+    AP_GL_BATCH_LIMIT = 500
     AP_PO_MATCH_LIMIT = 50
     AP_INPUT_LIMIT = 100
     AP_SCHEMA_COLUMN_LIMIT = 1000
@@ -460,6 +461,43 @@ class ERPEvidenceRepository:
             (vendor_number, invoice_number),
         )
         return rows[: self.AP_GL_LIMIT], len(rows) <= self.AP_GL_LIMIT
+
+    def get_ap_gl_distributions_for_invoices(
+        self, vendor_number: int, invoice_numbers: list[str]
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Batched sibling of get_ap_gl_distributions - one indexed PMGLDS
+        query across every invoice number a caller already has in hand
+        (e.g. a vendor's whole open-payables list) instead of one query
+        per invoice. PMGNBINV is included in the result so callers can
+        group rows back onto their originating invoice."""
+
+        if not invoice_numbers:
+            return [], True
+        placeholders = ", ".join(["%s"] * len(invoice_numbers))
+        rows = self.database.fetch_all(
+            f"""
+            SELECT
+                PMGNBINV AS invoice_number,
+                PMGNBSEQ AS sequence_number,
+                PMGNBPMT AS payment_number,
+                PMGAMTINV AS invoice_amount,
+                PMGQTY AS quantity,
+                TRIM(PMGDSC) AS description,
+                PMGDTEINV AS invoice_date,
+                PMGNBGLDV AS gl_division,
+                PMGNBGLDP AS gl_department,
+                PMGNBGL AS gl_account,
+                PMGPR AS accounting_period,
+                PMGYR AS accounting_year,
+                PMGCODPGM AS program_code
+            FROM PMGLDS
+            WHERE PMGNBVND = %s AND PMGNBINV IN ({placeholders})
+            ORDER BY PMGNBINV, PMGNBPMT, PMGNBSEQ
+            LIMIT {self.AP_GL_BATCH_LIMIT + 1}
+            """,
+            (vendor_number, *invoice_numbers),
+        )
+        return rows[: self.AP_GL_BATCH_LIMIT], len(rows) <= self.AP_GL_BATCH_LIMIT
 
     def get_po_receiving_match(
         self, vendor_number: int, invoice_number: str

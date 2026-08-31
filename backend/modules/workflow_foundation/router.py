@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Resp
 
 from .repository import WorkflowFoundationConflict, WorkflowFoundationNotFound
 from .schemas import (
+    AdminPasswordSet,
     AuditEventListResponse,
     AuditIntegrityResponse,
     AuthSessionResponse,
@@ -27,6 +28,10 @@ from .schemas import (
     ModuleSummary,
     NotificationListResponse,
     NotificationSummary,
+    PasswordResetActivationRequest,
+    PasswordResetCreateResponse,
+    PasswordResetPreview,
+    PasswordResetTokenRequest,
     RoleSummary,
     SecurityUserListResponse,
     SecurityUserSummary,
@@ -213,6 +218,37 @@ def activate_local_invitation(
         raise AssertionError("unreachable")
 
 
+@router.post("/password-reset/preview", response_model=PasswordResetPreview)
+def preview_local_password_reset(payload: PasswordResetTokenRequest) -> PasswordResetPreview:
+    try:
+        return workflow_foundation_service.preview_password_reset(payload)
+    except (WorkflowFoundationNotFound, WorkflowFoundationConflict) as exc:
+        _raise_workflow_error(exc)
+        raise AssertionError("unreachable")
+
+
+@router.post(
+    "/password-reset/activate",
+    response_model=AuthSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def activate_local_password_reset(
+    payload: PasswordResetActivationRequest,
+    response: Response,
+) -> AuthSessionResponse:
+    try:
+        session = workflow_foundation_service.activate_password_reset(payload)
+        _set_session_cookie(response, session)
+        return session
+    except (
+        WorkflowFoundationNotFound,
+        WorkflowFoundationConflict,
+        WorkflowValidationError,
+    ) as exc:
+        _raise_workflow_error(exc)
+        raise AssertionError("unreachable")
+
+
 @router.get("/session", response_model=CurrentSessionResponse)
 def get_current_session(token: Token) -> CurrentSessionResponse:
     try:
@@ -335,6 +371,47 @@ def change_security_user_status(
         WorkflowFoundationNotFound,
         WorkflowPermissionDenied,
         WorkflowValidationError,
+    ) as exc:
+        _raise_workflow_error(exc)
+        raise AssertionError("unreachable")
+
+
+@router.post(
+    "/security/users/{user_id}/password-reset",
+    response_model=PasswordResetCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_security_password_reset(
+    token: Token,
+    user_id: str = Path(min_length=5, max_length=80, pattern=r"^USR-[A-Za-z0-9_-]+$"),
+) -> PasswordResetCreateResponse:
+    try:
+        return workflow_foundation_service.request_password_reset(token, user_id)
+    except (
+        WorkflowAuthenticationRequired,
+        WorkflowFoundationNotFound,
+        WorkflowPermissionDenied,
+    ) as exc:
+        _raise_workflow_error(exc)
+        raise AssertionError("unreachable")
+
+
+@router.put(
+    "/security/users/{user_id}/password",
+    response_model=SecurityUserSummary,
+)
+def set_security_user_password(
+    payload: AdminPasswordSet,
+    token: Token,
+    user_id: str = Path(min_length=5, max_length=80, pattern=r"^USR-[A-Za-z0-9_-]+$"),
+) -> SecurityUserSummary:
+    try:
+        return workflow_foundation_service.set_user_password(token, user_id, payload)
+    except (
+        WorkflowAuthenticationRequired,
+        WorkflowFoundationConflict,
+        WorkflowFoundationNotFound,
+        WorkflowPermissionDenied,
     ) as exc:
         _raise_workflow_error(exc)
         raise AssertionError("unreachable")

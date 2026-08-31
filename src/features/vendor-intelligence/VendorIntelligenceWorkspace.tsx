@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import {
   createVendorNote,
   getVendorEvidence,
-  getVendorInvoiceGLDistributions,
+  getVendorGLDistributionsBatch,
   getVendorNotes,
   searchVendors,
 } from './api'
@@ -60,12 +60,12 @@ export default function VendorIntelligenceWorkspace() {
   const [notes, setNotes] = useState<VendorNoteHistoryResponse | null>(null)
   const [detailError, setDetailError] = useState<DetailError | null>(null)
 
-  const [expandedInvoice, setExpandedInvoice] = useState<string | null>(null)
-  const [glDistributions, setGLDistributions] = useState<Record<string, {
+  const [glDistributions, setGLDistributions] = useState<{
+    vendorNumber: number
     status: 'loading' | 'success' | 'error'
-    lines: GLDistributionLine[]
+    lines: Record<string, GLDistributionLine[]>
     error: string
-  }>>({})
+  } | null>(null)
 
   const [authorIdentity, setAuthorIdentity] = useState('')
   const [noteText, setNoteText] = useState('')
@@ -80,6 +80,8 @@ export default function VendorIntelligenceWorkspace() {
   const currentDetailError =
     detailError && detailError.vendorNumber === selectedVendor ? detailError.message : ''
   const isLoadingDetail = selectedVendor != null && !currentEvidence && !currentDetailError
+  const currentGLDistributions =
+    glDistributions && glDistributions.vendorNumber === selectedVendor ? glDistributions : null
 
   useEffect(() => {
     const controller = new AbortController()
@@ -122,35 +124,28 @@ export default function VendorIntelligenceWorkspace() {
     [currentEvidence],
   )
 
-  function toggleGLDistributions(invoiceNumber: string) {
-    if (expandedInvoice === invoiceNumber) {
-      setExpandedInvoice(null)
-      return
-    }
-    setExpandedInvoice(invoiceNumber)
-    if (glDistributions[invoiceNumber] || selectedVendor == null) return
-    setGLDistributions((current) => ({
-      ...current,
-      [invoiceNumber]: { status: 'loading', lines: [], error: '' },
-    }))
-    getVendorInvoiceGLDistributions(selectedVendor, invoiceNumber)
+  useEffect(() => {
+    if (!currentEvidence || selectedVendor == null) return
+    const vendorNumber = selectedVendor
+    const invoiceNumbers = currentEvidence.payables.open_invoices.map((invoice) => invoice.invoice_number)
+    if (invoiceNumbers.length === 0) return
+    const controller = new AbortController()
+    setGLDistributions({ vendorNumber, status: 'loading', lines: {}, error: '' })
+    getVendorGLDistributionsBatch(vendorNumber, invoiceNumbers, controller.signal)
       .then((lines) => {
-        setGLDistributions((current) => ({
-          ...current,
-          [invoiceNumber]: { status: 'success', lines, error: '' },
-        }))
+        setGLDistributions({ vendorNumber, status: 'success', lines, error: '' })
       })
       .catch((error: unknown) => {
-        setGLDistributions((current) => ({
-          ...current,
-          [invoiceNumber]: {
-            status: 'error',
-            lines: [],
-            error: errorMessage(error, 'Unable to load GL posting evidence.'),
-          },
-        }))
+        if (isAbortError(error)) return
+        setGLDistributions({
+          vendorNumber,
+          status: 'error',
+          lines: {},
+          error: errorMessage(error, 'Unable to load GL posting evidence.'),
+        })
       })
-  }
+    return () => controller.abort()
+  }, [currentEvidence, selectedVendor])
 
   async function submitNote(event: FormEvent) {
     event.preventDefault()
@@ -393,78 +388,59 @@ export default function VendorIntelligenceWorkspace() {
                 ) : (
                   <div className="vi-table-wrap">
                     <table className="vi-table">
-                      <thead><tr><th /><th>Invoice</th><th>Amount</th><th>Invoice date</th><th>Due date</th><th>Hold</th></tr></thead>
+                      <thead><tr><th>Invoice</th><th>Amount</th><th>Invoice date</th><th>Due date</th><th>Hold</th><th>GL account</th><th>Division</th><th>Department</th></tr></thead>
                       <tbody>
                         {currentEvidence.payables.open_invoices.map((invoice) => {
-                          const isExpanded = expandedInvoice === invoice.invoice_number
-                          const gl = glDistributions[invoice.invoice_number]
+                          const lines = currentGLDistributions?.lines[invoice.invoice_number]
                           return (
-                            <Fragment key={invoice.invoice_number}>
-                              <tr>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className="vi-gl-toggle"
-                                    aria-expanded={isExpanded}
-                                    onClick={() => toggleGLDistributions(invoice.invoice_number)}
-                                  >
-                                    {isExpanded ? '▾' : '▸'} GL
-                                  </button>
-                                </td>
-                                <td>{invoice.invoice_number}</td>
-                                <td>{formatMoney(invoice.invoice_amount)}</td>
-                                <td>{formatDate(invoice.invoice_date)}</td>
-                                <td>{formatDate(invoice.due_date)}</td>
-                                <td>{invoice.on_hold ? 'Yes' : 'No'}</td>
-                              </tr>
-                              {isExpanded && (
-                                <tr className="vi-gl-row">
-                                  <td colSpan={6}>
-                                    {(!gl || gl.status === 'loading') && (
-                                      <p className="vi-empty">Loading GL posting evidence…</p>
-                                    )}
-                                    {gl?.status === 'error' && <p className="vi-form-error">{gl.error}</p>}
-                                    {gl?.status === 'success' && (
-                                      gl.lines.length === 0 ? (
-                                        <p className="vi-empty">No GL distribution evidence found for this invoice.</p>
-                                      ) : (
-                                        <table className="vi-table vi-gl-table">
-                                          <thead>
-                                            <tr>
-                                              <th>GL account</th>
-                                              <th>Division</th>
-                                              <th>Department</th>
-                                              <th>Line memo</th>
-                                              <th>Quantity</th>
-                                              <th>Amount</th>
-                                              <th>Period/Year</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {gl.lines.map((line, index) => (
-                                              <tr key={`${line.sequence_number ?? index}`}>
-                                                <td>
-                                                  {line.gl_account ?? 'Unavailable'}
-                                                  {line.gl_account_description && (
-                                                    <><br /><small>{line.gl_account_description}</small></>
-                                                  )}
-                                                </td>
-                                                <td>{line.gl_division ?? 'Unavailable'}</td>
-                                                <td>{line.gl_department ?? 'Unavailable'}</td>
-                                                <td>{line.description || '—'}</td>
-                                                <td>{line.quantity ?? 'Unavailable'}</td>
-                                                <td>{formatMoney(line.invoice_amount)}</td>
-                                                <td>{line.accounting_period ?? '—'}/{line.accounting_year ?? '—'}</td>
-                                              </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      )
-                                    )}
-                                  </td>
-                                </tr>
+                            <tr key={invoice.invoice_number}>
+                              <td>{invoice.invoice_number}</td>
+                              <td>{formatMoney(invoice.invoice_amount)}</td>
+                              <td>{formatDate(invoice.invoice_date)}</td>
+                              <td>{formatDate(invoice.due_date)}</td>
+                              <td>{invoice.on_hold ? 'Yes' : 'No'}</td>
+                              {(!currentGLDistributions || currentGLDistributions.status === 'loading') && (
+                                <td colSpan={3} className="vi-empty">Loading GL posting evidence…</td>
                               )}
-                            </Fragment>
+                              {currentGLDistributions?.status === 'error' && (
+                                <td colSpan={3} className="vi-form-error">{currentGLDistributions.error}</td>
+                              )}
+                              {currentGLDistributions?.status === 'success' && (
+                                !lines || lines.length === 0 ? (
+                                  <td colSpan={3} className="vi-empty">No GL distribution evidence found.</td>
+                                ) : (
+                                  <>
+                                    <td>
+                                      {lines.map((line, index) => (
+                                        <Fragment key={`${line.sequence_number ?? index}`}>
+                                          {index > 0 && <br />}
+                                          {line.gl_account ?? 'Unavailable'}
+                                          {line.gl_account_description && (
+                                            <><br /><small>{line.gl_account_description}</small></>
+                                          )}
+                                        </Fragment>
+                                      ))}
+                                    </td>
+                                    <td>
+                                      {lines.map((line, index) => (
+                                        <Fragment key={`${line.sequence_number ?? index}`}>
+                                          {index > 0 && <br />}
+                                          {line.gl_division ?? 'Unavailable'}
+                                        </Fragment>
+                                      ))}
+                                    </td>
+                                    <td>
+                                      {lines.map((line, index) => (
+                                        <Fragment key={`${line.sequence_number ?? index}`}>
+                                          {index > 0 && <br />}
+                                          {line.gl_department ?? '0'}
+                                        </Fragment>
+                                      ))}
+                                    </td>
+                                  </>
+                                )
+                              )}
+                            </tr>
                           )
                         })}
                       </tbody>

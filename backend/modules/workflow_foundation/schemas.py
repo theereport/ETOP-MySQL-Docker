@@ -136,6 +136,7 @@ class SecurityUserSummary(StrictModel):
     permissions: EffectivePermissions
     access_version: int = Field(ge=1)
     status_version: int = Field(ge=1)
+    credential_version: int = Field(ge=1)
 
 
 class SecurityUserListResponse(StrictModel):
@@ -192,6 +193,35 @@ class InvitationPreview(StrictModel):
     display_name: str
     expires_at: datetime
     status: Literal["pending"]
+
+
+class PasswordResetTokenRequest(StrictModel):
+    token: str = Field(min_length=32, max_length=256)
+
+
+class PasswordResetActivationRequest(PasswordResetTokenRequest):
+    password: str = Field(min_length=12, max_length=200)
+
+
+class PasswordResetPreview(StrictModel):
+    username: str
+    display_name: str
+    expires_at: datetime
+    status: Literal["pending"]
+
+
+class PasswordResetCreateResponse(StrictModel):
+    reset_id: str
+    user_id: str
+    status: Literal["pending"]
+    expires_at: datetime
+    reset_link: str
+    link_displayed_once: Literal[True]
+
+
+class AdminPasswordSet(StrictModel):
+    new_password: str = Field(min_length=12, max_length=200)
+    expected_version: int = Field(ge=1)
 
 
 class ModuleAccessReplace(StrictModel):

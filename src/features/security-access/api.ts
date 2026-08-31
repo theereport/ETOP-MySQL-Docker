@@ -10,6 +10,8 @@ import type {
   SecurityInvitationCreate,
   SecurityInvitationCreateResponse,
   SecurityInvitationPreview,
+  SecurityPasswordResetCreateResponse,
+  SecurityPasswordResetPreview,
   SecurityUser,
   SecurityUserList,
 } from './types'
@@ -106,5 +108,60 @@ export function activateSecurityInvitation(
       body: JSON.stringify({ token, password }),
     },
     null,
+  )
+}
+
+export function createPasswordReset(
+  userId: string,
+): Promise<SecurityPasswordResetCreateResponse> {
+  return workflowRequest(
+    `/security/users/${encodeURIComponent(userId)}/password-reset`,
+    { method: 'POST' },
+  )
+}
+
+export function previewPasswordReset(
+  token: string,
+  signal?: AbortSignal,
+): Promise<SecurityPasswordResetPreview> {
+  return workflowRequest(
+    '/password-reset/preview',
+    {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+      signal,
+    },
+    null,
+  )
+}
+
+export function activatePasswordReset(
+  token: string,
+  password: string,
+): Promise<WorkflowAuthResponse> {
+  return workflowRequest(
+    '/password-reset/activate',
+    {
+      method: 'POST',
+      body: JSON.stringify({ token, password }),
+    },
+    null,
+  )
+}
+
+export function setUserPassword(
+  userId: string,
+  newPassword: string,
+  expectedVersion: number,
+): Promise<SecurityUser> {
+  return workflowRequest(
+    `/security/users/${encodeURIComponent(userId)}/password`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        new_password: newPassword,
+        expected_version: expectedVersion,
+      }),
+    },
   )
 }

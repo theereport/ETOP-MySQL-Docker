@@ -319,6 +319,45 @@
 .status-expired,
 .status-revoked { color: #ff9da6; }
 
+.security-reset-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid #31465e;
+  border-radius: 10px;
+  background: #0c1826;
+}
+
+.security-reset-panel h3 {
+  margin: 6px 0;
+  font-size: 15px;
+}
+
+.security-reset-link,
+.security-reset-direct {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.security-reset-link textarea {
+  min-height: 90px;
+  padding: 12px;
+  border: 1px solid #3a536f;
+  border-radius: 8px;
+  color: #dcecff;
+  background: #08131f;
+  resize: vertical;
+}
+
+.security-reset-direct label {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+}
+
 .security-empty {
   padding: 22px;
   color: #9fb0c5;

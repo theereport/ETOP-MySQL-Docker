@@ -9,6 +9,7 @@ from .ap_spend_service import ap_vendor_spend_service
 from .schemas import (
     APERPEvidenceResponse,
     APGLCodingSuggestionsResponse,
+    APGLDistributionsByInvoiceResponse,
     APInvoiceSearchResponse,
     APMappingReadinessResponse,
     CreditERPEvidenceResponse,
@@ -102,6 +103,26 @@ def accounts_payable_gl_coding_suggestions(
     limit: int = Query(default=3, ge=1, le=10),
 ) -> APGLCodingSuggestionsResponse:
     return erp_evidence_service.gl_coding_suggestions(vendor_number, limit=limit)
+
+
+@router.get(
+    "/accounts-payable/gl-distributions",
+    response_model=APGLDistributionsByInvoiceResponse,
+)
+def accounts_payable_gl_distributions_by_vendor(
+    vendor_number: int = Query(ge=1),
+    invoice_numbers: str = Query(min_length=1, max_length=2000),
+) -> APGLDistributionsByInvoiceResponse:
+    """Lean, batched GL-only evidence for a list of invoice numbers -
+    one query, not one full invoice-evidence assembly per invoice.
+    invoice_numbers is a comma-separated list."""
+
+    numbers = [item.strip() for item in invoice_numbers.split(",") if item.strip()]
+    if not numbers:
+        raise HTTPException(status_code=422, detail="At least one invoice number is required.")
+    return erp_evidence_service.ap_gl_distributions_by_vendor(
+        vendor_number, numbers
+    )
 
 
 @router.get(

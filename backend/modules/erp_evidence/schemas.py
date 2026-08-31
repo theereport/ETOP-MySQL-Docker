@@ -295,6 +295,12 @@ class APGLDistributionEvidence(BaseModel):
     program_code: str | None
 
 
+class APGLDistributionsByInvoiceResponse(BaseModel):
+    vendor_number: str
+    items: dict[str, list[APGLDistributionEvidence]]
+    complete: bool
+
+
 class APPoReceivingMatchEvidence(BaseModel):
     sequence_number: int | None
     po_receiver_reference: str | None

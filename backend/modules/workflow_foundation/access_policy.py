@@ -13,6 +13,8 @@ PUBLIC_PATHS = frozenset(
         "/api/v1/workflow-foundation/sessions",
         "/api/v1/workflow-foundation/invitations/preview",
         "/api/v1/workflow-foundation/invitations/activate",
+        "/api/v1/workflow-foundation/password-reset/preview",
+        "/api/v1/workflow-foundation/password-reset/activate",
     }
 )
 

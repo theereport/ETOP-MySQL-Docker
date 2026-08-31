@@ -8,16 +8,19 @@ import type {
 import { useAccess } from './AccessContext'
 import {
   changeSecurityUserStatus,
+  createPasswordReset,
   createSecurityInvitation,
   getSecurityInvitations,
   getSecurityUsers,
   replaceSecurityUserModules,
   revokeSecurityInvitation,
+  setUserPassword,
 } from './api'
 import type {
   SecurityInvitation,
   SecurityInvitationCreateResponse,
   SecurityModule,
+  SecurityPasswordResetCreateResponse,
   SecurityUser,
 } from './types'
 import './SecurityAccess.css'
@@ -42,6 +45,8 @@ export default function SecurityAccessWorkspace() {
   const [invitations, setInvitations] = useState<SecurityInvitation[]>([])
   const [drafts, setDrafts] = useState<Record<string, ETOPModuleId[]>>({})
   const [createdInvitation, setCreatedInvitation] = useState<SecurityInvitationCreateResponse | null>(null)
+  const [resetPanelUserId, setResetPanelUserId] = useState('')
+  const [createdReset, setCreatedReset] = useState<SecurityPasswordResetCreateResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [workingId, setWorkingId] = useState('')
   const [error, setError] = useState('')
@@ -139,6 +144,65 @@ export default function SecurityAccessWorkspace() {
     }
   }
 
+  function toggleResetPanel(userId: string) {
+    setResetPanelUserId((current) => (current === userId ? '' : userId))
+    setCreatedReset(null)
+    setError('')
+    setMessage('')
+  }
+
+  async function generateResetLink(user: SecurityUser) {
+    setWorkingId(user.user.user_id)
+    setError('')
+    setMessage('')
+    setCreatedReset(null)
+    try {
+      const created = await createPasswordReset(user.user.user_id)
+      setCreatedReset(created)
+      setMessage('Password reset link created. Copy it now; its raw token is not stored and the link is displayed only once.')
+    } catch (resetError) {
+      setError(messageFor(resetError))
+    } finally {
+      setWorkingId('')
+    }
+  }
+
+  async function copyResetLink() {
+    if (!createdReset) return
+    try {
+      await navigator.clipboard.writeText(createdReset.reset_link)
+      setMessage('Password reset link copied to the clipboard.')
+    } catch {
+      setError('The browser could not copy the link. Select and copy it manually.')
+    }
+  }
+
+  async function submitNewPassword(event: FormEvent<HTMLFormElement>, user: SecurityUser) {
+    event.preventDefault()
+    const data = new FormData(event.currentTarget)
+    const password = String(data.get('new_password') ?? '')
+    const confirmation = String(data.get('confirmation') ?? '')
+    if (password !== confirmation) {
+      setError('The password confirmation does not match.')
+      return
+    }
+    setWorkingId(user.user.user_id)
+    setError('')
+    setMessage('')
+    try {
+      const updated = await setUserPassword(user.user.user_id, password, user.credential_version)
+      setUsers((current) => current.map((item) => (
+        item.user.user_id === updated.user.user_id ? updated : item
+      )))
+      setResetPanelUserId('')
+      setMessage(`Password set directly for ${updated.user.display_name}. Their active sessions were signed out.`)
+    } catch (passwordError) {
+      setError(messageFor(passwordError))
+    } finally {
+      setWorkingId('')
+    }
+  }
+
   async function createInvitation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
@@ -231,7 +295,24 @@ export default function SecurityAccessWorkspace() {
                     <fieldset key={group}><legend>{group}</legend>{groupModules.map((module) => <label key={module.module_id}><input type="checkbox" checked={selected.has(module.module_id)} disabled={self} onChange={(event) => updateDraft(item.user.user_id, module.module_id, event.target.checked)} /><span><strong>{module.name}</strong><small>{module.description}</small></span></label>)}</fieldset>
                   ))}
                 </div>
-                <footer><span>Access profile v{item.access_version} · account status v{item.status_version}{self ? ' · your own controls require another active administrator' : ''}</span><div><button type="button" disabled={self || !changed || workingId === item.user.user_id} onClick={() => void saveModules(item)}>Save module access</button><button type="button" className="security-danger" disabled={self || workingId === item.user.user_id} onClick={() => void changeStatus(item)}>{item.user.status === 'active' ? 'Suspend user' : 'Reactivate user'}</button></div></footer>
+                <footer><span>Access profile v{item.access_version} · account status v{item.status_version}{self ? ' · your own controls require another active administrator' : ''}</span><div><button type="button" disabled={self || !changed || workingId === item.user.user_id} onClick={() => void saveModules(item)}>Save module access</button><button type="button" className="security-danger" disabled={self || workingId === item.user.user_id} onClick={() => void changeStatus(item)}>{item.user.status === 'active' ? 'Suspend user' : 'Reactivate user'}</button><button type="button" onClick={() => toggleResetPanel(item.user.user_id)}>{resetPanelUserId === item.user.user_id ? 'Close password reset' : 'Reset password'}</button></div></footer>
+                {resetPanelUserId === item.user.user_id && (
+                  <div className="security-reset-panel">
+                    <div className="security-reset-link">
+                      <div><span className="security-kicker">ONE-TIME ACTIVATION</span><h3>Generate a reset link (preferred)</h3><p>Share this link with {item.user.display_name} so they can set their own new password.</p></div>
+                      <button type="button" disabled={workingId === item.user.user_id} onClick={() => void generateResetLink(item)}>{workingId === item.user.user_id ? 'Creating…' : 'Generate reset link'}</button>
+                      {createdReset && createdReset.user_id === item.user.user_id && (
+                        <><textarea readOnly value={createdReset.reset_link} aria-label="Password reset link" /><button type="button" onClick={() => void copyResetLink()}>Copy reset link</button><small>Expires {formatDate(createdReset.expires_at)}. The database stores only the SHA-256 token hash; closing this result means the raw link cannot be recovered.</small></>
+                      )}
+                    </div>
+                    <form className="security-reset-direct" onSubmit={(event) => void submitNewPassword(event, item)}>
+                      <div><span className="security-kicker">FALLBACK</span><h3>Set a new password directly</h3><p>Immediately replaces their password and signs out their active sessions.</p></div>
+                      <label>New password<input name="new_password" type="password" minLength={12} maxLength={200} required autoComplete="new-password" /></label>
+                      <label>Confirm password<input name="confirmation" type="password" minLength={12} maxLength={200} required autoComplete="new-password" /></label>
+                      <button type="submit" disabled={workingId === item.user.user_id}>{workingId === item.user.user_id ? 'Setting…' : 'Set new password'}</button>
+                    </form>
+                  </div>
+                )}
               </article>
             )
           })}

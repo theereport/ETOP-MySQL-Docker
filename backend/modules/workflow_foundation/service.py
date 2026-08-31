@@ -15,6 +15,7 @@ from .repository import (
     WorkflowFoundationRepository,
 )
 from .schemas import (
+    AdminPasswordSet,
     AuditEventListResponse,
     AuditIntegrityResponse,
     AuthSessionResponse,
@@ -35,6 +36,10 @@ from .schemas import (
     ModuleSummary,
     NotificationListResponse,
     NotificationSummary,
+    PasswordResetActivationRequest,
+    PasswordResetCreateResponse,
+    PasswordResetPreview,
+    PasswordResetTokenRequest,
     RoleSummary,
     SecurityUserListResponse,
     SecurityUserSummary,
@@ -78,6 +83,7 @@ class WorkflowValidationError(ValueError):
 
 class WorkflowFoundationService:
     SESSION_HOURS = 12
+    PASSWORD_RESET_HOURS = 24
 
     def __init__(
         self,
@@ -424,6 +430,88 @@ class WorkflowFoundationService:
             password_hash=password_hash,
         )
         return self._issue_session(user_id)
+
+    def request_password_reset(
+        self,
+        token: str,
+        user_id: str,
+    ) -> PasswordResetCreateResponse:
+        session = self._require_security_administrator(token)
+        reset_token = self._invitation_token_factory()
+        if len(reset_token) < 32:
+            raise RuntimeError("The configured invitation-token generator is too weak.")
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        expires_at = now.astimezone(UTC) + timedelta(hours=self.PASSWORD_RESET_HOURS)
+        reset = self.repository.create_password_reset(
+            user_id=user_id,
+            token_hash=self._token_hash(reset_token),
+            expires_at=expires_at.isoformat(),
+            actor_user_id=session["user"]["user_id"],
+        )
+        reset_link = f"{self._app_url}/#reset-password={quote(reset_token, safe='-_')}"
+        return PasswordResetCreateResponse(
+            reset_id=reset["reset_id"],
+            user_id=reset["user_id"],
+            status=reset["status"],
+            expires_at=reset["expires_at"],
+            reset_link=reset_link,
+            link_displayed_once=True,
+        )
+
+    def preview_password_reset(
+        self,
+        payload: PasswordResetTokenRequest,
+    ) -> PasswordResetPreview:
+        reset = self.repository.password_reset_for_token_hash(
+            self._token_hash(payload.token)
+        )
+        if reset is None:
+            raise WorkflowFoundationNotFound(
+                "The password reset token was not recognized by this local ETOP instance."
+            )
+        if reset["status"] != "pending":
+            raise WorkflowFoundationConflict(
+                "This password reset link is expired or has already been used."
+            )
+        target = self.repository.get_user(reset["user_id"])
+        return PasswordResetPreview(
+            username=target["username"],
+            display_name=target["display_name"],
+            expires_at=reset["expires_at"],
+            status="pending",
+        )
+
+    def activate_password_reset(
+        self,
+        payload: PasswordResetActivationRequest,
+    ) -> AuthSessionResponse:
+        salt, password_hash = self._password_record(payload.password)
+        user_id = self.repository.activate_password_reset(
+            token_hash=self._token_hash(payload.token),
+            password_salt=salt,
+            password_hash=password_hash,
+        )
+        return self._issue_session(user_id)
+
+    def set_user_password(
+        self,
+        token: str,
+        user_id: str,
+        payload: AdminPasswordSet,
+    ) -> SecurityUserSummary:
+        session = self._require_security_administrator(token)
+        salt, password_hash = self._password_record(payload.new_password)
+        return SecurityUserSummary.model_validate(
+            self.repository.set_user_password(
+                user_id=user_id,
+                password_salt=salt,
+                password_hash=password_hash,
+                expected_version=payload.expected_version,
+                actor_user_id=session["user"]["user_id"],
+            )
+        )
 
     def replace_user_module_access(
         self,

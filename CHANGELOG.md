@@ -1,5 +1,69 @@
 # Changelog
 
+## [0.7.0 Vendor Intelligence] - GL Posting Detail Inline; Batched GL Endpoint
+
+### Changed
+- Each open payable invoice's GL posting evidence (GL account with
+  description, division, department) moved from a "▸ GL" click-to-expand
+  toggle into three columns appended directly to the invoice row, after
+  Hold - no click required to see it. An invoice with multiple GL lines
+  stacks them within the same three cells. Department now reads `0`
+  instead of "Unavailable" when MaddenCo has no department value for
+  that line, matching the department-zero convention already applied
+  elsewhere in AP (see AP Increment 10).
+
+### Added
+- New batched endpoint,
+  `GET /erp-evidence/accounts-payable/gl-distributions`, returning GL
+  distribution lines for a whole list of invoice numbers in one indexed
+  `PMGLDS` query (`WHERE PMGNBVND = ? AND PMGNBINV IN (...)`). Needed
+  because showing every open invoice's GL detail immediately (rather
+  than lazily on click) would otherwise mean firing the existing
+  per-invoice `invoice-evidence` endpoint once per invoice - confirmed
+  live that endpoint also assembles vendor master, posted headers/
+  details, PO/receiving match, and input headers/details/payment splits
+  per call, so 9 concurrent calls for one vendor's open payables took
+  10-15+ seconds. The new endpoint does only the GL lookup plus the
+  existing `GMGM` description join, cutting 9 heavy requests down to 1
+  lean one.
+
+### Preserved
+- The original per-invoice `invoice-evidence` endpoint and its GL
+  distribution field are unchanged and still used elsewhere (e.g.
+  Accounts Payable's ERP Evidence tab); the new batched endpoint is
+  additive, not a replacement.
+
+## [0.7.0 Workflow Foundation] - Admin Password Reset
+
+### Added
+- Security & Access administrators can now reset a user's password two
+  ways: generate a one-time reset link (mirrors the existing invitation-
+  link mechanism exactly - random token, only its SHA-256 hash stored,
+  displayed once, 24-hour fixed expiry) that the user activates by
+  setting their own new password, or set a new password directly as a
+  fallback. Both paths reuse the existing scrypt password hashing, the
+  `expected_version` optimistic-concurrency pattern (a new
+  `credential_version` column, kept independent of `status_version` and
+  `access_version` the same way those two are already kept independent
+  of each other), and revoke all of the target account's active sessions
+  on completion, forcing re-authentication with the new password.
+- New `wf_password_reset_tokens`/`wf_password_reset_events` tables
+  (structurally identical to the existing invitation tables) and three
+  new audit event types (`identity.password_reset_requested`,
+  `identity.password_reset_completed`, `identity.password_set_by_admin`)
+  append to the existing hash-chained audit log.
+- Unlike the two closest existing precedents (suspending a user,
+  changing module access - both of which forbid an admin from acting on
+  their own account), an admin may reset or set a new password for their
+  own account: there is currently no other way to recover from a
+  forgotten admin password, so blocking self-service here would create a
+  real lockout risk with no recovery path.
+- Verified live end-to-end: generated a reset link for a test account,
+  activated it in a separate session (new password worked, prior session
+  revoked, old password rejected), then used the direct-set fallback
+  (new password worked, prior session revoked again) - all three new
+  audit event types confirmed recorded with the hash chain still valid.
+
 ## [0.7.0 AP Increment 12] - Vendor Performance Timeout Fix; MTD Purchase/Discount Hidden
 
 ### Corrected

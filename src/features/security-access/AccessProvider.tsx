@@ -19,14 +19,21 @@ import {
 import type { WorkflowBootstrapStatus, WorkflowSession } from '../workflow-foundation/types'
 import { AccessContext, type AccessContextValue } from './AccessContext'
 import {
+  activatePasswordReset,
   activateSecurityInvitation,
+  previewPasswordReset,
   previewSecurityInvitation,
 } from './api'
-import type { SecurityInvitationPreview } from './types'
+import type { SecurityInvitationPreview, SecurityPasswordResetPreview } from './types'
 import './SecurityAccess.css'
 
 function inviteTokenFromHash(): string | null {
   const match = window.location.hash.match(/^#invite=([A-Za-z0-9_-]{32,256})$/)
+  return match ? match[1] : null
+}
+
+function resetTokenFromHash(): string | null {
+  const match = window.location.hash.match(/^#reset-password=([A-Za-z0-9_-]{32,256})$/)
   return match ? match[1] : null
 }
 
@@ -42,6 +49,8 @@ export default function AccessProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState('')
   const [inviteToken, setInviteToken] = useState<string | null>(inviteTokenFromHash)
   const [invitation, setInvitation] = useState<SecurityInvitationPreview | null>(null)
+  const [resetToken, setResetToken] = useState<string | null>(resetTokenFromHash)
+  const [passwordReset, setPasswordReset] = useState<SecurityPasswordResetPreview | null>(null)
 
   const refreshAccess = useCallback(async () => {
     if (!getWorkflowToken()) {
@@ -62,8 +71,12 @@ export default function AccessProvider({ children }: { children: ReactNode }) {
         setBootstrap(status)
         const token = inviteTokenFromHash()
         setInviteToken(token)
+        const reset = resetTokenFromHash()
+        setResetToken(reset)
         if (token) {
           setInvitation(await previewSecurityInvitation(token, controller.signal))
+        } else if (reset) {
+          setPasswordReset(await previewPasswordReset(reset, controller.signal))
         } else if (getWorkflowToken() && !status.bootstrap_required) {
           setSession(await getWorkflowSession())
         }
@@ -142,6 +155,32 @@ export default function AccessProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function activatePasswordResetLink(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!resetToken) return
+    const data = new FormData(event.currentTarget)
+    const password = String(data.get('password') ?? '')
+    const confirmation = String(data.get('confirmation') ?? '')
+    if (password !== confirmation) {
+      setError('The password confirmation does not match.')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      const result = await activatePasswordReset(resetToken, password)
+      saveWorkflowToken(result.token)
+      setSession(result)
+      setResetToken(null)
+      setPasswordReset(null)
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+    } catch (activationError) {
+      setError(errorMessage(activationError))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const value = useMemo<AccessContextValue | null>(() => {
     if (!session) return null
     const allowed = new Set(session.permissions.module_ids)
@@ -177,6 +216,29 @@ export default function AccessProvider({ children }: { children: ReactNode }) {
               </form>
             </>
           ) : <p className="security-error">{error || 'The invitation cannot be used.'}</p>}
+          <aside><strong>Local assurance boundary</strong><p>This account authenticates only to this ETOP instance. Module access does not grant financial approval, payment, posting, cash-application, or ERP authority.</p></aside>
+        </section>
+      </main>
+    )
+  }
+
+  if (resetToken) {
+    return (
+      <main className="security-gate">
+        <section className="security-auth-card">
+          <span>ETOP · CONTROLLED PASSWORD RESET</span>
+          <h1>{passwordReset ? `Reset password for ${passwordReset.display_name}` : 'Reset link unavailable'}</h1>
+          {passwordReset ? (
+            <>
+              <p>Set a new password for <strong>@{passwordReset.username}</strong>. The link is single-use and expires {new Date(passwordReset.expires_at).toLocaleString()}.</p>
+              <form onSubmit={activatePasswordResetLink}>
+                <label>New password<input name="password" type="password" minLength={12} maxLength={200} required autoComplete="new-password" /></label>
+                <label>Confirm password<input name="confirmation" type="password" minLength={12} maxLength={200} required autoComplete="new-password" /></label>
+                {error && <p className="security-error">{error}</p>}
+                <button type="submit" disabled={submitting}>{submitting ? 'Setting…' : 'Set new password'}</button>
+              </form>
+            </>
+          ) : <p className="security-error">{error || 'This password reset link cannot be used.'}</p>}
           <aside><strong>Local assurance boundary</strong><p>This account authenticates only to this ETOP instance. Module access does not grant financial approval, payment, posting, cash-application, or ERP authority.</p></aside>
         </section>
       </main>

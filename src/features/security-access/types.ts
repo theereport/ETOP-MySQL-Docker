@@ -21,6 +21,7 @@ export type SecurityUser = {
   permissions: EffectivePermissions
   access_version: number
   status_version: number
+  credential_version: number
 }
 
 export type SecurityUserList = {
@@ -61,4 +62,20 @@ export type SecurityInvitationCreate = {
   role_ids: WorkflowRoleId[]
   module_ids: ETOPModuleId[]
   expires_in_hours: number
+}
+
+export type SecurityPasswordResetCreateResponse = {
+  reset_id: string
+  user_id: string
+  status: 'pending'
+  expires_at: string
+  reset_link: string
+  link_displayed_once: true
+}
+
+export type SecurityPasswordResetPreview = {
+  username: string
+  display_name: string
+  expires_at: string
+  status: 'pending'
 }

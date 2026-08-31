@@ -18,6 +18,7 @@ from .schemas import (
     APGLCodingSuggestion,
     APGLCodingSuggestionsResponse,
     APGLDistributionEvidence,
+    APGLDistributionsByInvoiceResponse,
     APInputInvoiceHeaderEvidence,
     APInputPaymentSplitEvidence,
     APInvoiceDetailEvidence,
@@ -636,6 +637,55 @@ class ERPEvidenceService:
                 invoice_number=normalized_invoice,
             ),
             local_identity=None,
+        )
+
+    def ap_gl_distributions_by_vendor(
+        self, vendor_number: int, invoice_numbers: list[str]
+    ) -> APGLDistributionsByInvoiceResponse:
+        """Batched GL-only lookup for a vendor's invoice list (e.g. Vendor
+        Intelligence's open-payables table) - one query via the repository's
+        IN-clause batch method instead of running the full, much heavier
+        per-invoice evidence assembly (vendor master, posted headers/
+        details, PO match, input headers/details, payment splits) once per
+        invoice just to read GL distributions."""
+
+        normalized = [_plain_text(item) for item in invoice_numbers]
+        normalized = [item for item in normalized if item]
+        try:
+            gl_raw, complete = self.repository.get_ap_gl_distributions_for_invoices(
+                vendor_number, normalized
+            )
+        except Exception:
+            return APGLDistributionsByInvoiceResponse(
+                vendor_number=str(vendor_number),
+                items={},
+                complete=False,
+            )
+        gl_account_pairs = [
+            (int(row["gl_division"]), int(row["gl_account"]))
+            for row in gl_raw
+            if row.get("gl_division") is not None and row.get("gl_account") is not None
+        ]
+        try:
+            gl_account_descriptions = self.repository.get_gl_account_descriptions(
+                gl_account_pairs
+            )
+        except Exception:
+            gl_account_descriptions = {}
+        items: dict[str, list[APGLDistributionEvidence]] = {
+            invoice_number: [] for invoice_number in normalized
+        }
+        for row in gl_raw:
+            invoice_number = _plain_text(row.get("invoice_number"))
+            if not invoice_number:
+                continue
+            items.setdefault(invoice_number, []).append(
+                self._ap_gl_distribution(row, gl_account_descriptions)
+            )
+        return APGLDistributionsByInvoiceResponse(
+            vendor_number=str(vendor_number),
+            items=items,
+            complete=complete,
         )
 
     def gl_coding_suggestions(
