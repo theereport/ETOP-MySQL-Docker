@@ -12,6 +12,7 @@ EvidenceStatus = Literal[
     "degraded",
     "candidate_only",
     "unmapped",
+    "not_applicable",
 ]
 
 
@@ -294,6 +295,23 @@ class APGLDistributionEvidence(BaseModel):
     program_code: str | None
 
 
+class APPoReceivingMatchEvidence(BaseModel):
+    sequence_number: int | None
+    po_receiver_reference: str | None
+    product_number: str | None
+    po_number: str | None
+    quantity_received_this_receipt: float | None
+    receipt_date: str | None
+    po_complete_flag: str | None
+    po_date: str | None
+    quantity_ordered: float | None
+    quantity_received_total: float | None
+    quantity_backorder: float | None
+    quantity_invoiced: float
+    quantity_variance: float | None
+    line_amount: float
+
+
 class APInputInvoiceHeaderEvidence(BaseModel):
     vendor_number: str
     invoice_number: str
@@ -340,6 +358,8 @@ class APERPEvidenceResponse(BaseModel):
     posted_detail_collection: APBoundedCollection
     gl_distributions: list[APGLDistributionEvidence]
     gl_distribution_collection: APBoundedCollection
+    po_receiving_match: list[APPoReceivingMatchEvidence]
+    po_receiving_match_collection: APBoundedCollection
     input_headers: list[APInputInvoiceHeaderEvidence]
     input_header_collection: APBoundedCollection
     input_details: list[APInvoiceDetailEvidence]
@@ -351,6 +371,27 @@ class APERPEvidenceResponse(BaseModel):
     governance: EvidenceGovernance
     sensitive_fields_excluded: list[str]
     evidence_sha256: str
+    warnings: list[str]
+
+
+class APGLCodingSuggestion(BaseModel):
+    gl_division: str
+    gl_account: str
+    gl_department: str | None
+    gl_account_description: str | None
+    invoice_count: int
+    match_percent: float
+
+
+class APGLCodingSuggestionsResponse(BaseModel):
+    contract_version: str
+    generated_at: str
+    vendor_number: str
+    coded_year: int | None
+    total_coded_invoice_count: int
+    suggestions: list[APGLCodingSuggestion]
+    excluded_structural_accounts: list[str]
+    governance: EvidenceGovernance
     warnings: list[str]
 
 

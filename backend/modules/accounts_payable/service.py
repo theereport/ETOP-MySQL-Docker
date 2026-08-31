@@ -237,22 +237,17 @@ class AccountsPayableService:
     def deferred_capabilities() -> list[DeferredCapability]:
         return [
             DeferredCapability(
-                key="erp_ap_ledger",
-                label="ERP AP Balance and Payment Status",
-                reason="No governed AP subledger/payment source is connected in Increment 1.",
-                missing_sources=["ERP AP open items", "ERP payment/check/ACH history"],
-            ),
-            DeferredCapability(
                 key="vendor_master",
                 label="Authoritative Vendor Performance",
-                reason="Increment 3 aggregates document evidence by vendor identity, but reconciled vendor master, PO/receipt, payment, quality, and outcome history are not connected.",
-                missing_sources=["ERP vendor master", "vendor history"],
-            ),
-            DeferredCapability(
-                key="three_way_match",
-                label="Purchase Order and Receiving Match",
-                reason="A complete governed PO and receiving source is not connected.",
-                missing_sources=["purchase orders", "receipts", "item/price detail"],
+                reason=(
+                    "Purchase volume, discount capture, and PO fill-rate are now "
+                    "real via Vendor Intelligence's vendor evidence page. On-time "
+                    "delivery and quality/chargeback history are a permanent gap, "
+                    "not a future increment - no promised-delivery-date field or "
+                    "returns/chargeback/quality table exists anywhere in the "
+                    "connected MaddenCo instance to compute them from."
+                ),
+                missing_sources=["on-time delivery data", "quality/chargeback history"],
             ),
             DeferredCapability(
                 key="governed_approval_workflow",
@@ -270,16 +265,15 @@ class AccountsPayableService:
                 ],
             ),
             DeferredCapability(
-                key="cash_and_discounts",
-                label="Authoritative Cash Forecast and Discount Eligibility",
-                reason="Increment 3 can preserve document-evidence due-date scenarios, but current payment status, authoritative terms, cash position, and treasury policy are unavailable.",
-                missing_sources=["AP open status", "vendor terms", "cash forecast", "treasury policy"],
-            ),
-            DeferredCapability(
-                key="gl_coding",
-                label="GL Coding Recommendation",
-                reason="No governed chart-of-accounts, coding history, or decision model is connected.",
-                missing_sources=["GL", "dimensions", "coding history", "approval policy"],
+                key="cash_forecast",
+                label="Authoritative Cash Forecast",
+                reason=(
+                    "The ERP open-ledger cache and vendor terms reference now make "
+                    "current AP balance and flat-days discount eligibility real "
+                    "(Increment 6), but projecting AP outflows against actual bank "
+                    "cash position and treasury policy remains unconnected."
+                ),
+                missing_sources=["bank cash position", "treasury policy"],
             ),
             DeferredCapability(
                 key="ai_and_image_similarity",
@@ -294,6 +288,10 @@ class AccountsPayableService:
         count = int(statistics["count"])
         ocr_count = int(statistics["ocr_count"])
         structured_count = int(statistics["structured_count"])
+        ledger_summary = self._erp_ledger_repository.open_ledger_summary(
+            self._clock().date()
+        )
+        ledger_refreshed_at = ledger_summary["refreshed_at"]
         return [
             SourceCoverageItem(
                 key="document_intelligence_vendor_invoices",
@@ -342,12 +340,28 @@ class AccountsPayableService:
             ),
             SourceCoverageItem(
                 key="erp_accounts_payable",
-                label="ERP Accounts Payable",
-                status="not_connected",
-                source=None,
-                as_of=None,
-                record_count=None,
-                explanation="No ERP AP balance, open-item, payment, PO, receipt, or GL source is connected.",
+                label="ERP Accounts Payable Open Ledger",
+                status="available" if ledger_refreshed_at else "not_connected",
+                source=(
+                    "accounts_payable.erp_open_ledger_cache"
+                    if ledger_refreshed_at
+                    else None
+                ),
+                as_of=ledger_refreshed_at,
+                record_count=(
+                    int(ledger_summary["total_count"])
+                    if ledger_refreshed_at
+                    else None
+                ),
+                explanation=(
+                    "MaddenCo's open, unpaid, non-voided PMHD balance and vendor "
+                    "terms are connected via the ERP ledger refresh job. "
+                    "Per-invoice GL account/division/department and authoritative "
+                    "payment/check/ACH history are not yet part of this module's "
+                    "own coverage."
+                    if ledger_refreshed_at
+                    else "Trigger an ERP ledger refresh from the Executive Dashboard to connect this source."
+                ),
             ),
         ]
 

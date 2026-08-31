@@ -555,6 +555,36 @@ export interface APWarehouseApprovalActionCreate {
   notes?: string
 }
 
+export interface APGLCodingSuggestion {
+  gl_division: string
+  gl_account: string
+  gl_department: string | null
+  gl_account_description: string | null
+  invoice_count: number
+  match_percent: number
+}
+
+export interface APGLCodingSuggestionsResponse {
+  contract_version: string
+  generated_at: string
+  vendor_number: string
+  coded_year: number | null
+  total_coded_invoice_count: number
+  suggestions: APGLCodingSuggestion[]
+  excluded_structural_accounts: string[]
+  governance: {
+    source_authority: string
+    erp_access: string
+    erp_write: boolean
+    recommendation_effect: string
+    decision_effect: string
+    execution_effect: string
+    automatic_selection: boolean
+    statements: string[]
+  }
+  warnings: string[]
+}
+
 export interface APWarehouseApprovalActionRecord {
   action_id: string
   vendor_number: string
@@ -964,6 +994,8 @@ export interface APERPEvidenceResponse {
   posted_detail_collection: APBoundedEvidenceCollection
   gl_distributions: Array<Record<string, string | number | null>>
   gl_distribution_collection: APBoundedEvidenceCollection
+  po_receiving_match: Array<Record<string, string | number | null>>
+  po_receiving_match_collection: APBoundedEvidenceCollection
   input_headers: Array<Record<string, string | number | null>>
   input_header_collection: APBoundedEvidenceCollection
   input_details: Array<Record<string, string | number | null>>

@@ -14,6 +14,7 @@ class ERPEvidenceRepository:
     AP_HEADER_LIMIT = 25
     AP_DETAIL_LIMIT = 100
     AP_GL_LIMIT = 100
+    AP_PO_MATCH_LIMIT = 50
     AP_INPUT_LIMIT = 100
     AP_SCHEMA_COLUMN_LIMIT = 1000
     AP_VENDOR_SEARCH_LIMIT = 25
@@ -460,6 +461,73 @@ class ERPEvidenceRepository:
         )
         return rows[: self.AP_GL_LIMIT], len(rows) <= self.AP_GL_LIMIT
 
+    def get_po_receiving_match(
+        self, vendor_number: int, invoice_number: str
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """3-way match evidence: PMDT.PMDNBPORV is a receiving-report
+        reference pointing at TTRCVD.TRCHNUMRPT, which in turn carries
+        TRCDNUMPO pointing at TMPOHD.TPHNB. TRCHNUMRPT is NOT by itself
+        unique - confirmed live that TTRCVD's real primary key is the
+        composite (TRCHNUMRPT, TRCDNUMSEQ): a single receiving report
+        commonly has dozens of detail lines (one invoice sampled live had
+        20). Joining on TRCHNUMRPT alone fans out into every product on
+        that receiving report, not the one line this PMDT row actually
+        represents.
+
+        PMDT has no product code of its own, but confirmed live across a
+        real 20-line invoice that PMDT.PMDSEQ (the AP detail line number,
+        1-based) lines up exactly with TTRCVD.TRCDNUMSEQ (0-based) in
+        order and quantity for the same receiving report - PMDSEQ = 1
+        matches TRCDNUMSEQ = 0, PMDSEQ = 2 matches TRCDNUMSEQ = 1, and so
+        on. TRCDNUMSEQ = PMDSEQ - 1 is therefore required in the join, not
+        just the receiving-report reference, or the "match" silently
+        returns a different product's quantities entirely.
+
+        Confirmed live that only a minority of invoice lines carry a
+        nonzero PMDNBPORV at all (most AP activity - rebates, AR-offset,
+        differential clearing - has no PO/receiving trail); lines with
+        PMDNBPORV = 0 are excluded here, not returned as unmatched rows.
+        Confirmed live that TTRCVD.TRCDCOSDIF (the dedicated cost-variance
+        column) is 0 across every row ever recorded, and TRCDCOS is
+        simply copied from TRCDCOSPO whenever the latter is populated -
+        there is no real price-variance signal in receiving data, so this
+        method surfaces quantities only, never a cost/price comparison."""
+
+        rows = self.database.fetch_all(
+            f"""
+            SELECT
+                d.PMDSEQ AS sequence_number,
+                d.PMDNBPORV AS po_receiver_reference,
+                TRIM(r.TRCDNUMPRD) AS product_number,
+                r.TRCDNUMPO AS po_number,
+                r.TRCDQTY AS quantity_received_this_receipt,
+                r.TRCDDTECRT AS receipt_date,
+                TRIM(h.TPHFLGCMP) AS po_complete_flag,
+                h.TPHDTE AS po_date,
+                po_line.TPDQTYORD AS quantity_ordered,
+                po_line.TPDQTYRCV AS quantity_received_total,
+                po_line.TPDQTYBO AS quantity_backorder,
+                d.PMDQTY AS quantity_invoiced,
+                d.PMDAMT AS line_amount
+            FROM PMDT d
+            INNER JOIN TTRCVD r
+                ON r.TRCHNUMRPT = d.PMDNBPORV
+                AND r.TRCDNUMSEQ = d.PMDSEQ - 1
+            LEFT JOIN TMPOHD h
+                ON h.TPHNB = r.TRCDNUMPO
+            LEFT JOIN TMPODT po_line
+                ON po_line.TPHNB = r.TRCDNUMPO
+                AND TRIM(po_line.TPDPRD) = TRIM(r.TRCDNUMPRD)
+            WHERE d.PMDNBVND = %s
+                AND d.PMDNBINV = %s
+                AND d.PMDNBPORV != 0
+            ORDER BY d.PMDSEQ
+            LIMIT {self.AP_PO_MATCH_LIMIT + 1}
+            """,
+            (vendor_number, invoice_number),
+        )
+        return rows[: self.AP_PO_MATCH_LIMIT], len(rows) <= self.AP_PO_MATCH_LIMIT
+
     def get_gl_account_descriptions(
         self, division_and_account: list[tuple[int, int]]
     ) -> dict[tuple[str, str], str]:
@@ -491,6 +559,103 @@ class ERPEvidenceRepository:
             for row in rows
             if row.get("description")
         }
+
+    def get_latest_gl_coding_year(self, vendor_number: int) -> int | None:
+        """Most recent PMGYR this vendor has any coding activity in -
+        confirmed live that ranking a vendor's lifetime PMGLDS history
+        (rather than one representative year) dilutes even genuinely
+        dominant accounts and makes structural-leg detection unreliable,
+        so callers should scope to this single year, matching the
+        methodology that was validated live before this was built."""
+
+        row = self.database.fetch_one(
+            "SELECT MAX(PMGYR) AS latest_year FROM PMGLDS WHERE PMGNBVND = %s",
+            (vendor_number,),
+        )
+        year = row.get("latest_year") if row else None
+        return int(year) if year is not None else None
+
+    def get_vendor_coded_invoice_count(
+        self, vendor_number: int, *, year: int
+    ) -> int:
+        """Total distinct invoices this vendor has any PMGLDS coding for
+        within the given accounting year - the denominator for GL-coding
+        match percentages."""
+
+        row = self.database.fetch_one(
+            """
+            SELECT COUNT(DISTINCT PMGNBINV) AS invoice_count
+            FROM PMGLDS
+            WHERE PMGNBVND = %s AND PMGYR = %s
+            """,
+            (vendor_number, year),
+        )
+        return int(row["invoice_count"]) if row else 0
+
+    def get_gl_coding_account_totals(
+        self, vendor_number: int, *, year: int
+    ) -> list[dict[str, Any]]:
+        """Per (division, account) distinct invoice counts for this
+        vendor's PMGLDS coding within the given accounting year, most-used
+        first. Confirmed live across multiple high-volume vendors that
+        this company's fixed double-entry control/clearing legs - GL
+        account 1017 (cash) and 2300 (accounts payable control) always
+        carry the exact same invoice count as each other, and 1230
+        (accounts receivable - vendor / debit-memo clearing) is
+        consistently near-universal too - are not a real per-invoice
+        coding choice; the caller excludes these specific accounts (see
+        `KNOWN_STRUCTURAL_GL_ACCOUNTS`) before treating this as a
+        ranking, not merely accounts equal to the vendor's total count,
+        since real-world data means even a genuine control leg rarely
+        hits exactly 100%."""
+
+        return self.database.fetch_all(
+            """
+            SELECT
+                PMGNBGLDV AS gl_division,
+                PMGNBGL AS gl_account,
+                COUNT(DISTINCT PMGNBINV) AS invoice_count
+            FROM PMGLDS
+            WHERE PMGNBVND = %s AND PMGYR = %s
+            GROUP BY PMGNBGLDV, PMGNBGL
+            ORDER BY invoice_count DESC
+            """,
+            (vendor_number, year),
+        )
+
+    def get_gl_coding_department_breakdown(
+        self, vendor_number: int, division_and_account: list[tuple[int, int]]
+    ) -> dict[tuple[str, str], str]:
+        """Most-common department for each of a short list of (division,
+        account) pairs - a real GL account can carry more than one
+        department, so this picks the department that actually goes with
+        this vendor's historical use of that account, rather than
+        assuming department 0."""
+
+        pairs = sorted(set(division_and_account))
+        if not pairs:
+            return {}
+        predicate = " OR ".join(["(PMGNBGLDV = %s AND PMGNBGL = %s)"] * len(pairs))
+        parameters: tuple[Any, ...] = (vendor_number, *(
+            value for pair in pairs for value in pair
+        ))
+        rows = self.database.fetch_all(
+            f"""
+            SELECT PMGNBGLDV AS gl_division, PMGNBGL AS gl_account,
+                   PMGNBGLDP AS gl_department, COUNT(*) AS row_count
+            FROM PMGLDS
+            WHERE PMGNBVND = %s AND ({predicate})
+            GROUP BY PMGNBGLDV, PMGNBGL, PMGNBGLDP
+            ORDER BY row_count DESC
+            """,
+            parameters,
+        )
+        breakdown: dict[tuple[str, str], str] = {}
+        for row in rows:
+            key = (str(row["gl_division"]), str(row["gl_account"]))
+            if key not in breakdown:
+                breakdown[key] = str(row["gl_department"])
+        return breakdown
 
     def get_ap_input_headers(
         self, vendor_number: int, invoice_number: str

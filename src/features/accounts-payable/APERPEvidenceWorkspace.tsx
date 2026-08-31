@@ -329,6 +329,10 @@ export default function APERPEvidenceWorkspace({ refreshKey }: { refreshKey: num
           <ValueTable title="Posted invoice headers · PMHD" rows={evidence.posted_headers} />
           <ValueTable title="Posted invoice detail · PMDT" rows={evidence.posted_details} />
           <ValueTable title="GL distributions · PMGLDS" rows={evidence.gl_distributions} />
+          <ValueTable
+            title="PO and receiving match · PMDT / TTRCVD / TMPOHD / TMPODT"
+            rows={evidence.po_receiving_match}
+          />
           <ValueTable title="Invoice input headers · PTHD" rows={evidence.input_headers} />
           <ValueTable title="Invoice input detail · PTDT" rows={evidence.input_details} />
           <ValueTable title="Input payment splits · PTPY" rows={evidence.input_payment_splits} />

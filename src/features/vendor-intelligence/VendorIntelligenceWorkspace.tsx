@@ -262,10 +262,14 @@ export default function VendorIntelligenceWorkspace() {
 
               <div className="vi-metric-grid">
                 <article><span>YTD purchases</span><strong>{formatMoney(currentEvidence.purchase_volume.year_to_date)}</strong></article>
-                <article><span>MTD purchases</span><strong>{formatMoney(currentEvidence.purchase_volume.month_to_date)}</strong></article>
                 <article><span>Last year purchases</span><strong>{formatMoney(currentEvidence.purchase_volume.last_year)}</strong></article>
                 <article><span>Amount last paid</span><strong>{formatMoney(currentEvidence.purchase_volume.amount_last_paid)}</strong><small>{formatDate(currentEvidence.purchase_volume.date_last_paid)}</small></article>
               </div>
+              {/* MTD purchases tile hidden: MaddenCo's PVPURMTD is confirmed
+                  identical to PVPURYTD for essentially every vendor in this
+                  instance (a stalled/misconfigured month-end rollover on the
+                  MaddenCo side, not an ETOP computation) - showing it read as
+                  a duplicate of YTD rather than a real distinct figure. */}
 
               <div className="vi-section">
                 <h4>Discount capture</h4>
@@ -287,13 +291,41 @@ export default function VendorIntelligenceWorkspace() {
                         : `${currentEvidence.purchase_volume.discount_capture_rate_year_to_date.value}%`}
                     </strong>
                   </article>
+                  {/* MTD capture rate tile hidden: derived from PVDISCMTD,
+                      confirmed identical to PVDISCYTD for the same MaddenCo
+                      month-end rollover issue as MTD purchases above - it
+                      always duplicated the YTD capture rate. */}
+                </div>
+              </div>
+
+              <div className="vi-section">
+                <h4>Vendor performance</h4>
+                <p className="vi-section-note">{currentEvidence.performance.explanation}</p>
+                <div className="vi-metric-grid">
                   <article>
-                    <span>MTD capture rate</span>
+                    <span>PO fill rate ({currentEvidence.performance.window_days}d)</span>
                     <strong>
-                      {currentEvidence.purchase_volume.discount_capture_rate_month_to_date.value == null
+                      {currentEvidence.performance.fill_rate_percent == null
                         ? 'Unavailable'
-                        : `${currentEvidence.purchase_volume.discount_capture_rate_month_to_date.value}%`}
+                        : `${currentEvidence.performance.fill_rate_percent}%`}
                     </strong>
+                    <small>{currentEvidence.performance.po_count} PO(s) in window</small>
+                  </article>
+                  <article>
+                    <span>Quantity ordered / received</span>
+                    <strong>
+                      {currentEvidence.performance.quantity_ordered} / {currentEvidence.performance.quantity_received}
+                    </strong>
+                  </article>
+                  <article>
+                    <span>On-time delivery</span>
+                    <strong>Unavailable</strong>
+                    <small>No promised-delivery-date data exists in this ERP instance</small>
+                  </article>
+                  <article>
+                    <span>Quality / chargebacks</span>
+                    <strong>Unavailable</strong>
+                    <small>No quality or chargeback table exists in this ERP instance</small>
                   </article>
                 </div>
               </div>

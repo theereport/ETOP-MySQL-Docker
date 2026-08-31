@@ -167,6 +167,20 @@ export interface VendorEvidenceGap {
   explanation: string
 }
 
+export interface VendorPerformanceSummary {
+  window_days: number
+  po_count: number
+  quantity_ordered: number
+  quantity_received: number
+  quantity_backorder: number
+  fill_rate_percent: number | null
+  fill_rate_status: 'available' | 'unavailable'
+  on_time_delivery_status: 'unavailable'
+  quality_and_chargeback_status: 'unavailable'
+  source: string
+  explanation: string
+}
+
 export interface VendorEvidenceResponse {
   contract_version: string
   generated_at: string
@@ -175,6 +189,7 @@ export interface VendorEvidenceResponse {
   purchase_volume: VendorPurchaseVolumeEvidence
   purchase_orders: PurchaseOrderEvidence
   receiving: ReceivingEvidence
+  performance: VendorPerformanceSummary
   payables: PayablesEvidence
   gaps: VendorEvidenceGap[]
   governance: {

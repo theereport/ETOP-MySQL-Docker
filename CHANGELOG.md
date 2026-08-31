@@ -1,5 +1,87 @@
 # Changelog
 
+## [0.7.0 AP Increment 12] - Vendor Performance Timeout Fix; MTD Purchase/Discount Hidden
+
+### Corrected
+- The new PO fill-rate query (`TMPOHD` joined to `TMPODT`, both large
+  tables with no index on the date column used) was unstable for the
+  handful of highest-volume vendors - live timing on the same vendor and
+  query ranged from ~1s to ~59.7s, and it occasionally exceeded the
+  shared 60s MySQL statement timeout entirely, throwing an error that
+  crashed the vendor's *entire* evidence page (Payables, Purchase
+  Orders, Receiving included), not just the Performance section. Fixed
+  two ways: the query now carries a `MAX_EXECUTION_TIME(8000)` optimizer
+  hint so its own worst case is a fast, predictable failure well under
+  the shared ceiling (confirmed live this also made timing far more
+  consistent, ~10s versus the prior 1-59s spread), and
+  `_build_performance_summary` now catches a failure and reports "PO fill
+  rate unavailable" instead of taking the rest of the page down with it -
+  matching the bounded-query pattern already used everywhere else in
+  this codebase for exactly this class of MaddenCo-table-too-large risk.
+
+### Changed
+- Vendor Intelligence's "MTD purchases" tile and "MTD capture rate" tile
+  are hidden. Confirmed live that MaddenCo's `PVPURMTD`/`PVDISCMTD`
+  (month-to-date) are identical to `PVPURYTD`/`PVDISCYTD` (year-to-date)
+  for essentially every vendor sampled (10 of 10) - a stalled or
+  misconfigured month-end rollover on the MaddenCo/AS400 side (the
+  vendor's own period-change date field is years stale), not an ETOP
+  computation bug. Showing it read as a duplicate of YTD rather than a
+  real, distinct figure, so it's hidden rather than displayed
+  misleadingly; the underlying MaddenCo data issue itself is unchanged
+  and worth raising with whoever administers that instance.
+
+## [0.7.0 AP Increment 11] - PO/Receiving Match, GL Coding Shortlist, Vendor Performance
+
+### Added
+- **Purchase Order and Receiving Match**: the ERP Evidence tab now shows a
+  real 3-way match (quantities only - see Corrected below) for any AP
+  invoice line carrying a nonzero PO/receiver reference
+  (`PMDT.PMDNBPORV`), joining `TTRCVD` and `TMPOHD`/`TMPODT`. Confirmed
+  live this only applies to ~9-10% of currently open invoices (most AP
+  activity - rebates, AR-offset, differential clearing - has no PO trail
+  at all); the rest show a plain "not applicable," never an error. The
+  matching "Purchase Order and Receiving Match" deferred-capability entry
+  is removed - the coverage limitation is disclosed per-invoice instead.
+- **GL Coding Recommendation**: the Vendor Invoice Dataset & OCR review
+  screen now shows a ranked top-3 historical GL coding shortlist once a
+  vendor is confirmed (e.g. "Account 5050 (TRUCK EXPENSE - REPAIRS) -
+  97.9%"), scoped to that vendor's most recent accounting year. Reference
+  only - ETOP does not perform GL coding entry itself. Confirmed live
+  that a single "most likely account" guess is unreliable, but a top-3
+  shortlist is highly reliable, once genuine double-entry control/
+  clearing legs (cash, AP control, AR-vendor, vendor cash discounts -
+  confirmed identical across every vendor and division sampled) are
+  excluded by account number; excluded accounts are always disclosed in
+  the response, never silently dropped. The "GL Coding Recommendation"
+  deferred-capability entry is removed.
+- **Vendor Performance**: Vendor Intelligence's vendor evidence page now
+  shows a real PO fill-rate (quantity received / ordered, trailing 12
+  months) alongside the vendor's existing purchase volume and discount
+  capture rate. On-time delivery and quality/chargeback performance are
+  shown as permanently unavailable, not "pending connection" - confirmed
+  live that no promised-delivery-date field or returns/chargeback/
+  quality table exists anywhere in the connected MaddenCo instance. The
+  AP dashboard's "Authoritative Vendor Performance" deferred-capability
+  entry is narrowed to reflect exactly this split.
+
+### Corrected
+- The PO/receiving match join initially used `TTRCVD.TRCHNUMRPT` alone as
+  if it uniquely identified one receiving-report line; confirmed live
+  against a real 20-line invoice that `TRCHNUMRPT`'s real primary key is
+  composite with `TRCDNUMSEQ`, and a single receiving report commonly has
+  dozens of lines. The join now also requires
+  `TRCDNUMSEQ = PMDT.PMDSEQ - 1` (confirmed live, in order and quantity,
+  across the same 20-line invoice) - without it, a match would have
+  silently returned a different product's quantities entirely.
+- `vendor_intelligence`'s receiving-evidence cost variance
+  (`TRCDCOSDIF`) was reported "complete, $0.00 variance" whenever
+  receipts existed; confirmed live that field is exactly 0 across all
+  450,925 rows this instance has ever recorded (never a real
+  observation) and `TRCDCOS` always just copies `TRCDCOSPO` when set.
+  Now always disclosed as unavailable rather than reporting a data void
+  as a clean match.
+
 ## [0.7.0 Automation] - Test-Data Leak Cleanup, Connection Leak Fix, Quarantine Reactivation
 
 ### Corrected

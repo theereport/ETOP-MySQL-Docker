@@ -15,6 +15,8 @@ from .schemas import (
     APBoundedCollection,
     APERPEvidenceResponse,
     APERPInvoiceLookupIdentity,
+    APGLCodingSuggestion,
+    APGLCodingSuggestionsResponse,
     APGLDistributionEvidence,
     APInputInvoiceHeaderEvidence,
     APInputPaymentSplitEvidence,
@@ -25,6 +27,7 @@ from .schemas import (
     APLocalInvoiceIdentity,
     APMappingCategory,
     APMappingReadinessResponse,
+    APPoReceivingMatchEvidence,
     APPostedInvoiceHeaderEvidence,
     APVendorSearchCandidate,
     APVendorEvidence,
@@ -42,6 +45,20 @@ from .schemas import (
 
 
 CONTRACT_VERSION = "erp-evidence-gateway@1.1.0"
+# GL accounts confirmed live (across multiple high-volume vendors) to be
+# fixed double-entry control/clearing legs in this MaddenCo instance, not
+# a per-invoice coding choice: 1017 cash, 2300 accounts payable control
+# (always the exact same invoice count as 1017 for every vendor sampled),
+# 1230 accounts receivable - vendor / debit-memo clearing, and 4055
+# vendor cash discounts (confirmed identical in GMGM across all 75+
+# divisions - an automatic contra entry whenever a discount is taken, not
+# an expense-category choice). Used to keep GL coding suggestions to
+# genuine expense-account choices. This list is a disclosed, evidence-
+# based judgment call, not an exhaustive guarantee - every response's
+# excluded_structural_accounts field shows exactly what was excluded for
+# that vendor so a new structural account elsewhere would be visible, not
+# silently miscounted as a coding preference.
+KNOWN_STRUCTURAL_GL_ACCOUNTS = {"1017", "2300", "1230", "4055"}
 AP_CATEGORY_LABELS = {
     "vendor_master": "Vendor master",
     "posted_invoice_history": "Posted invoice history",
@@ -621,6 +638,127 @@ class ERPEvidenceService:
             local_identity=None,
         )
 
+    def gl_coding_suggestions(
+        self, vendor_number: int, *, limit: int = 3
+    ) -> APGLCodingSuggestionsResponse:
+        """Ranked shortlist of this vendor's most-common historical GL
+        coding, from PMGLDS, scoped to that vendor's single most recent
+        accounting year (lifetime history dilutes even genuinely dominant
+        accounts and makes structural-leg detection unreliable - confirmed
+        live). Confirmed live against multiple high-volume real vendors,
+        scoped to one year each, that a single "most common account" guess
+        is wrong roughly half the time (33-84% match rate); a top-3
+        shortlist is highly reliable (81-99%). This is deliberately a
+        reference shortlist for a human, never a single auto-coded value.
+
+        Every invoice touches multiple GL lines by double-entry design.
+        Confirmed live across multiple vendors that this company's fixed
+        control/clearing legs are GL accounts 1017 (cash), 2300 (accounts
+        payable control - always the exact same invoice count as 1017),
+        1230 (accounts receivable - vendor / debit-memo clearing,
+        consistently near-universal), and 4055 (vendor cash discounts - an
+        automatic contra entry whenever a discount is taken, confirmed
+        identical in GMGM across all 75+ divisions). None of these varies
+        by vendor, so they are excluded by account number - a real-world
+        control leg rarely hits exactly 100% of a vendor's invoices, so an
+        equals-the-total check alone does not reliably catch them (see
+        KNOWN_STRUCTURAL_GL_ACCOUNTS)."""
+
+        warnings: list[str] = []
+        try:
+            year = self.repository.get_latest_gl_coding_year(vendor_number)
+        except Exception as exc:
+            warnings.append(f"GL coding history query is unavailable: {exc}")
+            year = None
+
+        total = 0
+        account_totals: list[dict[str, Any]] = []
+        if year is not None:
+            try:
+                total = self.repository.get_vendor_coded_invoice_count(
+                    vendor_number, year=year
+                )
+            except Exception as exc:
+                warnings.append(f"GL coding history query is unavailable: {exc}")
+            if total > 0:
+                try:
+                    account_totals = self.repository.get_gl_coding_account_totals(
+                        vendor_number, year=year
+                    )
+                except Exception as exc:
+                    warnings.append(f"GL coding account ranking query is unavailable: {exc}")
+
+        structural: list[str] = []
+        candidates: list[dict[str, Any]] = []
+        for row in account_totals:
+            division = _optional_text(row.get("gl_division"))
+            account = _optional_text(row.get("gl_account"))
+            invoice_count = int(row.get("invoice_count") or 0)
+            if not division or not account:
+                continue
+            if account in KNOWN_STRUCTURAL_GL_ACCOUNTS or invoice_count >= total:
+                structural.append(f"Division {division} Account {account}")
+                continue
+            candidates.append({
+                "gl_division": division,
+                "gl_account": account,
+                "invoice_count": invoice_count,
+            })
+
+        top_candidates = candidates[:limit]
+        pairs = [
+            (int(item["gl_division"]), int(item["gl_account"]))
+            for item in top_candidates
+        ]
+        try:
+            departments = self.repository.get_gl_coding_department_breakdown(
+                vendor_number, pairs
+            )
+        except Exception:
+            departments = {}
+        try:
+            descriptions = self.repository.get_gl_account_descriptions(pairs)
+        except Exception:
+            descriptions = {}
+
+        suggestions = [
+            APGLCodingSuggestion(
+                gl_division=item["gl_division"],
+                gl_account=item["gl_account"],
+                gl_department=departments.get(
+                    (item["gl_division"], item["gl_account"])
+                ),
+                gl_account_description=descriptions.get(
+                    (item["gl_division"], item["gl_account"])
+                ),
+                invoice_count=item["invoice_count"],
+                match_percent=(
+                    round(item["invoice_count"] / total * 100, 1) if total else 0.0
+                ),
+            )
+            for item in top_candidates
+        ]
+
+        governance = EvidenceGovernance(
+            source_authority="MaddenCo PMGLDS coding history is authoritative for what was historically coded; this is a ranked shortlist, not a validated or approved coding decision.",
+            statements=[
+                "This is historical-frequency evidence only - it never selects, applies, or submits a GL code, and grants no coding authority.",
+                "Fixed double-entry control/clearing accounts (cash, accounts payable control, accounts receivable-vendor, vendor cash discounts) are excluded by account number, confirmed live not to represent a real per-invoice coding choice for any vendor.",
+                "Ranked against this vendor's single most recent accounting year, not lifetime history, since older or mixed-year activity was confirmed to dilute genuine coding patterns.",
+            ],
+        )
+        return APGLCodingSuggestionsResponse(
+            contract_version=CONTRACT_VERSION,
+            generated_at=self.clock(),
+            vendor_number=str(vendor_number),
+            coded_year=year,
+            total_coded_invoice_count=total,
+            suggestions=suggestions,
+            excluded_structural_accounts=structural,
+            governance=governance,
+            warnings=warnings,
+        )
+
     def _ap_invoice_by_identity(
         self,
         *,
@@ -663,6 +801,10 @@ class ERPEvidenceService:
             "AP GL distribution",
             self.repository.get_ap_gl_distributions,
         )
+        po_match_raw, po_match_complete, po_match_ok = bounded_query(
+            "PO receiving match",
+            self.repository.get_po_receiving_match,
+        )
         input_headers_raw, input_headers_complete, input_headers_ok = bounded_query(
             "AP invoice input header",
             self.repository.get_ap_input_headers,
@@ -699,6 +841,7 @@ class ERPEvidenceService:
             self._ap_gl_distribution(row, gl_account_descriptions)
             for row in gl_raw
         ]
+        po_matches = [self._ap_po_match(row) for row in po_match_raw]
         input_headers = [self._ap_input_header(row) for row in input_headers_raw]
         input_details = [self._ap_detail(row) for row in input_details_raw]
         payment_splits = [self._ap_payment_split(row) for row in payment_splits_raw]
@@ -724,6 +867,12 @@ class ERPEvidenceService:
                 complete=gl_complete,
                 query_ok=gl_ok,
                 label="PMGLDS AP GL distribution",
+            ),
+            "po_receiving_match_collection": self._ap_po_match_collection(
+                count=len(po_matches),
+                limit=self.repository.AP_PO_MATCH_LIMIT,
+                complete=po_match_complete,
+                query_ok=po_match_ok,
             ),
             "input_header_collection": self._ap_collection(
                 count=len(input_headers),
@@ -753,12 +902,17 @@ class ERPEvidenceService:
             posted_headers=collections["posted_header_collection"],
             posted_details=collections["posted_detail_collection"],
             gl_distributions=collections["gl_distribution_collection"],
+            po_receiving_match=collections["po_receiving_match_collection"],
             input_headers=collections["input_header_collection"],
             input_details=collections["input_detail_collection"],
             input_payments=collections["input_payment_collection"],
         )
         source_schema = os.getenv("MYSQL_DATABASE", "configured_schema")
-        source_objects = ["PMVEND", "PMHD", "PMDT", "PMGLDS", "PTHD", "PTDT", "PTPY"]
+        source_objects = [
+            "PMVEND", "PMHD", "PMDT", "PMGLDS",
+            "TTRCVD", "TMPOHD", "TMPODT",
+            "PTHD", "PTDT", "PTPY",
+        ]
         sources = [
             EvidenceSourceReference(
                 source_system="MaddenCo ERP",
@@ -778,7 +932,7 @@ class ERPEvidenceService:
                     else "Lookup identity was selected by a human from bounded ERP discovery and was retrieved through exact vendor/invoice queries."
                 ),
                 "PMHD is presented as posted invoice history and PTHD/PTPY as input evidence; undocumented codes are shown raw and are not interpreted.",
-                "PO/receiver values are references carried on invoice detail, not proof of a completed three-way match.",
+                "A PO/receiver reference on invoice detail is resolved into a real quantity-based match against receiving and purchase-order records when present; most invoices carry no such reference at all, and receiving data in this ERP instance has no independent price/cost variance signal.",
                 "No approval, payment, posting, export, recommendation, automatic selection, or ERP mutation follows this query.",
             ],
         )
@@ -791,6 +945,7 @@ class ERPEvidenceService:
             "posted_headers": [item.model_dump() for item in posted_headers],
             "posted_details": [item.model_dump() for item in posted_details],
             "gl_distributions": [item.model_dump() for item in gl_distributions],
+            "po_receiving_match": [item.model_dump() for item in po_matches],
             "input_headers": [item.model_dump() for item in input_headers],
             "input_details": [item.model_dump() for item in input_details],
             "input_payment_splits": [item.model_dump() for item in payment_splits],
@@ -867,6 +1022,8 @@ class ERPEvidenceService:
             "posted_detail_collection": unavailable.model_dump(),
             "gl_distributions": [],
             "gl_distribution_collection": unavailable.model_dump(),
+            "po_receiving_match": [],
+            "po_receiving_match_collection": unavailable.model_dump(),
             "input_headers": [],
             "input_header_collection": unavailable.model_dump(),
             "input_details": [],
@@ -1010,6 +1167,79 @@ class ERPEvidenceService:
         )
 
     @staticmethod
+    def _ap_po_match(row: dict[str, Any]) -> APPoReceivingMatchEvidence:
+        quantity_invoiced = _number(row.get("quantity_invoiced"))
+        quantity_received_this_receipt = _optional_float(
+            row.get("quantity_received_this_receipt")
+        )
+        quantity_variance = (
+            round(quantity_received_this_receipt - quantity_invoiced, 2)
+            if quantity_received_this_receipt is not None
+            else None
+        )
+        return APPoReceivingMatchEvidence(
+            sequence_number=_optional_int(row.get("sequence_number")),
+            po_receiver_reference=_optional_text(row.get("po_receiver_reference")),
+            product_number=_optional_text(row.get("product_number")),
+            po_number=_optional_text(row.get("po_number")),
+            quantity_received_this_receipt=quantity_received_this_receipt,
+            receipt_date=_date_text(row.get("receipt_date")),
+            po_complete_flag=_optional_text(row.get("po_complete_flag")),
+            po_date=_date_text(row.get("po_date")),
+            quantity_ordered=_optional_float(row.get("quantity_ordered")),
+            quantity_received_total=_optional_float(row.get("quantity_received_total")),
+            quantity_backorder=_optional_float(row.get("quantity_backorder")),
+            quantity_invoiced=quantity_invoiced,
+            quantity_variance=quantity_variance,
+            line_amount=_number(row.get("line_amount")),
+        )
+
+    @staticmethod
+    def _ap_po_match_collection(
+        *,
+        count: int,
+        limit: int,
+        complete: bool,
+        query_ok: bool,
+    ) -> APBoundedCollection:
+        if not query_ok:
+            return APBoundedCollection(
+                status="degraded",
+                retrieved_count=0,
+                row_limit=limit,
+                complete=False,
+                explanation="The PMDT/TTRCVD/TMPOHD/TMPODT PO-receiving match query could not be completed.",
+            )
+        if count == 0:
+            return APBoundedCollection(
+                status="not_applicable",
+                retrieved_count=0,
+                row_limit=limit,
+                complete=True,
+                explanation=(
+                    "No line on this invoice carries a nonzero PO/receiver "
+                    "reference (PMDNBPORV) - a 3-way match does not apply "
+                    "to this invoice. Most AP activity (rebates, AR-offset, "
+                    "differential clearing) has no PO/receiving trail; this "
+                    "is expected for the majority of invoices, not an error."
+                ),
+            )
+        return APBoundedCollection(
+            status="available" if complete else "partial",
+            retrieved_count=count,
+            row_limit=limit,
+            complete=complete,
+            explanation=(
+                f"{count} invoice line(s) carry a PO/receiver reference and were matched "
+                "to receiving and purchase-order detail. Only quantities are compared - "
+                "receiving cost data in this ERP instance does not carry an independent "
+                "price/cost variance signal."
+                if complete
+                else f"The PO-receiving match result exceeded the {limit}-row safety limit; retrieved rows are incomplete."
+            ),
+        )
+
+    @staticmethod
     def _ap_input_header(row: dict[str, Any]) -> APInputInvoiceHeaderEvidence:
         return APInputInvoiceHeaderEvidence(
             vendor_number=_text(row.get("vendor_number")),
@@ -1076,6 +1306,7 @@ class ERPEvidenceService:
         posted_headers: APBoundedCollection,
         posted_details: APBoundedCollection,
         gl_distributions: APBoundedCollection,
+        po_receiving_match: APBoundedCollection,
         input_headers: APBoundedCollection,
         input_details: APBoundedCollection,
         input_payments: APBoundedCollection,
@@ -1156,8 +1387,21 @@ class ERPEvidenceService:
             EvidenceCoverageItem(
                 key="three_way_match",
                 label="PO, receipt, and invoice three-way match",
-                status="unavailable",
-                explanation="The supplied mapping exposes PO/receiver references but not authoritative PO and receipt records with governed matching rules.",
+                status=po_receiving_match.status,
+                source="MaddenCo PMDT/TTRCVD/TMPOHD/TMPODT",
+                as_of=generated_at,
+                record_count=po_receiving_match.retrieved_count,
+                complete=po_receiving_match.complete,
+                explanation=(
+                    po_receiving_match.explanation
+                    if po_receiving_match.status != "not_applicable"
+                    else (
+                        "Quantity match (ordered/received/invoiced) is real when an invoice "
+                        "line carries a PO/receiver reference, but most AP activity in this "
+                        "instance has no such reference; price/cost variance is not a real "
+                        "signal in the connected receiving data."
+                    )
+                ),
             ),
         ]
 

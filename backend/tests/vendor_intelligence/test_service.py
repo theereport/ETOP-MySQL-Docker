@@ -23,12 +23,14 @@ FIXED_NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
 
 class FakeVendorRepository:
     def __init__(self, vendor_row=None, open_pos=None, receipts=None,
-                 open_invoices=None, paid_invoices=None):
+                 open_invoices=None, paid_invoices=None,
+                 fill_rate_summary=None):
         self._vendor_row = vendor_row
         self._open_pos = open_pos or []
         self._receipts = receipts or []
         self._open_invoices = open_invoices or []
         self._paid_invoices = paid_invoices or []
+        self._fill_rate_summary = fill_rate_summary
 
     def search_vendors(self, **kwargs):
         return [self._vendor_row] if self._vendor_row else []
@@ -40,6 +42,9 @@ class FakeVendorRepository:
 
     def get_open_purchase_orders(self, vendor_number, limit=50):
         return self._open_pos
+
+    def get_po_fill_rate_summary(self, vendor_number, *, window_days=365):
+        return self._fill_rate_summary
 
     def get_receiving_history(self, vendor_number, limit=50):
         return self._receipts
@@ -236,8 +241,16 @@ class VendorEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence.purchase_orders.open_order_total_cost, 1500.00)
         self.assertIsNone(evidence.purchase_orders.open_orders[1].buyer_number)
 
-    def test_receiving_cost_variance_completeness_states(self):
-        service_complete = VendorIntelligenceService(
+    def test_receiving_cost_variance_is_always_unavailable(self):
+        # Confirmed live: TRCDCOSDIF is exactly 0 across every row this
+        # MaddenCo instance has ever recorded (never a real observation),
+        # and TRCDCOS always just copies TRCDCOSPO when set - there is no
+        # usable price/cost variance signal in receiving data here, so
+        # this is disclosed as unavailable regardless of what any single
+        # row's TRCDCOSDIF happens to say. Per-line raw values are still
+        # passed through, not hidden - only the misleading aggregate and
+        # "complete" status are suppressed.
+        service_with_receipts = VendorIntelligenceService(
             repository=FakeVendorRepository(
                 vendor_row=make_vendor_row(),
                 receipts=[
@@ -253,9 +266,14 @@ class VendorEvidenceTests(unittest.TestCase):
             notes_repository=FakeNotesRepository(),
             clock=lambda: FIXED_NOW,
         )
-        complete_evidence = service_complete.get_vendor_evidence(1234567)
-        self.assertEqual(complete_evidence.receiving.cost_variance_completeness, "complete")
-        self.assertEqual(complete_evidence.receiving.total_cost_variance, 2.0)
+        evidence_with_receipts = service_with_receipts.get_vendor_evidence(1234567)
+        self.assertEqual(
+            evidence_with_receipts.receiving.cost_variance_completeness, "unavailable"
+        )
+        self.assertIsNone(evidence_with_receipts.receiving.total_cost_variance)
+        self.assertEqual(
+            evidence_with_receipts.receiving.recent_receipts[0].cost_variance, 2.0
+        )
 
         service_unavailable = VendorIntelligenceService(
             repository=FakeVendorRepository(vendor_row=make_vendor_row(), receipts=[]),
@@ -265,6 +283,47 @@ class VendorEvidenceTests(unittest.TestCase):
         empty_evidence = service_unavailable.get_vendor_evidence(1234567)
         self.assertEqual(empty_evidence.receiving.cost_variance_completeness, "unavailable")
         self.assertIsNone(empty_evidence.receiving.total_cost_variance)
+
+    def test_performance_fill_rate_computed_from_po_history(self):
+        service = VendorIntelligenceService(
+            repository=FakeVendorRepository(
+                vendor_row=make_vendor_row(),
+                fill_rate_summary={
+                    "po_count": 12,
+                    "quantity_ordered": 200,
+                    "quantity_received": 150,
+                    "quantity_backorder": 50,
+                },
+            ),
+            notes_repository=FakeNotesRepository(),
+            clock=lambda: FIXED_NOW,
+        )
+        evidence = service.get_vendor_evidence(1234567)
+        self.assertEqual(evidence.performance.po_count, 12)
+        self.assertEqual(evidence.performance.fill_rate_percent, 75.0)
+        self.assertEqual(evidence.performance.fill_rate_status, "available")
+        self.assertEqual(evidence.performance.on_time_delivery_status, "unavailable")
+        self.assertEqual(
+            evidence.performance.quality_and_chargeback_status, "unavailable"
+        )
+
+    def test_performance_fill_rate_unavailable_with_no_po_history(self):
+        service = VendorIntelligenceService(
+            repository=FakeVendorRepository(
+                vendor_row=make_vendor_row(),
+                fill_rate_summary={
+                    "po_count": 0,
+                    "quantity_ordered": 0,
+                    "quantity_received": 0,
+                    "quantity_backorder": 0,
+                },
+            ),
+            notes_repository=FakeNotesRepository(),
+            clock=lambda: FIXED_NOW,
+        )
+        evidence = service.get_vendor_evidence(1234567)
+        self.assertIsNone(evidence.performance.fill_rate_percent)
+        self.assertEqual(evidence.performance.fill_rate_status, "unavailable")
 
     def test_payables_totals_sum_open_invoice_amounts(self):
         service = VendorIntelligenceService(

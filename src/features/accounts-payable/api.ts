@@ -8,6 +8,7 @@ import type {
   APSyncResponse,
   APVendorTermsReferenceListResponse,
   APVendorTermsReferenceUpsert,
+  APGLCodingSuggestionsResponse,
   APWarehouseApprovalActionCreate,
   APWarehouseApprovalActionRecord,
   APWarehouseApprovalQueueResponse,
@@ -559,6 +560,7 @@ function validateAPErpEvidence(payload: unknown): APERPEvidenceResponse {
   requireArray(record.posted_headers, 'ERP invoice evidence', 'posted_headers')
   requireArray(record.posted_details, 'ERP invoice evidence', 'posted_details')
   requireArray(record.gl_distributions, 'ERP invoice evidence', 'gl_distributions')
+  requireArray(record.po_receiving_match, 'ERP invoice evidence', 'po_receiving_match')
   requireArray(record.input_headers, 'ERP invoice evidence', 'input_headers')
   requireArray(record.input_details, 'ERP invoice evidence', 'input_details')
   requireArray(record.input_payment_splits, 'ERP invoice evidence', 'input_payment_splits')
@@ -726,6 +728,39 @@ export function getAPErpInvoiceEvidence(
     `/erp-evidence/accounts-payable/invoices/${encodeURIComponent(apInvoiceId)}`,
     { signal },
   ).then(validateAPErpEvidence)
+}
+
+function validateAPGLCodingSuggestions(payload: unknown): APGLCodingSuggestionsResponse {
+  const record = requireRecord(payload, 'GL coding suggestions', 'root object')
+  requireString(record.contract_version, 'GL coding suggestions', 'contract_version')
+  requireString(record.vendor_number, 'GL coding suggestions', 'vendor_number')
+  if (typeof record.total_coded_invoice_count !== 'number') {
+    invalidContract('GL coding suggestions', 'total_coded_invoice_count')
+  }
+  const suggestions = requireArray(record.suggestions, 'GL coding suggestions', 'suggestions')
+  suggestions.forEach((value) => {
+    const suggestion = requireRecord(value, 'GL coding suggestions', 'suggestion')
+    requireString(suggestion.gl_division, 'GL coding suggestions', 'suggestion gl_division')
+    requireString(suggestion.gl_account, 'GL coding suggestions', 'suggestion gl_account')
+    if (typeof suggestion.invoice_count !== 'number' || typeof suggestion.match_percent !== 'number') {
+      invalidContract('GL coding suggestions', 'suggestion metrics')
+    }
+  })
+  requireArray(record.excluded_structural_accounts, 'GL coding suggestions', 'excluded_structural_accounts')
+  requireRecord(record.governance, 'GL coding suggestions', 'governance')
+  requireArray(record.warnings, 'GL coding suggestions', 'warnings')
+  return record as unknown as APGLCodingSuggestionsResponse
+}
+
+export function getAPGLCodingSuggestions(
+  vendorNumber: string,
+  signal?: AbortSignal,
+): Promise<APGLCodingSuggestionsResponse> {
+  const params = new URLSearchParams({ vendor_number: vendorNumber, limit: '3' })
+  return requestJson<unknown>(
+    `/erp-evidence/accounts-payable/gl-coding-suggestions?${params.toString()}`,
+    { signal },
+  ).then(validateAPGLCodingSuggestions)
 }
 
 export function searchAPErpInvoices(

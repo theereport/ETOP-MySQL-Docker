@@ -81,6 +81,7 @@ class FakeRepository:
     AP_HEADER_LIMIT = 25
     AP_DETAIL_LIMIT = 100
     AP_GL_LIMIT = 100
+    AP_PO_MATCH_LIMIT = 50
     AP_INPUT_LIMIT = 100
     AP_VENDOR_SEARCH_LIMIT = 25
     AP_INVOICE_SEARCH_LIMIT = 50
@@ -231,6 +232,7 @@ class FakeRepository:
         return [], True
 
     get_ap_gl_distributions = _empty
+    get_po_receiving_match = _empty
     get_ap_input_headers = _empty
     get_ap_input_details = _empty
     get_ap_input_payment_splits = _empty
@@ -358,7 +360,7 @@ class ERPEvidenceGatewayTests(unittest.TestCase):
         self.assertTrue(
             vendor_fields.isdisjoint({"PVACCBNK", "PVROUBNK", "PVIDFED"})
         )
-        self.assertEqual(self.repository.ap_query_count, 7)
+        self.assertEqual(self.repository.ap_query_count, 8)
 
     def test_direct_erp_search_does_not_require_local_invoice(self) -> None:
         search = self.service.search_ap_invoices(
@@ -514,6 +516,157 @@ class ERPEvidenceGLAccountDescriptionTests(unittest.TestCase):
         response = service.ap_invoice("ap-invoice-" + "1" * 24)
 
         self.assertIsNone(response.gl_distributions[0].gl_account_description)
+
+
+class ERPEvidencePoReceivingMatchTests(unittest.TestCase):
+    def test_no_po_reference_is_not_applicable_not_an_error(self) -> None:
+        # FakeRepository's default get_po_receiving_match returns no rows,
+        # matching the real query's behavior when every invoice line has
+        # PMDNBPORV = 0 (the overwhelming majority of AP activity).
+        repository = FakeRepository()
+        service = ERPEvidenceService(
+            repository=repository,
+            customer_source=FakeCustomerSource(),
+            ap_source=FakeAPSource(),
+            clock=lambda: "2026-08-07T12:00:00+00:00",
+        )
+
+        response = service.ap_invoice("ap-invoice-" + "1" * 24)
+
+        self.assertEqual(response.po_receiving_match, [])
+        self.assertEqual(
+            response.po_receiving_match_collection.status, "not_applicable"
+        )
+        self.assertTrue(response.po_receiving_match_collection.complete)
+        three_way_match = next(
+            item for item in response.coverage if item.key == "three_way_match"
+        )
+        self.assertEqual(three_way_match.status, "not_applicable")
+
+    def test_po_referenced_line_computes_quantity_variance(self) -> None:
+        class RepositoryWithPoMatch(FakeRepository):
+            def get_po_receiving_match(
+                self, vendor_number: int, invoice_number: str
+            ):
+                self.ap_query_count += 1
+                return ([{
+                    "sequence_number": 1,
+                    "po_receiver_reference": 774859,
+                    "product_number": "C174007001",
+                    "po_number": 770000528,
+                    "quantity_received_this_receipt": "6",
+                    "receipt_date": "20260810",
+                    "po_complete_flag": "Y",
+                    "po_date": "20260801",
+                    "quantity_ordered": "6",
+                    "quantity_received_total": "6",
+                    "quantity_backorder": "0",
+                    "quantity_invoiced": "5",
+                    "line_amount": "624.45",
+                }], True)
+
+        repository = RepositoryWithPoMatch()
+        service = ERPEvidenceService(
+            repository=repository,
+            customer_source=FakeCustomerSource(),
+            ap_source=FakeAPSource(),
+            clock=lambda: "2026-08-07T12:00:00+00:00",
+        )
+
+        response = service.ap_invoice("ap-invoice-" + "1" * 24)
+
+        self.assertEqual(len(response.po_receiving_match), 1)
+        match = response.po_receiving_match[0]
+        self.assertEqual(match.po_number, "770000528")
+        self.assertEqual(match.quantity_ordered, 6)
+        self.assertEqual(match.quantity_invoiced, 5)
+        # 6 received on this receipt vs. 5 invoiced - a real, disclosed variance.
+        self.assertEqual(match.quantity_variance, 1)
+        self.assertEqual(
+            response.po_receiving_match_collection.status, "available"
+        )
+
+
+class ERPEvidenceGLCodingSuggestionsTests(unittest.TestCase):
+    def test_known_structural_accounts_excluded_even_below_the_total(self) -> None:
+        # Confirmed live against real vendors: control/clearing accounts
+        # (1017 cash, 2300 AP control, 1230 AR-vendor clearing) rarely hit
+        # exactly 100% of a vendor's invoices even though they are not a
+        # real coding choice - an equals-the-total check alone would have
+        # let 2300 (9 of 10) through here.
+        class RepositoryWithCodingHistory(FakeRepository):
+            def get_latest_gl_coding_year(self, vendor_number: int):
+                return 2026
+
+            def get_vendor_coded_invoice_count(self, vendor_number: int, *, year: int) -> int:
+                return 10
+
+            def get_gl_coding_account_totals(self, vendor_number: int, *, year: int):
+                return [
+                    {"gl_division": 1, "gl_account": 1017, "invoice_count": 10},
+                    {"gl_division": 1, "gl_account": 2300, "invoice_count": 9},
+                    {"gl_division": 1, "gl_account": 4055, "invoice_count": 8},
+                    {"gl_division": 1, "gl_account": 1230, "invoice_count": 7},
+                    {"gl_division": 1, "gl_account": 5050, "invoice_count": 6},
+                    {"gl_division": 1, "gl_account": 6000, "invoice_count": 3},
+                    {"gl_division": 1, "gl_account": 7000, "invoice_count": 1},
+                ]
+
+            def get_gl_coding_department_breakdown(
+                self, vendor_number: int, division_and_account
+            ):
+                return {(str(d), str(a)): "0" for d, a in division_and_account}
+
+            def get_gl_account_descriptions(self, division_and_account):
+                return {("1", "5050"): "TRUCK EXPENSE - REPAIRS"}
+
+        repository = RepositoryWithCodingHistory()
+        service = ERPEvidenceService(
+            repository=repository,
+            customer_source=FakeCustomerSource(),
+            ap_source=FakeAPSource(),
+            clock=lambda: "2026-08-07T12:00:00+00:00",
+        )
+
+        response = service.gl_coding_suggestions(102, limit=3)
+
+        self.assertEqual(response.coded_year, 2026)
+        self.assertEqual(response.total_coded_invoice_count, 10)
+        self.assertEqual(
+            sorted(response.excluded_structural_accounts),
+            sorted([
+                "Division 1 Account 1017",
+                "Division 1 Account 2300",
+                "Division 1 Account 4055",
+                "Division 1 Account 1230",
+            ]),
+        )
+        self.assertEqual(len(response.suggestions), 3)
+        first = response.suggestions[0]
+        self.assertEqual(first.gl_account, "5050")
+        self.assertEqual(first.match_percent, 60.0)
+        self.assertEqual(first.gl_account_description, "TRUCK EXPENSE - REPAIRS")
+        self.assertEqual(response.suggestions[1].match_percent, 30.0)
+        self.assertEqual(response.suggestions[2].match_percent, 10.0)
+        self.assertFalse(response.governance.erp_write)
+
+    def test_vendor_with_no_coding_history_returns_empty_shortlist(self) -> None:
+        repository = FakeRepository()
+        # FakeRepository has no get_latest_gl_coding_year method - the
+        # service must degrade to zero/None, not raise.
+        service = ERPEvidenceService(
+            repository=repository,
+            customer_source=FakeCustomerSource(),
+            ap_source=FakeAPSource(),
+            clock=lambda: "2026-08-07T12:00:00+00:00",
+        )
+
+        response = service.gl_coding_suggestions(999, limit=3)
+
+        self.assertIsNone(response.coded_year)
+        self.assertEqual(response.total_coded_invoice_count, 0)
+        self.assertEqual(response.suggestions, [])
+        self.assertEqual(response.excluded_structural_accounts, [])
 
 
 if __name__ == "__main__":

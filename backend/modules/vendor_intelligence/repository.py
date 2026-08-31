@@ -156,6 +156,47 @@ class VendorRepository:
             (vendor_number, limit),
         )
 
+    PO_FILL_RATE_TIMEOUT_MS = 8000
+
+    def get_po_fill_rate_summary(
+        self,
+        vendor_number: int,
+        *,
+        window_days: int = 365,
+    ) -> dict[str, Any] | None:
+        """Aggregates this vendor's TMPOHD/TMPODT purchase-order lines
+        created within the trailing window into ordered/received/backorder
+        totals - the same join already used by get_open_purchase_orders,
+        widened from "open POs only" to a real historical window and
+        aggregated to one summary instead of per-PO detail.
+
+        Confirmed live this join is inherently expensive for the handful
+        of highest-volume vendors (tens of thousands of POs) - timing
+        ranged from ~1s to ~40s for the same query on the same vendor,
+        occasionally exceeding the shared 60s statement timeout. A
+        per-query MAX_EXECUTION_TIME hint bounds the worst case to a fast,
+        predictable failure well under that shared ceiling; the caller
+        treats a timeout the same as "no data" rather than crashing the
+        rest of this vendor's evidence."""
+
+        return madden_database.fetch_one(
+            f"""
+            SELECT /*+ MAX_EXECUTION_TIME({self.PO_FILL_RATE_TIMEOUT_MS}) */
+                COUNT(DISTINCT header.TPHNB) AS po_count,
+                COALESCE(SUM(line.TPDQTYORD), 0) AS quantity_ordered,
+                COALESCE(SUM(line.TPDQTYRCV), 0) AS quantity_received,
+                COALESCE(SUM(line.TPDQTYBO), 0) AS quantity_backorder
+            FROM TMPOHD AS header
+            INNER JOIN TMPODT AS line
+                ON line.TPHNB = header.TPHNB
+            WHERE header.TPHNBVND = %s
+              AND header.TPHDTECRT >= DATE_FORMAT(
+                  CURDATE() - INTERVAL %s DAY, '%%Y%%m%%d'
+              )
+            """,
+            (vendor_number, window_days),
+        )
+
     def get_receiving_history(
         self,
         vendor_number: int,

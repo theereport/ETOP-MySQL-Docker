@@ -135,8 +135,10 @@ class ReceivingEvidence(BaseModel):
     recent_receipts: list[ReceivingEvent]
     source: str = "MaddenCo TTRCVD joined to TMPOHD"
     explanation: str = (
-        "Cost variance is MaddenCo's own recorded TRCDCOSDIF value for each "
-        "receiving line. It is not a vendor performance score."
+        "TRCDCOSDIF (MaddenCo's dedicated cost-variance field) is confirmed "
+        "never populated with a real value in this instance, and actual "
+        "cost is always copied from PO cost when recorded - there is no "
+        "usable price/cost variance signal in receiving data here."
     )
 
 
@@ -173,6 +175,7 @@ class VendorEvidenceGap(BaseModel):
     code: Literal[
         "vendor_scorecard",
         "on_time_delivery_definition",
+        "quality_and_chargeback_data",
         "terms_description_text",
         "city_state_fields",
         "rebate_accrual",
@@ -189,6 +192,29 @@ class VendorIntelligenceGovernance(BaseModel):
     erp_write: bool = False
 
 
+class VendorPerformanceSummary(BaseModel):
+    window_days: int
+    po_count: int
+    quantity_ordered: float
+    quantity_received: float
+    quantity_backorder: float
+    fill_rate_percent: float | None
+    fill_rate_status: Literal["available", "unavailable"]
+    on_time_delivery_status: Literal["unavailable"] = "unavailable"
+    quality_and_chargeback_status: Literal["unavailable"] = "unavailable"
+    source: str = "MaddenCo TMPOHD / TMPODT"
+    explanation: str = (
+        "Fill rate is quantity received divided by quantity ordered across "
+        "this vendor's purchase-order lines in the trailing window - a "
+        "real, computed signal. On-time delivery and quality/chargeback "
+        "performance are not shown as 'unavailable pending connection': no "
+        "table in this MaddenCo instance carries that data at all "
+        "(TMPOHD's requested-delivery-date field is populated on 0.003% "
+        "of rows, and there is no returns/chargeback/quality table), so "
+        "no signal is computed for them rather than approximated."
+    )
+
+
 class VendorEvidenceResponse(BaseModel):
     contract_version: str = CONTRACT_VERSION
     generated_at: str
@@ -197,6 +223,7 @@ class VendorEvidenceResponse(BaseModel):
     purchase_volume: VendorPurchaseVolumeEvidence
     purchase_orders: PurchaseOrderEvidence
     receiving: ReceivingEvidence
+    performance: VendorPerformanceSummary
     payables: PayablesEvidence
     gaps: list[VendorEvidenceGap]
     governance: VendorIntelligenceGovernance = Field(

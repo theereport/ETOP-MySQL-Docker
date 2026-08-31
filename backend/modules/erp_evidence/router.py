@@ -8,6 +8,7 @@ from .ap_spend_schemas import APSpendQuestionResponse, APSpendReadinessResponse
 from .ap_spend_service import ap_vendor_spend_service
 from .schemas import (
     APERPEvidenceResponse,
+    APGLCodingSuggestionsResponse,
     APInvoiceSearchResponse,
     APMappingReadinessResponse,
     CreditERPEvidenceResponse,
@@ -90,6 +91,17 @@ def accounts_payable_invoice_search(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get(
+    "/accounts-payable/gl-coding-suggestions",
+    response_model=APGLCodingSuggestionsResponse,
+)
+def accounts_payable_gl_coding_suggestions(
+    vendor_number: int = Query(ge=1),
+    limit: int = Query(default=3, ge=1, le=10),
+) -> APGLCodingSuggestionsResponse:
+    return erp_evidence_service.gl_coding_suggestions(vendor_number, limit=limit)
 
 
 @router.get(

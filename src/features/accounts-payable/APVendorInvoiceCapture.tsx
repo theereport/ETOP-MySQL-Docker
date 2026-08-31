@@ -9,6 +9,7 @@ import type { ChangeEvent, DragEvent } from 'react'
 
 import APVendorNumberSearchField from './APVendorNumberSearchField'
 import {
+  getAPGLCodingSuggestions,
   getAPVendorInvoiceFileUrl,
   getAPVendorInvoiceJob,
   getAPVendorInvoiceJobs,
@@ -22,6 +23,7 @@ import {
 } from './api'
 import { errorMessage, formatDateTime, isAbortError } from './format'
 import type {
+  APGLCodingSuggestionsResponse,
   APSyncResponse,
   APVendorInvoiceDocumentJob,
   APVendorInvoiceDocumentResult,
@@ -98,6 +100,38 @@ function fileSize(value: number): string {
     : `${Math.max(1, Math.round(value / 1024))} KB`
 }
 
+function GLCodingSuggestionsHint({
+  status,
+  suggestions,
+}: {
+  status: AsyncStatus
+  suggestions: APGLCodingSuggestionsResponse | null
+}) {
+  if (status === 'idle') return null
+  if (status === 'loading') {
+    return <small className="ap-capture-gl-hint">Checking this vendor's historical GL coding…</small>
+  }
+  if (status === 'error' || !suggestions) {
+    return null
+  }
+  if (suggestions.suggestions.length === 0) {
+    return (
+      <small className="ap-capture-gl-hint">
+        No reliable historical GL coding shortlist for this vendor
+        {suggestions.total_coded_invoice_count > 0 ? ' (too few real coding choices to rank)' : ' (no coding history found)'}.
+      </small>
+    )
+  }
+  return (
+    <small className="ap-capture-gl-hint">
+      This vendor typically codes to: {suggestions.suggestions.map((item) => (
+        `${[item.gl_division, item.gl_account, item.gl_department].filter(Boolean).join('-')}${item.gl_account_description ? ` (${item.gl_account_description})` : ''} — ${item.match_percent}%`
+      )).join(' · ')}
+      {' · reference only, not a coding entry'}
+    </small>
+  )
+}
+
 export default function APVendorInvoiceCapture({
   onOpenImportedEvidence,
   onProjectionChanged,
@@ -129,6 +163,8 @@ export default function APVendorInvoiceCapture({
   const [syncResult, setSyncResult] = useState<APSyncResponse | null>(null)
   const [isDragActive, setIsDragActive] = useState(false)
   const dragDepth = useRef(0)
+  const [glSuggestions, setGlSuggestions] = useState<APGLCodingSuggestionsResponse | null>(null)
+  const [glSuggestionsStatus, setGlSuggestionsStatus] = useState<AsyncStatus>('idle')
   const selectedJob = useMemo(
     () => jobs.find((job) => job.job_id === selectedJobId) ?? null,
     [jobs, selectedJobId],
@@ -277,6 +313,34 @@ export default function APVendorInvoiceCapture({
       detailGeneration.current += 1
     }
   }, [loadSelected, selectedJob])
+
+  const reviewVendorNumber = correctedFields.vendor_number?.trim() ?? ''
+
+  useEffect(() => {
+    if (!reviewVendorNumber || !/^\d+$/.test(reviewVendorNumber)) {
+      setGlSuggestions(null)
+      setGlSuggestionsStatus('idle')
+      return
+    }
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => {
+      setGlSuggestionsStatus('loading')
+      getAPGLCodingSuggestions(reviewVendorNumber, controller.signal)
+        .then((response) => {
+          setGlSuggestions(response)
+          setGlSuggestionsStatus('success')
+        })
+        .catch((error) => {
+          if (isAbortError(error)) return
+          setGlSuggestions(null)
+          setGlSuggestionsStatus('error')
+        })
+    }, 400)
+    return () => {
+      window.clearTimeout(timeoutId)
+      controller.abort()
+    }
+  }, [reviewVendorNumber])
 
   const fieldEvidence = useMemo(() => {
     const evidence = result?.parsed.field_evidence ?? {}
@@ -746,6 +810,12 @@ export default function APVendorInvoiceCapture({
                                   />
                                 )}
                               </label>
+                              {fieldName === 'vendor_number' && (
+                                <GLCodingSuggestionsHint
+                                  status={glSuggestionsStatus}
+                                  suggestions={glSuggestions}
+                                />
+                              )}
                               <button
                                 type="button"
                                 className="ap-capture-unavailable-button"

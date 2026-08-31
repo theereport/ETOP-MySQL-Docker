@@ -2363,6 +2363,11 @@
   line-height: 1.4;
 }
 
+.ap-capture-review-field > small.ap-capture-gl-hint {
+  display: block;
+  color: #3e5f7d;
+}
+
 .ap-vendor-search {
   position: relative;
 }
