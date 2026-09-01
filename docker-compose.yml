@@ -2,11 +2,33 @@ name: etop
 
 services:
   backend:
+    # Do not set `deploy.replicas` > 1 (or run multiple uvicorn workers)
+    # without first making backend/modules/document_intelligence/service.py's
+    # `_PROCESSING_REVIEW_LOCK` DB-level (e.g. a MySQL advisory lock) instead
+    # of the in-process threading.RLock it is today. That lock only
+    # serializes document processing within one process - a second replica
+    # or worker would not be blocked by it and could race on the same job's
+    # current-result/review projection, corrupting data rather than just
+    # failing to get a throughput benefit.
     build:
       context: .
       dockerfile: Dockerfile
+    # Placeholder - retune once the real server's specs are known.
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
-      - "8000:8000"
+      # Bound to localhost only - the reverse-proxy service is the real
+      # public entry point (see below). This stays open for local
+      # debugging (curl http://127.0.0.1:8000/... directly).
+      - "127.0.0.1:8000:8000"
     env_file:
       # backend/.env.compose, NOT backend/.env directly - Compose applies
       # $VAR interpolation to every value it reads from an env file (project
@@ -29,7 +51,7 @@ services:
       etop-db:
         condition: service_healthy
       ollama:
-        condition: service_started
+        condition: service_healthy
     volumes:
       # Repo-root data/ - documents, vector store, uploads, training data.
       # See core/config.py's PlatformSettings.data_root: it resolves as a
@@ -61,6 +83,17 @@ services:
     # literal "$" in a real secret survives Compose's interpolation) so
     # these resolve correctly.
     image: mysql:8.0
+    # Placeholder - retune once the real server's specs are known.
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       MYSQL_RANDOM_ROOT_PASSWORD: "yes"
       MYSQL_DATABASE: ${ETOP_DB_NAME:-etop}
@@ -88,8 +121,81 @@ services:
 
   ollama:
     image: ollama/ollama
+    # Placeholder - retune once the real server's specs are known. CPU
+    # inference of gemma3:12b needs real headroom; raise this (or add GPU
+    # passthrough, see docker-compose.gpu.yml) if it's memory-starved.
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     volumes:
       - ollama-data:/root/.ollama
+    restart: unless-stopped
+
+  reverse-proxy:
+    # TLS termination in front of the backend. Generates a self-signed
+    # placeholder certificate on first run (see nginx/entrypoint.sh) -
+    # replace it with a real one once a domain is assigned; see
+    # DEPLOYMENT.md.
+    image: nginx:alpine
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/entrypoint.sh:/entrypoint.sh:ro
+      - ./nginx/certs:/etc/nginx/certs
+    entrypoint: ["sh", "/entrypoint.sh"]
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backup:
+    # Daily mysqldump of etop-db, gzipped, kept for BACKUP_RETENTION_DAYS.
+    # Uses the mysql:8.0 image purely for its bundled mysqldump binary - it
+    # runs no MySQL server of its own. See backend/scripts/backup_mysql.sh
+    # and DEPLOYMENT.md for the restore procedure.
+    image: mysql:8.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    env_file:
+      - backend/.env.compose
+    environment:
+      ETOP_DB_HOST: etop-db
+      ETOP_DB_PORT: "3306"
+      BACKUP_RETENTION_DAYS: "14"
+    volumes:
+      - ./backend/scripts/backup_mysql.sh:/scripts/backup_mysql.sh:ro
+      - ./backups:/backups
+    depends_on:
+      etop-db:
+        condition: service_healthy
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        "while true; do sh /scripts/backup_mysql.sh; sleep 86400; done",
+      ]
     restart: unless-stopped
 
 volumes:

@@ -41,6 +41,8 @@ __pycache__/
 .sprint4a-backup/
 sprint4a_payload/
 /archive/
+/backups/
+/nginx/certs/
 
 # Runtime document-intelligence data: real customer checks, lockbox
 # extraction results, and PNC exports. Never committed - local disk only.

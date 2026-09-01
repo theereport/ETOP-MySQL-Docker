@@ -356,6 +356,14 @@ def process_job(job_id: str) -> dict:
     # ETOP's supported local deployment runs one backend process. Serializing
     # processing and review CAS prevents two local runs from interleaving the
     # current-result and current-review projections.
+    #
+    # This is a threading.RLock, in-process only. Do NOT scale the backend to
+    # multiple container replicas or run multiple uvicorn workers without
+    # first replacing this with a DB-level lock (e.g. a MySQL advisory lock,
+    # `GET_LOCK()`/`RELEASE_LOCK()`) - a second process is not blocked by this
+    # lock at all, so two replicas could race on the same job's
+    # current-result/current-review projection and corrupt it, rather than
+    # just failing to get a throughput benefit.
     with processing_review_boundary():
         return _process_job(job_id)
 
