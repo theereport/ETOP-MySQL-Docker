@@ -1,12 +1,13 @@
 import csv
 import io
-import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from pathlib import Path
+
+from sqlalchemy import create_engine
 
 from modules.payment_notes.erp_repository import ExpectedPaymentResult, SignatureResult
 from modules.payment_notes.matching import ExpectedPayment, SignatureEvidence
@@ -71,7 +72,7 @@ def csv_bytes(deposit="D1", account_number="", routing_number=""):
 
 class ServiceTests(unittest.TestCase):
     def build_service(self, path, ids):
-        repository = PaymentNotesRepository(lambda: sqlite3.connect(path))
+        repository = PaymentNotesRepository(engine=create_engine(f"sqlite:///{path}"))
         return PaymentNotesService(repository, FakeERP(),
             clock=lambda: datetime(2026, 8, 22, tzinfo=timezone.utc), id_factory=lambda: next(ids))
 
@@ -81,13 +82,17 @@ class ServiceTests(unittest.TestCase):
         service.activate_route_reference(route["reference_id"], "activate-key", "actor")
 
     def test_service_construction_is_lazy_and_does_not_open_repository(self):
+        engine = create_engine("sqlite://")
         calls = []
+        original_connect = engine.connect
 
-        def connection_factory():
+        def tracking_connect(*args, **kwargs):
             calls.append(True)
-            return sqlite3.connect(":memory:")
+            return original_connect(*args, **kwargs)
 
-        PaymentNotesService(PaymentNotesRepository(connection_factory), FakeERP())
+        engine.connect = tracking_connect
+
+        PaymentNotesService(PaymentNotesRepository(engine=engine), FakeERP())
         self.assertEqual(calls, [])
 
     def test_run_creation_signature_enrichment_and_review_persistence(self):
@@ -120,6 +125,7 @@ class ServiceTests(unittest.TestCase):
                 PaymentNotesRepository.sha256(private["erp_signature_snapshots"][0]),
                 provenance["signature_queries"][0]["canonical_evidence_sha256"],
             )
+            service.repository.engine.dispose()
 
     def test_persisted_bank_evidence_redacts_account_and_routing_numbers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -135,6 +141,7 @@ class ServiceTests(unittest.TestCase):
             self.assertNotIn("SECRET-ACCOUNT", serialized)
             self.assertNotIn("SECRET-ROUTING", serialized)
             self.assertIn("[REDACTED]", serialized)
+            service.repository.engine.dispose()
 
     def test_run_creation_fails_closed_without_active_route_reference(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -142,6 +149,7 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaises(PaymentNotesPreconditionError):
                 service.create_run(csv_bytes(), "synthetic.csv", "2026-08-19", "2026-08-21",
                                    "run-key-1", "actor")
+            service.repository.engine.dispose()
 
     def test_route_conflict_marks_store_population_incomplete_and_blocks_auto_match(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -155,11 +163,14 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(run["status"], "source_incomplete")
             self.assertEqual(run["items"][0]["match"]["disposition"], "SOURCE_INCOMPLETE")
             self.assertIsNone(run["items"][0]["match"]["selected_payment_id"])
+            service.repository.engine.dispose()
 
     def test_partial_invoice_reference_does_not_query_or_assert_signature_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             erp = PartialInvoiceERP()
-            repository = PaymentNotesRepository(lambda: sqlite3.connect(Path(directory) / "partial.db"))
+            repository = PaymentNotesRepository(
+                engine=create_engine(f"sqlite:///{Path(directory) / 'partial.db'}")
+            )
             ids = iter(["r", "a", "run"])
             service = PaymentNotesService(repository, erp,
                 clock=lambda: datetime(2026, 8, 22, tzinfo=timezone.utc), id_factory=lambda: next(ids))
@@ -170,6 +181,7 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(erp.signature_calls, 0)
             self.assertEqual(candidate["signature_lookup_status"], "SIGNATURE_UNDETERMINED")
             self.assertEqual(candidate["signatures"], [])
+            repository.engine.dispose()
 
     def test_manual_review_cannot_reuse_an_effectively_assigned_payment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -186,10 +198,13 @@ class ServiceTests(unittest.TestCase):
                 service.review_item(run["run_id"], second["item_id"], ReviewRequest(
                     decision="accept_candidate", selected_payment_id="pay-1", reason="Duplicate assignment",
                     idempotency_key="review-key-2"), "actor")
+            service.repository.engine.dispose()
 
     def test_truncated_amount_only_candidates_cannot_be_manually_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
-            repository = PaymentNotesRepository(lambda: sqlite3.connect(Path(directory) / "amount.db"))
+            repository = PaymentNotesRepository(
+                engine=create_engine(f"sqlite:///{Path(directory) / 'amount.db'}")
+            )
             service = PaymentNotesService(repository, ManyAmountOnlyERP(),
                 clock=lambda: datetime(2026, 8, 22, tzinfo=timezone.utc),
                 id_factory=lambda: next(iter_ids))
@@ -203,6 +218,7 @@ class ServiceTests(unittest.TestCase):
                 service.review_item(run["run_id"], item["item_id"], ReviewRequest(
                     decision="accept_candidate", selected_payment_id="amount-0",
                     reason="Attempt incomplete population", idempotency_key="review-key-1"), "actor")
+            repository.engine.dispose()
 
     def test_prior_run_payment_use_blocks_new_selection_and_manual_accept(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -220,3 +236,4 @@ class ServiceTests(unittest.TestCase):
                 service.review_item(second["run_id"], item["item_id"], ReviewRequest(
                     decision="accept_candidate", selected_payment_id="pay-1",
                     reason="Attempt prior use", idempotency_key="review-key-1"), "actor")
+            service.repository.engine.dispose()

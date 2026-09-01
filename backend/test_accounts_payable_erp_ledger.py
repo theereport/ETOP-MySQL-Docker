@@ -12,6 +12,8 @@ BACKEND_ROOT = Path(__file__).resolve().parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from sqlalchemy import create_engine
+
 from modules.accounts_payable.erp_ledger_repository import (
     AccountsPayableErpLedgerRepository,
     parse_madden_date,
@@ -59,14 +61,9 @@ class AccountsPayableErpLedgerRepositoryTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.database_path = Path(self.temp.name) / "ap-erp-ledger.db"
-        self.repository = AccountsPayableErpLedgerRepository(
-            self._connection_factory
-        )
-
-    def _connection_factory(self) -> sqlite3.Connection:
-        return sqlite3.connect(
-            self.database_path, timeout=30, check_same_thread=False
-        )
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.addCleanup(self.engine.dispose)
+        self.repository = AccountsPayableErpLedgerRepository(engine=self.engine)
 
     def test_replace_open_ledger_skips_rows_without_usable_identity(self) -> None:
         count = self.repository.replace_open_ledger(
@@ -174,14 +171,9 @@ class AccountsPayableTermsReferenceTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.database_path = Path(self.temp.name) / "ap-terms.db"
-        self.repository = AccountsPayableErpLedgerRepository(
-            self._connection_factory
-        )
-
-    def _connection_factory(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.addCleanup(self.engine.dispose)
+        self.repository = AccountsPayableErpLedgerRepository(engine=self.engine)
 
     def _flat_days_terms(
         self, terms_code: str = "11", *, num_days: int = 10, discount_percent: float = 20
@@ -346,15 +338,12 @@ class AccountsPayableServiceErpLedgerTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.database_path = Path(self.temp.name) / "ap-service.db"
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.addCleanup(self.engine.dispose)
 
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(
-                self.database_path, timeout=30, check_same_thread=False
-            )
-
-        self.ap_repository = AccountsPayableRepository(connection_factory)
+        self.ap_repository = AccountsPayableRepository(engine=self.engine)
         self.erp_ledger_repository = AccountsPayableErpLedgerRepository(
-            connection_factory
+            engine=self.engine
         )
         self.job_events: list[tuple] = []
         self.ledger_rows: list[dict] = []
@@ -502,21 +491,14 @@ class AccountsPayableWarehouseApprovalRepositoryTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.database_path = Path(self.temp.name) / "ap-warehouse.db"
-        self.repository = AccountsPayableErpLedgerRepository(
-            self._connection_factory
-        )
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.addCleanup(self.engine.dispose)
+        self.repository = AccountsPayableErpLedgerRepository(engine=self.engine)
         # The warehouse queue's linkage LEFT JOIN reads accounts_payable's
         # own ap_invoices table, which only exists once that repository has
         # initialized it too - both are always initialized together at
         # startup in data/database.py.
-        AccountsPayableRepository(self._connection_factory).initialize()
-
-    def _connection_factory(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.database_path, timeout=30, check_same_thread=False
-        )
-        connection.row_factory = sqlite3.Row
-        return connection
+        AccountsPayableRepository(engine=self.engine).initialize()
 
     def _seed_open_invoices(self, rows: list[dict]) -> None:
         self.repository.replace_open_ledger(
@@ -561,33 +543,12 @@ class AccountsPayableWarehouseApprovalRepositoryTest(unittest.TestCase):
             created_at=created_at,
         )
 
-    def test_actions_table_rejects_update(self) -> None:
-        self._seed_open_invoices([{"vendor": "6245", "invoice": "INV001"}])
-        self._record_action(action_id="a1", to_status="approved_by_warehouse")
-
-        connection = self._connection_factory()
-        try:
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "UPDATE ap_warehouse_approval_actions "
-                    "SET notes = 'x' WHERE action_id = 'a1';"
-                )
-        finally:
-            connection.close()
-
-    def test_actions_table_rejects_delete(self) -> None:
-        self._seed_open_invoices([{"vendor": "6245", "invoice": "INV001"}])
-        self._record_action(action_id="a1", to_status="approved_by_warehouse")
-
-        connection = self._connection_factory()
-        try:
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "DELETE FROM ap_warehouse_approval_actions "
-                    "WHERE action_id = 'a1';"
-                )
-        finally:
-            connection.close()
+    # Append-only is enforced by convention in the repository layer (it
+    # never issues UPDATE/DELETE against ap_warehouse_approval_actions),
+    # not by a DB trigger - MySQL trigger creation needs a privilege the
+    # etop account doesn't have. (Previously this class had
+    # test_actions_table_rejects_update/_delete asserting the SQLite
+    # trigger directly.)
 
     def test_status_defaults_to_needs_approval_with_no_actions(self) -> None:
         self._seed_open_invoices([{"vendor": "6245", "invoice": "INV001"}])
@@ -679,10 +640,10 @@ class AccountsPayableWarehouseApprovalLinkageTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.database_path = Path(self.temp.name) / "ap-warehouse-linkage.db"
-        self.erp_repository = AccountsPayableErpLedgerRepository(
-            self._connection_factory
-        )
-        self.ap_repository = AccountsPayableRepository(self._connection_factory)
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.addCleanup(self.engine.dispose)
+        self.erp_repository = AccountsPayableErpLedgerRepository(engine=self.engine)
+        self.ap_repository = AccountsPayableRepository(engine=self.engine)
         self.ap_repository.initialize()
 
     def _connection_factory(self) -> sqlite3.Connection:
@@ -758,16 +719,13 @@ class AccountsPayableServiceWarehouseApprovalTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.database_path = Path(self.temp.name) / "ap-warehouse-service.db"
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.addCleanup(self.engine.dispose)
 
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(
-                self.database_path, timeout=30, check_same_thread=False
-            )
-
-        self.ap_repository = AccountsPayableRepository(connection_factory)
+        self.ap_repository = AccountsPayableRepository(engine=self.engine)
         self.ap_repository.initialize()
         self.erp_ledger_repository = AccountsPayableErpLedgerRepository(
-            connection_factory
+            engine=self.engine
         )
         self.ledger_rows: list[dict] = []
         self.terms_rows: list[dict] = []

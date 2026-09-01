@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import sqlite3
 import threading
-from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from data.database import get_connection
+from sqlalchemy import func, select
+from sqlalchemy.engine import Engine
+
+from data.mysql import get_engine, job_queue_jobs_table, metadata
 
 
 ACTIVE_STATUSES = ("queued", "running")
@@ -32,50 +33,13 @@ class JobQueueRepository:
     failing on a duplicate key.
     """
 
-    def __init__(
-        self,
-        connection_factory: Callable[[], sqlite3.Connection] = get_connection,
-    ) -> None:
-        self._connection_factory = connection_factory
+    def __init__(self, engine: Engine | None = None) -> None:
+        self._engine = engine or get_engine()
         self._initialization_lock = threading.Lock()
-
-    def _connection(self) -> sqlite3.Connection:
-        connection = self._connection_factory()
-        connection.row_factory = sqlite3.Row
-        return connection
 
     def initialize(self) -> None:
         with self._initialization_lock:
-            connection = self._connection()
-            try:
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS job_queue_jobs (
-                        job_id TEXT PRIMARY KEY,
-                        job_type TEXT NOT NULL,
-                        title TEXT NOT NULL,
-                        status TEXT NOT NULL
-                            CHECK (status IN ('queued', 'running', 'completed', 'failed')),
-                        created_by TEXT,
-                        created_at TEXT NOT NULL,
-                        started_at TEXT,
-                        completed_at TEXT,
-                        message TEXT,
-                        result_module TEXT,
-                        result_reference TEXT,
-                        acknowledged_at TEXT
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_job_queue_jobs_status
-                    ON job_queue_jobs(status, created_at DESC);
-
-                    CREATE INDEX IF NOT EXISTS idx_job_queue_jobs_created_at
-                    ON job_queue_jobs(created_at DESC);
-                    """
-                )
-                connection.commit()
-            finally:
-                connection.close()
+            metadata.create_all(self._engine, checkfirst=True, tables=[job_queue_jobs_table])
 
     def enqueue(
         self,
@@ -86,56 +50,49 @@ class JobQueueRepository:
         created_by: str | None = None,
     ) -> None:
         self.initialize()
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
-            connection.execute(
-                """
-                INSERT INTO job_queue_jobs (
-                    job_id, job_type, title, status, created_by,
-                    created_at, started_at, completed_at, message,
-                    result_module, result_reference, acknowledged_at
-                ) VALUES (?, ?, ?, 'queued', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
-                ON CONFLICT(job_id) DO UPDATE SET
-                    job_type = excluded.job_type,
-                    title = excluded.title,
-                    status = 'queued',
-                    created_by = excluded.created_by,
-                    started_at = NULL,
-                    completed_at = NULL,
-                    message = NULL,
-                    result_module = NULL,
-                    result_reference = NULL,
-                    acknowledged_at = NULL;
-                """,
-                (job_id, job_type, title, created_by, _now()),
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        now = _now()
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                select(job_queue_jobs_table.c.job_id).where(
+                    job_queue_jobs_table.c.job_id == job_id
+                )
+            ).first()
+            values = {
+                "job_type": job_type,
+                "title": title,
+                "status": "queued",
+                "created_by": created_by,
+                "started_at": None,
+                "completed_at": None,
+                "message": None,
+                "result_module": None,
+                "result_reference": None,
+                "acknowledged_at": None,
+            }
+            if existing is None:
+                connection.execute(
+                    job_queue_jobs_table.insert().values(
+                        job_id=job_id, created_at=now, **values
+                    )
+                )
+            else:
+                connection.execute(
+                    job_queue_jobs_table.update()
+                    .where(job_queue_jobs_table.c.job_id == job_id)
+                    .values(**values)
+                )
 
     def mark_running(self, job_id: str) -> None:
         self.initialize()
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
+        with self._engine.begin() as connection:
             connection.execute(
-                """
-                UPDATE job_queue_jobs
-                SET status = 'running', started_at = ?
-                WHERE job_id = ? AND status = 'queued';
-                """,
-                (_now(), job_id),
+                job_queue_jobs_table.update()
+                .where(
+                    job_queue_jobs_table.c.job_id == job_id,
+                    job_queue_jobs_table.c.status == "queued",
+                )
+                .values(status="running", started_at=_now())
             )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def mark_completed(
         self,
@@ -171,51 +128,33 @@ class JobQueueRepository:
         result_reference: str | None = None,
     ) -> None:
         self.initialize()
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
+        with self._engine.begin() as connection:
             connection.execute(
-                """
-                UPDATE job_queue_jobs
-                SET status = ?, completed_at = ?, message = ?,
-                    result_module = ?, result_reference = ?
-                WHERE job_id = ? AND status IN ('queued', 'running');
-                """,
-                (
-                    status,
-                    _now(),
-                    message,
-                    result_module,
-                    result_reference,
-                    job_id,
-                ),
+                job_queue_jobs_table.update()
+                .where(
+                    job_queue_jobs_table.c.job_id == job_id,
+                    job_queue_jobs_table.c.status.in_(("queued", "running")),
+                )
+                .values(
+                    status=status,
+                    completed_at=_now(),
+                    message=message,
+                    result_module=result_module,
+                    result_reference=result_reference,
+                )
             )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def acknowledge(self, job_id: str) -> None:
         self.initialize()
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
+        with self._engine.begin() as connection:
             connection.execute(
-                """
-                UPDATE job_queue_jobs
-                SET acknowledged_at = ?
-                WHERE job_id = ? AND acknowledged_at IS NULL;
-                """,
-                (_now(), job_id),
+                job_queue_jobs_table.update()
+                .where(
+                    job_queue_jobs_table.c.job_id == job_id,
+                    job_queue_jobs_table.c.acknowledged_at.is_(None),
+                )
+                .values(acknowledged_at=_now())
             )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def list_jobs(
         self,
@@ -224,47 +163,26 @@ class JobQueueRepository:
         statuses: tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
         self.initialize()
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
+            query = select(job_queue_jobs_table)
             if statuses:
-                placeholders = ", ".join("?" for _ in statuses)
-                rows = connection.execute(
-                    f"""
-                    SELECT * FROM job_queue_jobs
-                    WHERE status IN ({placeholders})
-                    ORDER BY created_at DESC
-                    LIMIT ?;
-                    """,
-                    (*statuses, limit),
-                ).fetchall()
-            else:
-                rows = connection.execute(
-                    """
-                    SELECT * FROM job_queue_jobs
-                    ORDER BY created_at DESC
-                    LIMIT ?;
-                    """,
-                    (limit,),
-                ).fetchall()
-        finally:
-            connection.close()
+                query = query.where(job_queue_jobs_table.c.status.in_(statuses))
+            rows = connection.execute(
+                query.order_by(job_queue_jobs_table.c.created_at.desc()).limit(limit)
+            ).mappings().all()
         return [dict(row) for row in rows]
 
     def counts_by_status(self) -> dict[str, int]:
         self.initialize()
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT status, COUNT(*) AS count
-                FROM job_queue_jobs
-                WHERE status IN ('queued', 'running')
-                GROUP BY status;
-                """
-            ).fetchall()
-        finally:
-            connection.close()
-        return {row["status"]: row["count"] for row in rows}
+                select(
+                    job_queue_jobs_table.c.status, func.count().label("count")
+                )
+                .where(job_queue_jobs_table.c.status.in_(("queued", "running")))
+                .group_by(job_queue_jobs_table.c.status)
+            ).all()
+        return {row.status: row.count for row in rows}
 
     def unacknowledged_terminal_jobs(
         self,
@@ -272,36 +190,30 @@ class JobQueueRepository:
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         self.initialize()
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT * FROM job_queue_jobs
-                WHERE status IN ('completed', 'failed')
-                    AND acknowledged_at IS NULL
-                ORDER BY completed_at DESC
-                LIMIT ?;
-                """,
-                (limit,),
-            ).fetchall()
-        finally:
-            connection.close()
+                select(job_queue_jobs_table)
+                .where(
+                    job_queue_jobs_table.c.status.in_(("completed", "failed")),
+                    job_queue_jobs_table.c.acknowledged_at.is_(None),
+                )
+                .order_by(job_queue_jobs_table.c.completed_at.desc())
+                .limit(limit)
+            ).mappings().all()
         return [dict(row) for row in rows]
 
     def unacknowledged_count(self) -> int:
         self.initialize()
-        connection = self._connection()
-        try:
-            row = connection.execute(
-                """
-                SELECT COUNT(*) AS count FROM job_queue_jobs
-                WHERE status IN ('completed', 'failed')
-                    AND acknowledged_at IS NULL;
-                """
-            ).fetchone()
-        finally:
-            connection.close()
-        return int(row["count"]) if row is not None else 0
+        with self._engine.connect() as connection:
+            count = connection.execute(
+                select(func.count())
+                .select_from(job_queue_jobs_table)
+                .where(
+                    job_queue_jobs_table.c.status.in_(("completed", "failed")),
+                    job_queue_jobs_table.c.acknowledged_at.is_(None),
+                )
+            ).scalar_one()
+        return int(count)
 
     def recover_interrupted(self) -> list[str]:
         """Fail-closed startup recovery: a row still queued/running when the
@@ -311,32 +223,23 @@ class JobQueueRepository:
         auto-replayed - matching `automations`' restart recovery."""
 
         self.initialize()
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
+        with self._engine.begin() as connection:
             rows = connection.execute(
-                """
-                SELECT job_id FROM job_queue_jobs
-                WHERE status IN ('queued', 'running');
-                """
-            ).fetchall()
-            job_ids = [row["job_id"] for row in rows]
-            if job_ids:
-                placeholders = ", ".join("?" for _ in job_ids)
-                connection.execute(
-                    f"""
-                    UPDATE job_queue_jobs
-                    SET status = 'failed', completed_at = ?, message = ?
-                    WHERE job_id IN ({placeholders});
-                    """,
-                    (_now(), INTERRUPTED_MESSAGE, *job_ids),
+                select(job_queue_jobs_table.c.job_id).where(
+                    job_queue_jobs_table.c.status.in_(("queued", "running"))
                 )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+            ).all()
+            job_ids = [row.job_id for row in rows]
+            if job_ids:
+                connection.execute(
+                    job_queue_jobs_table.update()
+                    .where(job_queue_jobs_table.c.job_id.in_(job_ids))
+                    .values(
+                        status="failed",
+                        completed_at=_now(),
+                        message=INTERRUPTED_MESSAGE,
+                    )
+                )
         return job_ids
 
 

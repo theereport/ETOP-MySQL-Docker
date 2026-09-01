@@ -2,14 +2,39 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from data.database import get_connection
+from sqlalchemy import case, delete, func, select
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
+
+from data.mysql import (
+    get_engine,
+    metadata,
+    wf_access_profiles_table,
+    wf_audit_events_table,
+    wf_definitions_table,
+    wf_invitation_events_table,
+    wf_module_access_events_table,
+    wf_modules_table,
+    wf_notifications_table,
+    wf_password_reset_events_table,
+    wf_password_reset_tokens_table,
+    wf_persons_table,
+    wf_role_assignments_table,
+    wf_roles_table,
+    wf_sessions_table,
+    wf_task_assignments_table,
+    wf_task_events_table,
+    wf_tasks_table,
+    wf_user_accounts_table,
+    wf_user_invitations_table,
+    wf_user_module_access_table,
+)
 
 
 class WorkflowFoundationConflict(RuntimeError):
@@ -232,22 +257,16 @@ class WorkflowFoundationRepository:
 
     def __init__(
         self,
-        connection_factory: Callable[[], sqlite3.Connection] = get_connection,
+        engine: Engine | None = None,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[str], str] | None = None,
     ) -> None:
-        self._connection_factory = connection_factory
+        self._engine = engine or get_engine()
         self._clock = clock or (lambda: datetime.now(UTC))
         self._id_factory = id_factory or (
             lambda prefix: f"{prefix}-{uuid4().hex}"
         )
         self._initialization_lock = threading.Lock()
-
-    def _connection(self) -> sqlite3.Connection:
-        connection = self._connection_factory()
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON;")
-        return connection
 
     def _now(self) -> str:
         value = self._clock()
@@ -260,486 +279,105 @@ class WorkflowFoundationRepository:
 
     def initialize(self) -> None:
         with self._initialization_lock:
-            connection = self._connection()
-            try:
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS wf_persons (
-                        person_id TEXT PRIMARY KEY,
-                        display_name TEXT NOT NULL,
-                        status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
-                        created_at TEXT NOT NULL,
-                        created_by_user_id TEXT
-                    );
-
-                    CREATE TABLE IF NOT EXISTS wf_user_accounts (
-                        user_id TEXT PRIMARY KEY,
-                        person_id TEXT NOT NULL UNIQUE,
-                        username TEXT NOT NULL COLLATE NOCASE UNIQUE,
-                        password_salt TEXT NOT NULL,
-                        password_hash TEXT NOT NULL,
-                        password_algorithm TEXT NOT NULL CHECK (
-                            password_algorithm = 'scrypt-n16384-r8-p1-v1'
-                        ),
-                        status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
-                        status_version INTEGER NOT NULL DEFAULT 1 CHECK (status_version >= 1),
-                        credential_version INTEGER NOT NULL DEFAULT 1 CHECK (credential_version >= 1),
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        FOREIGN KEY (person_id) REFERENCES wf_persons(person_id)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS wf_roles (
-                        role_id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        description TEXT NOT NULL,
-                        queue_scope TEXT NOT NULL,
-                        authority_effect TEXT NOT NULL CHECK (authority_effect = 'none'),
-                        decision_authority INTEGER NOT NULL CHECK (decision_authority = 0),
-                        created_at TEXT NOT NULL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS wf_role_assignments (
-                        role_assignment_id TEXT PRIMARY KEY,
-                        user_id TEXT NOT NULL,
-                        role_id TEXT NOT NULL,
-                        effective_from TEXT NOT NULL,
-                        effective_to TEXT,
-                        assignment_status TEXT NOT NULL CHECK (
-                            assignment_status = 'active'
-                        ),
-                        assigned_by_user_id TEXT,
-                        created_at TEXT NOT NULL,
-                        UNIQUE (user_id, role_id, effective_from),
-                        FOREIGN KEY (user_id) REFERENCES wf_user_accounts(user_id),
-                        FOREIGN KEY (role_id) REFERENCES wf_roles(role_id)
-                    );
-
-                    CREATE TRIGGER IF NOT EXISTS wf_role_assignments_no_update
-                    BEFORE UPDATE ON wf_role_assignments
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Workflow role assignments are append-only.');
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS wf_role_assignments_no_delete
-                    BEFORE DELETE ON wf_role_assignments
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Workflow role assignments are append-only.');
-                    END;
-
-                    CREATE TABLE IF NOT EXISTS wf_sessions (
-                        session_id TEXT PRIMARY KEY,
-                        user_id TEXT NOT NULL,
-                        token_hash TEXT NOT NULL UNIQUE,
-                        issued_at TEXT NOT NULL,
-                        expires_at TEXT NOT NULL,
-                        revoked_at TEXT,
-                        last_seen_at TEXT NOT NULL,
-                        FOREIGN KEY (user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_wf_sessions_token
-                    ON wf_sessions(token_hash, expires_at);
-
-                    CREATE TABLE IF NOT EXISTS wf_modules (
-                        module_id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        description TEXT NOT NULL,
-                        module_group TEXT NOT NULL CHECK (
-                            module_group IN ('Overview', 'Workspaces', 'Tools', 'System')
-                        ),
-                        default_access INTEGER NOT NULL CHECK (default_access = 0),
-                        status TEXT NOT NULL CHECK (status = 'active'),
-                        authority_effect TEXT NOT NULL CHECK (authority_effect = 'none'),
-                        created_at TEXT NOT NULL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS wf_access_profiles (
-                        user_id TEXT PRIMARY KEY,
-                        access_version INTEGER NOT NULL CHECK (access_version >= 1),
-                        updated_at TEXT NOT NULL,
-                        updated_by_user_id TEXT,
-                        FOREIGN KEY (user_id) REFERENCES wf_user_accounts(user_id),
-                        FOREIGN KEY (updated_by_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS wf_user_module_access (
-                        user_id TEXT NOT NULL,
-                        module_id TEXT NOT NULL,
-                        allowed INTEGER NOT NULL CHECK (allowed IN (0, 1)),
-                        updated_at TEXT NOT NULL,
-                        updated_by_user_id TEXT,
-                        PRIMARY KEY (user_id, module_id),
-                        FOREIGN KEY (user_id) REFERENCES wf_user_accounts(user_id),
-                        FOREIGN KEY (module_id) REFERENCES wf_modules(module_id),
-                        FOREIGN KEY (updated_by_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS wf_module_access_events (
-                        access_event_id TEXT PRIMARY KEY,
-                        user_id TEXT NOT NULL,
-                        actor_user_id TEXT,
-                        before_module_ids_json TEXT NOT NULL,
-                        after_module_ids_json TEXT NOT NULL,
-                        access_version INTEGER NOT NULL CHECK (access_version >= 1),
-                        reason TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        FOREIGN KEY (user_id) REFERENCES wf_user_accounts(user_id),
-                        FOREIGN KEY (actor_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE TRIGGER IF NOT EXISTS wf_module_access_events_no_update
-                    BEFORE UPDATE ON wf_module_access_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Module access events are append-only.');
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS wf_module_access_events_no_delete
-                    BEFORE DELETE ON wf_module_access_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Module access events are append-only.');
-                    END;
-
-                    CREATE TABLE IF NOT EXISTS wf_user_invitations (
-                        invitation_id TEXT PRIMARY KEY,
-                        username TEXT NOT NULL COLLATE NOCASE,
-                        display_name TEXT NOT NULL,
-                        token_hash TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
-                        role_ids_json TEXT NOT NULL,
-                        module_ids_json TEXT NOT NULL,
-                        status TEXT NOT NULL CHECK (
-                            status IN ('pending', 'activated', 'revoked', 'expired')
-                        ),
-                        created_by_user_id TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        expires_at TEXT NOT NULL,
-                        activated_at TEXT,
-                        activated_user_id TEXT,
-                        FOREIGN KEY (created_by_user_id) REFERENCES wf_user_accounts(user_id),
-                        FOREIGN KEY (activated_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_pending_invitation_username
-                    ON wf_user_invitations(username COLLATE NOCASE)
-                    WHERE status = 'pending';
-
-                    CREATE TABLE IF NOT EXISTS wf_invitation_events (
-                        invitation_event_id TEXT PRIMARY KEY,
-                        invitation_id TEXT NOT NULL,
-                        event_type TEXT NOT NULL CHECK (
-                            event_type IN ('created', 'activated', 'revoked', 'expired')
-                        ),
-                        actor_user_id TEXT,
-                        created_at TEXT NOT NULL,
-                        details_json TEXT NOT NULL,
-                        FOREIGN KEY (invitation_id) REFERENCES wf_user_invitations(invitation_id),
-                        FOREIGN KEY (actor_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE TRIGGER IF NOT EXISTS wf_invitation_events_no_update
-                    BEFORE UPDATE ON wf_invitation_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Invitation events are append-only.');
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS wf_invitation_events_no_delete
-                    BEFORE DELETE ON wf_invitation_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Invitation events are append-only.');
-                    END;
-
-                    CREATE TABLE IF NOT EXISTS wf_password_reset_tokens (
-                        reset_id TEXT PRIMARY KEY,
-                        user_id TEXT NOT NULL,
-                        token_hash TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
-                        status TEXT NOT NULL CHECK (
-                            status IN ('pending', 'activated', 'revoked', 'expired')
-                        ),
-                        created_by_user_id TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        expires_at TEXT NOT NULL,
-                        activated_at TEXT,
-                        FOREIGN KEY (user_id) REFERENCES wf_user_accounts(user_id),
-                        FOREIGN KEY (created_by_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS wf_password_reset_events (
-                        reset_event_id TEXT PRIMARY KEY,
-                        reset_id TEXT NOT NULL,
-                        event_type TEXT NOT NULL CHECK (
-                            event_type IN ('created', 'activated', 'expired')
-                        ),
-                        actor_user_id TEXT,
-                        created_at TEXT NOT NULL,
-                        details_json TEXT NOT NULL,
-                        FOREIGN KEY (reset_id) REFERENCES wf_password_reset_tokens(reset_id),
-                        FOREIGN KEY (actor_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE TRIGGER IF NOT EXISTS wf_password_reset_events_no_update
-                    BEFORE UPDATE ON wf_password_reset_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Password reset events are append-only.');
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS wf_password_reset_events_no_delete
-                    BEFORE DELETE ON wf_password_reset_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Password reset events are append-only.');
-                    END;
-
-                    CREATE TABLE IF NOT EXISTS wf_definitions (
-                        definition_id TEXT NOT NULL,
-                        version TEXT NOT NULL,
-                        title TEXT NOT NULL,
-                        description TEXT NOT NULL,
-                        states_json TEXT NOT NULL,
-                        transitions_json TEXT NOT NULL,
-                        status TEXT NOT NULL CHECK (status = 'active'),
-                        authority_effect TEXT NOT NULL CHECK (authority_effect = 'none'),
-                        created_at TEXT NOT NULL,
-                        PRIMARY KEY (definition_id, version)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS wf_tasks (
-                        task_id TEXT PRIMARY KEY,
-                        definition_id TEXT NOT NULL,
-                        definition_version TEXT NOT NULL,
-                        title TEXT NOT NULL,
-                        description TEXT NOT NULL,
-                        capability TEXT NOT NULL CHECK (
-                            capability IN (
-                                'credit_risk', 'accounts_payable', 'lockbox',
-                                'reporting', 'platform'
+            metadata.create_all(self._engine, checkfirst=True)
+            now = self._now()
+            with self._engine.begin() as connection:
+                for role in self.ROLE_SEEDS:
+                    role_id = role[0]
+                    exists = connection.execute(
+                        select(wf_roles_table.c.role_id).where(
+                            wf_roles_table.c.role_id == role_id
+                        )
+                    ).first()
+                    if exists is None:
+                        connection.execute(
+                            wf_roles_table.insert().values(
+                                role_id=role[0],
+                                name=role[1],
+                                description=role[2],
+                                queue_scope=role[3],
+                                authority_effect="none",
+                                decision_authority=0,
+                                created_at=now,
                             )
-                        ),
-                        context_type TEXT NOT NULL,
-                        context_id TEXT NOT NULL,
-                        context_label TEXT NOT NULL,
-                        queue_role_id TEXT NOT NULL,
-                        priority TEXT NOT NULL CHECK (
-                            priority IN ('low', 'medium', 'high', 'critical')
-                        ),
-                        state TEXT NOT NULL CHECK (
-                            state IN (
-                                'open', 'in_progress', 'deferred',
-                                'completed', 'cancelled', 'reopened'
+                        )
+                for module in self.MODULE_SEEDS:
+                    module_id = module[0]
+                    exists = connection.execute(
+                        select(wf_modules_table.c.module_id).where(
+                            wf_modules_table.c.module_id == module_id
+                        )
+                    ).first()
+                    if exists is None:
+                        connection.execute(
+                            wf_modules_table.insert().values(
+                                module_id=module[0],
+                                name=module[1],
+                                description=module[2],
+                                module_group=module[3],
+                                default_access=0,
+                                status="active",
+                                authority_effect="none",
+                                created_at=now,
                             )
-                        ),
-                        due_date TEXT,
-                        created_by_user_id TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        request_sha256 TEXT NOT NULL CHECK (length(request_sha256) = 64),
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        version INTEGER NOT NULL CHECK (version >= 1),
-                        assignment_effect TEXT NOT NULL CHECK (
-                            assignment_effect = 'work_ownership_only'
-                        ),
-                        authority_effect TEXT NOT NULL CHECK (authority_effect = 'none'),
-                        execution_effect TEXT NOT NULL CHECK (execution_effect = 'none'),
-                        UNIQUE (created_by_user_id, idempotency_key),
-                        FOREIGN KEY (definition_id, definition_version)
-                            REFERENCES wf_definitions(definition_id, version),
-                        FOREIGN KEY (queue_role_id) REFERENCES wf_roles(role_id),
-                        FOREIGN KEY (created_by_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_wf_tasks_queue
-                    ON wf_tasks(queue_role_id, state, due_date, updated_at DESC);
-
-                    CREATE INDEX IF NOT EXISTS idx_wf_tasks_context
-                    ON wf_tasks(capability, context_type, context_id);
-
-                    CREATE TABLE IF NOT EXISTS wf_task_assignments (
-                        assignment_event_id TEXT PRIMARY KEY,
-                        task_id TEXT NOT NULL,
-                        assignee_user_id TEXT NOT NULL,
-                        prior_assignee_user_id TEXT,
-                        assigned_by_user_id TEXT NOT NULL,
-                        assignment_type TEXT NOT NULL CHECK (
-                            assignment_type IN ('initial', 'claim', 'reassign')
-                        ),
-                        note TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL UNIQUE,
-                        task_version INTEGER NOT NULL,
-                        created_at TEXT NOT NULL,
-                        authority_effect TEXT NOT NULL CHECK (authority_effect = 'none'),
-                        FOREIGN KEY (task_id) REFERENCES wf_tasks(task_id),
-                        FOREIGN KEY (assignee_user_id) REFERENCES wf_user_accounts(user_id),
-                        FOREIGN KEY (assigned_by_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_wf_assignments_task
-                    ON wf_task_assignments(task_id, created_at DESC, assignment_event_id DESC);
-
-                    CREATE TRIGGER IF NOT EXISTS wf_task_assignments_no_update
-                    BEFORE UPDATE ON wf_task_assignments
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Workflow assignments are append-only.');
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS wf_task_assignments_no_delete
-                    BEFORE DELETE ON wf_task_assignments
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Workflow assignments are append-only.');
-                    END;
-
-                    CREATE TABLE IF NOT EXISTS wf_task_events (
-                        event_id TEXT PRIMARY KEY,
-                        task_id TEXT NOT NULL,
-                        event_type TEXT NOT NULL CHECK (
-                            event_type IN ('task_created', 'task_state_changed')
-                        ),
-                        from_state TEXT,
-                        to_state TEXT NOT NULL,
-                        actor_user_id TEXT NOT NULL,
-                        note TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL UNIQUE,
-                        task_version INTEGER NOT NULL,
-                        created_at TEXT NOT NULL,
-                        FOREIGN KEY (task_id) REFERENCES wf_tasks(task_id),
-                        FOREIGN KEY (actor_user_id) REFERENCES wf_user_accounts(user_id)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_wf_task_events_task
-                    ON wf_task_events(task_id, created_at, event_id);
-
-                    CREATE TRIGGER IF NOT EXISTS wf_task_events_no_update
-                    BEFORE UPDATE ON wf_task_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Workflow task events are append-only.');
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS wf_task_events_no_delete
-                    BEFORE DELETE ON wf_task_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Workflow task events are append-only.');
-                    END;
-
-                    CREATE TABLE IF NOT EXISTS wf_notifications (
-                        notification_id TEXT PRIMARY KEY,
-                        recipient_user_id TEXT NOT NULL,
-                        task_id TEXT,
-                        notification_type TEXT NOT NULL,
-                        title TEXT NOT NULL,
-                        message TEXT NOT NULL,
-                        severity TEXT NOT NULL CHECK (
-                            severity IN ('info', 'success', 'warning', 'critical')
-                        ),
-                        created_at TEXT NOT NULL,
-                        read_at TEXT,
-                        FOREIGN KEY (recipient_user_id) REFERENCES wf_user_accounts(user_id),
-                        FOREIGN KEY (task_id) REFERENCES wf_tasks(task_id)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_wf_notifications_recipient
-                    ON wf_notifications(recipient_user_id, read_at, created_at DESC);
-
-                    CREATE TABLE IF NOT EXISTS wf_audit_events (
-                        audit_id TEXT PRIMARY KEY,
-                        event_type TEXT NOT NULL,
-                        actor_user_id TEXT,
-                        subject_type TEXT NOT NULL,
-                        subject_id TEXT NOT NULL,
-                        correlation_id TEXT NOT NULL,
-                        occurred_at TEXT NOT NULL,
-                        details_json TEXT NOT NULL,
-                        previous_hash TEXT NOT NULL,
-                        record_hash TEXT NOT NULL UNIQUE,
-                        schema_version TEXT NOT NULL CHECK (schema_version = '1.0')
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_wf_audit_subject
-                    ON wf_audit_events(subject_type, subject_id, occurred_at, audit_id);
-
-                    CREATE TRIGGER IF NOT EXISTS wf_audit_events_no_update
-                    BEFORE UPDATE ON wf_audit_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Workflow audit records are append-only.');
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS wf_audit_events_no_delete
-                    BEFORE DELETE ON wf_audit_events
-                    BEGIN
-                        SELECT RAISE(ABORT, 'Workflow audit records are append-only.');
-                    END;
-                    """
-                )
-                now = self._now()
-                account_columns = {
-                    row["name"]
-                    for row in connection.execute(
-                        "PRAGMA table_info(wf_user_accounts)"
-                    ).fetchall()
-                }
-                if "status_version" not in account_columns:
-                    connection.execute(
-                        "ALTER TABLE wf_user_accounts "
-                        "ADD COLUMN status_version INTEGER NOT NULL DEFAULT 1"
+                        )
+                definition_exists = connection.execute(
+                    select(wf_definitions_table.c.definition_id).where(
+                        wf_definitions_table.c.definition_id == self.DEFINITION_ID,
+                        wf_definitions_table.c.version == self.DEFINITION_VERSION,
                     )
-                if "credential_version" not in account_columns:
+                ).first()
+                if definition_exists is None:
                     connection.execute(
-                        "ALTER TABLE wf_user_accounts "
-                        "ADD COLUMN credential_version INTEGER NOT NULL DEFAULT 1"
+                        wf_definitions_table.insert().values(
+                            definition_id=self.DEFINITION_ID,
+                            version=self.DEFINITION_VERSION,
+                            title="Governed work follow-up",
+                            description=(
+                                "Coordinates accountable follow-up work without "
+                                "making a business decision or executing a "
+                                "source-system action."
+                            ),
+                            states_json=self._canonical_json(self.STATES),
+                            transitions_json=self._canonical_json(self.TRANSITIONS),
+                            status="active",
+                            authority_effect="none",
+                            created_at=now,
+                        )
                     )
-                connection.executemany(
-                    """
-                    INSERT OR IGNORE INTO wf_roles(
-                        role_id, name, description, queue_scope,
-                        authority_effect, decision_authority, created_at
-                    ) VALUES (?, ?, ?, ?, 'none', 0, ?)
-                    """,
-                    [(*role, now) for role in self.ROLE_SEEDS],
-                )
-                connection.executemany(
-                    """
-                    INSERT OR IGNORE INTO wf_modules(
-                        module_id, name, description, module_group,
-                        default_access, status, authority_effect, created_at
-                    ) VALUES (?, ?, ?, ?, 0, 'active', 'none', ?)
-                    """,
-                    [(*module, now) for module in self.MODULE_SEEDS],
-                )
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO wf_definitions(
-                        definition_id, version, title, description,
-                        states_json, transitions_json, status,
-                        authority_effect, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'active', 'none', ?)
-                    """,
-                    (
-                        self.DEFINITION_ID,
-                        self.DEFINITION_VERSION,
-                        "Governed work follow-up",
-                        "Coordinates accountable follow-up work without making a business decision or executing a source-system action.",
-                        self._canonical_json(self.STATES),
-                        self._canonical_json(self.TRANSITIONS),
-                        now,
-                    ),
-                )
+
+                # Backfills an access profile/module grant for any account
+                # that predates access-control tracking (e.g. migrated from
+                # an older SQLite install). Every code path that creates a
+                # user going forward inserts its access profile inline, so
+                # this is normally a no-op on a fresh schema.
                 legacy_users = connection.execute(
-                    """
-                    SELECT u.user_id
-                    FROM wf_user_accounts u
-                    LEFT JOIN wf_access_profiles p ON p.user_id = u.user_id
-                    WHERE p.user_id IS NULL
-                    ORDER BY u.created_at, u.user_id
-                    """
-                ).fetchall()
+                    select(wf_user_accounts_table.c.user_id, wf_user_accounts_table.c.created_at)
+                    .select_from(
+                        wf_user_accounts_table.outerjoin(
+                            wf_access_profiles_table,
+                            wf_access_profiles_table.c.user_id
+                            == wf_user_accounts_table.c.user_id,
+                        )
+                    )
+                    .where(wf_access_profiles_table.c.user_id.is_(None))
+                    .order_by(
+                        wf_user_accounts_table.c.created_at,
+                        wf_user_accounts_table.c.user_id,
+                    )
+                ).all()
                 for legacy_user in legacy_users:
-                    user_id = legacy_user["user_id"]
+                    user_id = legacy_user.user_id
                     role_ids = {
-                        row["role_id"]
+                        row.role_id
                         for row in connection.execute(
-                            """
-                            SELECT role_id FROM wf_role_assignments
-                            WHERE user_id = ? AND assignment_status = 'active'
-                              AND effective_to IS NULL
-                            """,
-                            (user_id,),
-                        ).fetchall()
+                            select(wf_role_assignments_table.c.role_id).where(
+                                wf_role_assignments_table.c.user_id == user_id,
+                                wf_role_assignments_table.c.assignment_status
+                                == "active",
+                                wf_role_assignments_table.c.effective_to.is_(None),
+                            )
+                        ).all()
                     }
                     if "workflow_coordinator" in role_ids:
                         granted_modules = [item[0] for item in self.MODULE_SEEDS]
@@ -753,37 +391,36 @@ class WorkflowFoundationRepository:
                             )
                         granted_modules = sorted(granted)
                     connection.execute(
-                        """
-                        INSERT INTO wf_access_profiles(
-                            user_id, access_version, updated_at, updated_by_user_id
-                        ) VALUES (?, 1, ?, NULL)
-                        """,
-                        (user_id, now),
+                        wf_access_profiles_table.insert().values(
+                            user_id=user_id,
+                            access_version=1,
+                            updated_at=now,
+                            updated_by_user_id=None,
+                        )
                     )
-                    connection.executemany(
-                        """
-                        INSERT INTO wf_user_module_access(
-                            user_id, module_id, allowed, updated_at,
-                            updated_by_user_id
-                        ) VALUES (?, ?, 1, ?, NULL)
-                        """,
-                        [(user_id, module_id, now) for module_id in granted_modules],
-                    )
+                    for module_id in granted_modules:
+                        connection.execute(
+                            wf_user_module_access_table.insert().values(
+                                user_id=user_id,
+                                module_id=module_id,
+                                allowed=1,
+                                updated_at=now,
+                                updated_by_user_id=None,
+                            )
+                        )
                     connection.execute(
-                        """
-                        INSERT INTO wf_module_access_events(
-                            access_event_id, user_id, actor_user_id,
-                            before_module_ids_json, after_module_ids_json,
-                            access_version, reason, created_at
-                        ) VALUES (?, ?, NULL, '[]', ?, 1, ?, ?)
-                        """,
-                        (
-                            self._id("ACE"),
-                            user_id,
-                            self._canonical_json(granted_modules),
-                            "compatibility_migration_from_pre_access_control",
-                            now,
-                        ),
+                        wf_module_access_events_table.insert().values(
+                            access_event_id=self._id("ACE"),
+                            user_id=user_id,
+                            actor_user_id=None,
+                            before_module_ids_json="[]",
+                            after_module_ids_json=self._canonical_json(
+                                granted_modules
+                            ),
+                            access_version=1,
+                            reason="compatibility_migration_from_pre_access_control",
+                            created_at=now,
+                        )
                     )
                     self._append_audit(
                         connection,
@@ -800,9 +437,6 @@ class WorkflowFoundationRepository:
                         },
                         occurred_at=now,
                     )
-                connection.commit()
-            finally:
-                connection.close()
 
     @staticmethod
     def _canonical_json(value: Any) -> str:
@@ -810,7 +444,7 @@ class WorkflowFoundationRepository:
 
     def _append_audit(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         *,
         event_type: str,
         actor_user_id: str | None,
@@ -823,9 +457,11 @@ class WorkflowFoundationRepository:
         audit_id = self._id("AUD")
         timestamp = occurred_at or self._now()
         prior = connection.execute(
-            "SELECT record_hash FROM wf_audit_events ORDER BY rowid DESC LIMIT 1"
-        ).fetchone()
-        previous_hash = prior["record_hash"] if prior else "0" * 64
+            select(wf_audit_events_table.c.record_hash)
+            .order_by(wf_audit_events_table.c.sequence.desc())
+            .limit(1)
+        ).first()
+        previous_hash = prior.record_hash if prior else "0" * 64
         basis = {
             "audit_id": audit_id,
             "event_type": event_type,
@@ -842,39 +478,28 @@ class WorkflowFoundationRepository:
             self._canonical_json(basis).encode("utf-8")
         ).hexdigest()
         connection.execute(
-            """
-            INSERT INTO wf_audit_events(
-                audit_id, event_type, actor_user_id, subject_type,
-                subject_id, correlation_id, occurred_at, details_json,
-                previous_hash, record_hash, schema_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '1.0')
-            """,
-            (
-                audit_id,
-                event_type,
-                actor_user_id,
-                subject_type,
-                subject_id,
-                correlation_id,
-                timestamp,
-                self._canonical_json(details),
-                previous_hash,
-                record_hash,
-            ),
+            wf_audit_events_table.insert().values(
+                audit_id=audit_id,
+                event_type=event_type,
+                actor_user_id=actor_user_id,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                correlation_id=correlation_id,
+                occurred_at=timestamp,
+                details_json=self._canonical_json(details),
+                previous_hash=previous_hash,
+                record_hash=record_hash,
+                schema_version="1.0",
+            )
         )
         return audit_id
 
     def bootstrap_status(self) -> dict[str, Any]:
-        connection = self._connection()
-        try:
-            count = int(
-                connection.execute(
-                    "SELECT COUNT(*) AS count FROM wf_user_accounts"
-                ).fetchone()["count"]
-            )
+        with self._engine.connect() as connection:
+            count = connection.execute(
+                select(func.count()).select_from(wf_user_accounts_table)
+            ).scalar_one()
             return {"bootstrap_required": count == 0, "account_count": count}
-        finally:
-            connection.close()
 
     def bootstrap_user(
         self,
@@ -884,80 +509,85 @@ class WorkflowFoundationRepository:
         password_salt: str,
         password_hash: str,
     ) -> str:
-        connection = self._connection()
         now = self._now()
         person_id = self._id("PER")
         user_id = self._id("USR")
         role_assignment_id = self._id("RLA")
         correlation_id = self._id("COR")
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._engine.begin() as connection:
             existing = connection.execute(
-                "SELECT COUNT(*) AS count FROM wf_user_accounts"
-            ).fetchone()["count"]
+                select(func.count())
+                .select_from(wf_user_accounts_table)
+                .with_for_update()
+            ).scalar_one()
             if existing:
                 raise WorkflowFoundationConflict(
                     "The local identity foundation has already been bootstrapped."
                 )
             connection.execute(
-                """
-                INSERT INTO wf_persons(
-                    person_id, display_name, status, created_at, created_by_user_id
-                ) VALUES (?, ?, 'active', ?, NULL)
-                """,
-                (person_id, display_name, now),
+                wf_persons_table.insert().values(
+                    person_id=person_id,
+                    display_name=display_name,
+                    status="active",
+                    created_at=now,
+                    created_by_user_id=None,
+                )
             )
             connection.execute(
-                """
-                INSERT INTO wf_user_accounts(
-                    user_id, person_id, username, password_salt, password_hash,
-                    password_algorithm, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'scrypt-n16384-r8-p1-v1', 'active', ?, ?)
-                """,
-                (user_id, person_id, username, password_salt, password_hash, now, now),
+                wf_user_accounts_table.insert().values(
+                    user_id=user_id,
+                    person_id=person_id,
+                    username=username,
+                    password_salt=password_salt,
+                    password_hash=password_hash,
+                    password_algorithm="scrypt-n16384-r8-p1-v1",
+                    status="active",
+                    created_at=now,
+                    updated_at=now,
+                )
             )
             connection.execute(
-                """
-                INSERT INTO wf_role_assignments(
-                    role_assignment_id, user_id, role_id, effective_from,
-                    effective_to, assignment_status, assigned_by_user_id, created_at
-                ) VALUES (?, ?, 'workflow_coordinator', ?, NULL, 'active', ?, ?)
-                """,
-                (role_assignment_id, user_id, now, user_id, now),
+                wf_role_assignments_table.insert().values(
+                    role_assignment_id=role_assignment_id,
+                    user_id=user_id,
+                    role_id="workflow_coordinator",
+                    effective_from=now,
+                    effective_to=None,
+                    assignment_status="active",
+                    assigned_by_user_id=user_id,
+                    created_at=now,
+                )
             )
             module_ids = [item[0] for item in self.MODULE_SEEDS]
             connection.execute(
-                """
-                INSERT INTO wf_access_profiles(
-                    user_id, access_version, updated_at, updated_by_user_id
-                ) VALUES (?, 1, ?, ?)
-                """,
-                (user_id, now, user_id),
+                wf_access_profiles_table.insert().values(
+                    user_id=user_id,
+                    access_version=1,
+                    updated_at=now,
+                    updated_by_user_id=user_id,
+                )
             )
-            connection.executemany(
-                """
-                INSERT INTO wf_user_module_access(
-                    user_id, module_id, allowed, updated_at, updated_by_user_id
-                ) VALUES (?, ?, 1, ?, ?)
-                """,
-                [(user_id, module_id, now, user_id) for module_id in module_ids],
-            )
+            for module_id in module_ids:
+                connection.execute(
+                    wf_user_module_access_table.insert().values(
+                        user_id=user_id,
+                        module_id=module_id,
+                        allowed=1,
+                        updated_at=now,
+                        updated_by_user_id=user_id,
+                    )
+                )
             connection.execute(
-                """
-                INSERT INTO wf_module_access_events(
-                    access_event_id, user_id, actor_user_id,
-                    before_module_ids_json, after_module_ids_json,
-                    access_version, reason, created_at
-                ) VALUES (?, ?, ?, '[]', ?, 1, ?, ?)
-                """,
-                (
-                    self._id("ACE"),
-                    user_id,
-                    user_id,
-                    self._canonical_json(module_ids),
-                    "initial_bootstrap_access",
-                    now,
-                ),
+                wf_module_access_events_table.insert().values(
+                    access_event_id=self._id("ACE"),
+                    user_id=user_id,
+                    actor_user_id=user_id,
+                    before_module_ids_json="[]",
+                    after_module_ids_json=self._canonical_json(module_ids),
+                    access_version=1,
+                    reason="initial_bootstrap_access",
+                    created_at=now,
+                )
             )
             self._append_audit(
                 connection,
@@ -976,29 +606,20 @@ class WorkflowFoundationRepository:
                 },
                 occurred_at=now,
             )
-            connection.commit()
-            return user_id
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        return user_id
 
     def get_account_credentials(self, username: str) -> dict[str, Any] | None:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT user_id, password_salt, password_hash,
-                       password_algorithm, status
-                FROM wf_user_accounts
-                WHERE username = ? COLLATE NOCASE
-                """,
-                (username,),
-            ).fetchone()
+                select(
+                    wf_user_accounts_table.c.user_id,
+                    wf_user_accounts_table.c.password_salt,
+                    wf_user_accounts_table.c.password_hash,
+                    wf_user_accounts_table.c.password_algorithm,
+                    wf_user_accounts_table.c.status,
+                ).where(func.lower(wf_user_accounts_table.c.username) == username.lower())
+            ).mappings().first()
             return dict(row) if row else None
-        finally:
-            connection.close()
 
     def create_session(
         self,
@@ -1007,95 +628,99 @@ class WorkflowFoundationRepository:
         token_hash: str,
         expires_at: str,
     ) -> str:
-        connection = self._connection()
         session_id = self._id("SES")
         now = self._now()
         correlation_id = self._id("COR")
-        try:
-            with connection:
-                connection.execute(
-                    """
-                    INSERT INTO wf_sessions(
-                        session_id, user_id, token_hash, issued_at,
-                        expires_at, revoked_at, last_seen_at
-                    ) VALUES (?, ?, ?, ?, ?, NULL, ?)
-                    """,
-                    (session_id, user_id, token_hash, now, expires_at, now),
+        with self._engine.begin() as connection:
+            connection.execute(
+                wf_sessions_table.insert().values(
+                    session_id=session_id,
+                    user_id=user_id,
+                    token_hash=token_hash,
+                    issued_at=now,
+                    expires_at=expires_at,
+                    revoked_at=None,
+                    last_seen_at=now,
                 )
-                self._append_audit(
-                    connection,
-                    event_type="identity.session_started",
-                    actor_user_id=user_id,
-                    subject_type="session",
-                    subject_id=session_id,
-                    correlation_id=correlation_id,
-                    details={"expires_at": expires_at, "authentication_assurance": "local_credential"},
-                    occurred_at=now,
-                )
-            return session_id
-        finally:
-            connection.close()
+            )
+            self._append_audit(
+                connection,
+                event_type="identity.session_started",
+                actor_user_id=user_id,
+                subject_type="session",
+                subject_id=session_id,
+                correlation_id=correlation_id,
+                details={
+                    "expires_at": expires_at,
+                    "authentication_assurance": "local_credential",
+                },
+                occurred_at=now,
+            )
+        return session_id
 
     def get_session(self, token_hash: str) -> dict[str, Any] | None:
-        connection = self._connection()
         now = self._now()
-        try:
+        with self._engine.begin() as connection:
             row = connection.execute(
-                """
-                SELECT s.session_id, s.user_id, s.expires_at
-                FROM wf_sessions s
-                JOIN wf_user_accounts u ON u.user_id = s.user_id
-                WHERE s.token_hash = ?
-                  AND s.revoked_at IS NULL
-                  AND s.expires_at > ?
-                  AND u.status = 'active'
-                """,
-                (token_hash, now),
-            ).fetchone()
+                select(
+                    wf_sessions_table.c.session_id,
+                    wf_sessions_table.c.user_id,
+                    wf_sessions_table.c.expires_at,
+                )
+                .select_from(
+                    wf_sessions_table.join(
+                        wf_user_accounts_table,
+                        wf_user_accounts_table.c.user_id == wf_sessions_table.c.user_id,
+                    )
+                )
+                .where(
+                    wf_sessions_table.c.token_hash == token_hash,
+                    wf_sessions_table.c.revoked_at.is_(None),
+                    wf_sessions_table.c.expires_at > now,
+                    wf_user_accounts_table.c.status == "active",
+                )
+            ).first()
             if row is None:
                 return None
             connection.execute(
-                "UPDATE wf_sessions SET last_seen_at = ? WHERE session_id = ?",
-                (now, row["session_id"]),
+                wf_sessions_table.update()
+                .where(wf_sessions_table.c.session_id == row.session_id)
+                .values(last_seen_at=now)
             )
-            connection.commit()
             return {
-                "session_id": row["session_id"],
-                "expires_at": row["expires_at"],
-                "user": self._user_summary(connection, row["user_id"]),
+                "session_id": row.session_id,
+                "expires_at": row.expires_at,
+                "user": self._user_summary(connection, row.user_id),
             }
-        finally:
-            connection.close()
 
     def revoke_session(self, token_hash: str, actor_user_id: str) -> None:
-        connection = self._connection()
         now = self._now()
-        try:
-            with connection:
-                row = connection.execute(
-                    "SELECT session_id FROM wf_sessions WHERE token_hash = ? AND revoked_at IS NULL",
-                    (token_hash,),
-                ).fetchone()
-                if row is None:
-                    return
-                connection.execute(
-                    "UPDATE wf_sessions SET revoked_at = ? WHERE session_id = ?",
-                    (now, row["session_id"]),
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                select(wf_sessions_table.c.session_id).where(
+                    wf_sessions_table.c.token_hash == token_hash,
+                    wf_sessions_table.c.revoked_at.is_(None),
                 )
-                self._append_audit(
-                    connection,
-                    event_type="identity.session_ended",
-                    actor_user_id=actor_user_id,
-                    subject_type="session",
-                    subject_id=row["session_id"],
-                    correlation_id=self._id("COR"),
-                    details={"reason": "operator_sign_out"},
-                    occurred_at=now,
-                )
-        finally:
-            connection.close()
+            ).first()
+            if row is None:
+                return
+            connection.execute(
+                wf_sessions_table.update()
+                .where(wf_sessions_table.c.session_id == row.session_id)
+                .values(revoked_at=now)
+            )
+            self._append_audit(
+                connection,
+                event_type="identity.session_ended",
+                actor_user_id=actor_user_id,
+                subject_type="session",
+                subject_id=row.session_id,
+                correlation_id=self._id("COR"),
+                details={"reason": "operator_sign_out"},
+                occurred_at=now,
+            )
 
-    def _role_summary(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _role_summary(self, row: Any) -> dict[str, Any]:
         return {
             "role_id": row["role_id"],
             "name": row["name"],
@@ -1107,35 +732,46 @@ class WorkflowFoundationRepository:
 
     def _user_summary(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         user_id: str,
     ) -> dict[str, Any]:
         row = connection.execute(
-            """
-            SELECT u.user_id, u.username, u.status, u.created_at,
-                   p.person_id, p.display_name
-            FROM wf_user_accounts u
-            JOIN wf_persons p ON p.person_id = u.person_id
-            WHERE u.user_id = ?
-            """,
-            (user_id,),
-        ).fetchone()
+            select(
+                wf_user_accounts_table.c.user_id,
+                wf_user_accounts_table.c.username,
+                wf_user_accounts_table.c.status,
+                wf_user_accounts_table.c.created_at,
+                wf_persons_table.c.person_id,
+                wf_persons_table.c.display_name,
+            ).select_from(
+                wf_user_accounts_table.join(
+                    wf_persons_table,
+                    wf_persons_table.c.person_id == wf_user_accounts_table.c.person_id,
+                )
+            ).where(wf_user_accounts_table.c.user_id == user_id)
+        ).mappings().first()
         if row is None:
             raise WorkflowFoundationNotFound(f"Workflow user {user_id} was not found.")
         now = self._now()
         roles = connection.execute(
-            """
-            SELECT r.*
-            FROM wf_role_assignments a
-            JOIN wf_roles r ON r.role_id = a.role_id
-            WHERE a.user_id = ?
-              AND a.assignment_status = 'active'
-              AND a.effective_from <= ?
-              AND (a.effective_to IS NULL OR a.effective_to > ?)
-            ORDER BY r.name, r.role_id
-            """,
-            (user_id, now, now),
-        ).fetchall()
+            select(wf_roles_table)
+            .select_from(
+                wf_role_assignments_table.join(
+                    wf_roles_table,
+                    wf_roles_table.c.role_id == wf_role_assignments_table.c.role_id,
+                )
+            )
+            .where(
+                wf_role_assignments_table.c.user_id == user_id,
+                wf_role_assignments_table.c.assignment_status == "active",
+                wf_role_assignments_table.c.effective_from <= now,
+                (
+                    wf_role_assignments_table.c.effective_to.is_(None)
+                    | (wf_role_assignments_table.c.effective_to > now)
+                ),
+            )
+            .order_by(wf_roles_table.c.name, wf_roles_table.c.role_id)
+        ).mappings().all()
         return {
             "person_id": row["person_id"],
             "user_id": row["user_id"],
@@ -1149,21 +785,17 @@ class WorkflowFoundationRepository:
         }
 
     def list_users(self) -> list[dict[str, Any]]:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                "SELECT user_id FROM wf_user_accounts ORDER BY username COLLATE NOCASE"
-            ).fetchall()
-            return [self._user_summary(connection, row["user_id"]) for row in rows]
-        finally:
-            connection.close()
+                select(wf_user_accounts_table.c.user_id).order_by(
+                    func.lower(wf_user_accounts_table.c.username)
+                )
+            ).all()
+            return [self._user_summary(connection, row.user_id) for row in rows]
 
     def get_user(self, user_id: str) -> dict[str, Any]:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             return self._user_summary(connection, user_id)
-        finally:
-            connection.close()
 
     def create_user(
         self,
@@ -1176,78 +808,79 @@ class WorkflowFoundationRepository:
         module_ids: list[str],
         actor_user_id: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
         user_id = self._id("USR")
         person_id = self._id("PER")
         correlation_id = self._id("COR")
         try:
-            with connection:
+            with self._engine.begin() as connection:
                 connection.execute(
-                    """
-                    INSERT INTO wf_persons(
-                        person_id, display_name, status, created_at, created_by_user_id
-                    ) VALUES (?, ?, 'active', ?, ?)
-                    """,
-                    (person_id, display_name, now, actor_user_id),
+                    wf_persons_table.insert().values(
+                        person_id=person_id,
+                        display_name=display_name,
+                        status="active",
+                        created_at=now,
+                        created_by_user_id=actor_user_id,
+                    )
                 )
                 connection.execute(
-                    """
-                    INSERT INTO wf_user_accounts(
-                        user_id, person_id, username, password_salt, password_hash,
-                        password_algorithm, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, 'scrypt-n16384-r8-p1-v1', 'active', ?, ?)
-                    """,
-                    (user_id, person_id, username, password_salt, password_hash, now, now),
+                    wf_user_accounts_table.insert().values(
+                        user_id=user_id,
+                        person_id=person_id,
+                        username=username,
+                        password_salt=password_salt,
+                        password_hash=password_hash,
+                        password_algorithm="scrypt-n16384-r8-p1-v1",
+                        status="active",
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
                 for role_id in sorted(set(role_ids)):
                     connection.execute(
-                        """
-                        INSERT INTO wf_role_assignments(
-                            role_assignment_id, user_id, role_id,
-                            effective_from, effective_to, assignment_status,
-                            assigned_by_user_id, created_at
-                        ) VALUES (?, ?, ?, ?, NULL, 'active', ?, ?)
-                        """,
-                        (self._id("RLA"), user_id, role_id, now, actor_user_id, now),
+                        wf_role_assignments_table.insert().values(
+                            role_assignment_id=self._id("RLA"),
+                            user_id=user_id,
+                            role_id=role_id,
+                            effective_from=now,
+                            effective_to=None,
+                            assignment_status="active",
+                            assigned_by_user_id=actor_user_id,
+                            created_at=now,
+                        )
                     )
                 configured_modules = sorted(set(module_ids))
                 connection.execute(
-                    """
-                    INSERT INTO wf_access_profiles(
-                        user_id, access_version, updated_at, updated_by_user_id
-                    ) VALUES (?, 1, ?, ?)
-                    """,
-                    (user_id, now, actor_user_id),
+                    wf_access_profiles_table.insert().values(
+                        user_id=user_id,
+                        access_version=1,
+                        updated_at=now,
+                        updated_by_user_id=actor_user_id,
+                    )
                 )
-                connection.executemany(
-                    """
-                    INSERT INTO wf_user_module_access(
-                        user_id, module_id, allowed, updated_at,
-                        updated_by_user_id
-                    ) VALUES (?, ?, 1, ?, ?)
-                    """,
-                    [
-                        (user_id, module_id, now, actor_user_id)
-                        for module_id in configured_modules
-                    ],
-                )
+                for module_id in configured_modules:
+                    connection.execute(
+                        wf_user_module_access_table.insert().values(
+                            user_id=user_id,
+                            module_id=module_id,
+                            allowed=1,
+                            updated_at=now,
+                            updated_by_user_id=actor_user_id,
+                        )
+                    )
                 connection.execute(
-                    """
-                    INSERT INTO wf_module_access_events(
-                        access_event_id, user_id, actor_user_id,
-                        before_module_ids_json, after_module_ids_json,
-                        access_version, reason, created_at
-                    ) VALUES (?, ?, ?, '[]', ?, 1, ?, ?)
-                    """,
-                    (
-                        self._id("ACE"),
-                        user_id,
-                        actor_user_id,
-                        self._canonical_json(configured_modules),
-                        "direct_local_account_creation",
-                        now,
-                    ),
+                    wf_module_access_events_table.insert().values(
+                        access_event_id=self._id("ACE"),
+                        user_id=user_id,
+                        actor_user_id=actor_user_id,
+                        before_module_ids_json="[]",
+                        after_module_ids_json=self._canonical_json(
+                            configured_modules
+                        ),
+                        access_version=1,
+                        reason="direct_local_account_creation",
+                        created_at=now,
+                    )
                 )
                 self._append_audit(
                     connection,
@@ -1267,14 +900,12 @@ class WorkflowFoundationRepository:
                     occurred_at=now,
                 )
             return self.get_user(user_id)
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise WorkflowFoundationConflict(
                 "That username already exists or a requested workflow role is invalid."
             ) from exc
-        finally:
-            connection.close()
 
-    def _module_summary(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _module_summary(self, row: Any) -> dict[str, Any]:
         return {
             "module_id": row["module_id"],
             "name": row["name"],
@@ -1286,57 +917,64 @@ class WorkflowFoundationRepository:
         }
 
     def list_modules(self) -> list[dict[str, Any]]:
-        connection = self._connection()
-        try:
+        group_order = case(
+            (wf_modules_table.c.module_group == "Overview", 1),
+            (wf_modules_table.c.module_group == "Workspaces", 2),
+            (wf_modules_table.c.module_group == "Tools", 3),
+            else_=4,
+        )
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT * FROM wf_modules
-                WHERE status = 'active'
-                ORDER BY CASE module_group
-                    WHEN 'Overview' THEN 1
-                    WHEN 'Workspaces' THEN 2
-                    WHEN 'Tools' THEN 3
-                    ELSE 4 END,
-                    name, module_id
-                """
-            ).fetchall()
+                select(wf_modules_table)
+                .where(wf_modules_table.c.status == "active")
+                .order_by(
+                    group_order, wf_modules_table.c.name, wf_modules_table.c.module_id
+                )
+            ).mappings().all()
             return [self._module_summary(row) for row in rows]
-        finally:
-            connection.close()
 
     def _configured_module_ids(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         user_id: str,
     ) -> list[str]:
-        return [
-            row["module_id"]
-            for row in connection.execute(
-                """
-                SELECT a.module_id
-                FROM wf_user_module_access a
-                JOIN wf_modules m ON m.module_id = a.module_id
-                WHERE a.user_id = ? AND a.allowed = 1 AND m.status = 'active'
-                ORDER BY a.module_id
-                """,
-                (user_id,),
-            ).fetchall()
-        ]
+        rows = connection.execute(
+            select(wf_user_module_access_table.c.module_id)
+            .select_from(
+                wf_user_module_access_table.join(
+                    wf_modules_table,
+                    wf_modules_table.c.module_id
+                    == wf_user_module_access_table.c.module_id,
+                )
+            )
+            .where(
+                wf_user_module_access_table.c.user_id == user_id,
+                wf_user_module_access_table.c.allowed == 1,
+                wf_modules_table.c.status == "active",
+            )
+            .order_by(wf_user_module_access_table.c.module_id)
+        ).all()
+        return [row.module_id for row in rows]
 
     def _permission_summary(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         user_id: str,
     ) -> dict[str, Any]:
         row = connection.execute(
-            """
-            SELECT u.status, p.access_version
-            FROM wf_user_accounts u
-            JOIN wf_access_profiles p ON p.user_id = u.user_id
-            WHERE u.user_id = ?
-            """,
-            (user_id,),
-        ).fetchone()
+            select(
+                wf_user_accounts_table.c.status,
+                wf_access_profiles_table.c.access_version,
+            )
+            .select_from(
+                wf_user_accounts_table.join(
+                    wf_access_profiles_table,
+                    wf_access_profiles_table.c.user_id
+                    == wf_user_accounts_table.c.user_id,
+                )
+            )
+            .where(wf_user_accounts_table.c.user_id == user_id)
+        ).mappings().first()
         if row is None:
             raise WorkflowFoundationNotFound(
                 f"Workflow user {user_id} or its access profile was not found."
@@ -1351,23 +989,20 @@ class WorkflowFoundationRepository:
         }
 
     def get_permissions(self, user_id: str) -> dict[str, Any]:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             return self._permission_summary(connection, user_id)
-        finally:
-            connection.close()
 
     def _security_user_summary(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         user_id: str,
     ) -> dict[str, Any]:
         status_row = connection.execute(
-            """
-            SELECT status_version, credential_version FROM wf_user_accounts WHERE user_id = ?
-            """,
-            (user_id,),
-        ).fetchone()
+            select(
+                wf_user_accounts_table.c.status_version,
+                wf_user_accounts_table.c.credential_version,
+            ).where(wf_user_accounts_table.c.user_id == user_id)
+        ).mappings().first()
         if status_row is None:
             raise WorkflowFoundationNotFound(f"Workflow user {user_id} was not found.")
         permission = self._permission_summary(connection, user_id)
@@ -1382,24 +1017,20 @@ class WorkflowFoundationRepository:
         }
 
     def list_security_users(self) -> list[dict[str, Any]]:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                "SELECT user_id FROM wf_user_accounts ORDER BY username COLLATE NOCASE"
-            ).fetchall()
+                select(wf_user_accounts_table.c.user_id).order_by(
+                    func.lower(wf_user_accounts_table.c.username)
+                )
+            ).all()
             return [
-                self._security_user_summary(connection, row["user_id"])
+                self._security_user_summary(connection, row.user_id)
                 for row in rows
             ]
-        finally:
-            connection.close()
 
     def get_security_user(self, user_id: str) -> dict[str, Any]:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             return self._security_user_summary(connection, user_id)
-        finally:
-            connection.close()
 
     def replace_module_access(
         self,
@@ -1409,28 +1040,29 @@ class WorkflowFoundationRepository:
         expected_version: int,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
         correlation_id = self._id("COR")
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._engine.begin() as connection:
             profile = connection.execute(
-                "SELECT access_version FROM wf_access_profiles WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
+                select(wf_access_profiles_table.c.access_version)
+                .where(wf_access_profiles_table.c.user_id == user_id)
+                .with_for_update()
+            ).first()
             if profile is None:
                 raise WorkflowFoundationNotFound(
                     f"Workflow user {user_id} or its access profile was not found."
                 )
-            if profile["access_version"] != expected_version:
+            if profile.access_version != expected_version:
                 raise WorkflowFoundationConflict(
                     "The module-access profile changed. Refresh before saving access."
                 )
             valid_modules = {
-                row["module_id"]
+                row.module_id
                 for row in connection.execute(
-                    "SELECT module_id FROM wf_modules WHERE status = 'active'"
-                ).fetchall()
+                    select(wf_modules_table.c.module_id).where(
+                        wf_modules_table.c.status == "active"
+                    )
+                ).all()
             }
             requested = sorted(set(module_ids))
             unknown = sorted(set(requested) - valid_modules)
@@ -1440,8 +1072,7 @@ class WorkflowFoundationRepository:
                 )
             before = self._configured_module_ids(connection, user_id)
             if before == requested:
-                connection.commit()
-                return self.get_security_user(user_id)
+                return self._security_user_summary(connection, user_id)
             if (
                 "security_administration" in before
                 and "security_administration" not in requested
@@ -1456,52 +1087,59 @@ class WorkflowFoundationRepository:
                     "Security & Access module access."
                 )
             next_version = expected_version + 1
+            existing_module_ids = {
+                row.module_id
+                for row in connection.execute(
+                    select(wf_user_module_access_table.c.module_id).where(
+                        wf_user_module_access_table.c.user_id == user_id
+                    )
+                ).all()
+            }
             for module_id in sorted(valid_modules):
-                connection.execute(
-                    """
-                    INSERT INTO wf_user_module_access(
-                        user_id, module_id, allowed, updated_at,
-                        updated_by_user_id
-                    ) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, module_id) DO UPDATE SET
-                        allowed = excluded.allowed,
-                        updated_at = excluded.updated_at,
-                        updated_by_user_id = excluded.updated_by_user_id
-                    """,
-                    (
-                        user_id,
-                        module_id,
-                        1 if module_id in requested else 0,
-                        now,
-                        actor_user_id,
-                    ),
-                )
+                allowed = 1 if module_id in requested else 0
+                if module_id in existing_module_ids:
+                    connection.execute(
+                        wf_user_module_access_table.update()
+                        .where(
+                            wf_user_module_access_table.c.user_id == user_id,
+                            wf_user_module_access_table.c.module_id == module_id,
+                        )
+                        .values(
+                            allowed=allowed,
+                            updated_at=now,
+                            updated_by_user_id=actor_user_id,
+                        )
+                    )
+                else:
+                    connection.execute(
+                        wf_user_module_access_table.insert().values(
+                            user_id=user_id,
+                            module_id=module_id,
+                            allowed=allowed,
+                            updated_at=now,
+                            updated_by_user_id=actor_user_id,
+                        )
+                    )
             connection.execute(
-                """
-                UPDATE wf_access_profiles
-                SET access_version = ?, updated_at = ?, updated_by_user_id = ?
-                WHERE user_id = ?
-                """,
-                (next_version, now, actor_user_id, user_id),
+                wf_access_profiles_table.update()
+                .where(wf_access_profiles_table.c.user_id == user_id)
+                .values(
+                    access_version=next_version,
+                    updated_at=now,
+                    updated_by_user_id=actor_user_id,
+                )
             )
             connection.execute(
-                """
-                INSERT INTO wf_module_access_events(
-                    access_event_id, user_id, actor_user_id,
-                    before_module_ids_json, after_module_ids_json,
-                    access_version, reason, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    self._id("ACE"),
-                    user_id,
-                    actor_user_id,
-                    self._canonical_json(before),
-                    self._canonical_json(requested),
-                    next_version,
-                    "coordinator_module_access_replacement",
-                    now,
-                ),
+                wf_module_access_events_table.insert().values(
+                    access_event_id=self._id("ACE"),
+                    user_id=user_id,
+                    actor_user_id=actor_user_id,
+                    before_module_ids_json=self._canonical_json(before),
+                    after_module_ids_json=self._canonical_json(requested),
+                    access_version=next_version,
+                    reason="coordinator_module_access_replacement",
+                    created_at=now,
+                )
             )
             self._append_audit(
                 connection,
@@ -1519,78 +1157,77 @@ class WorkflowFoundationRepository:
                 },
                 occurred_at=now,
             )
-            connection.commit()
-            return self.get_security_user(user_id)
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+            return self._security_user_summary(connection, user_id)
 
     def _is_workflow_coordinator(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         user_id: str,
     ) -> bool:
         now = self._now()
         return connection.execute(
-            """
-            SELECT 1
-            FROM wf_role_assignments
-            WHERE user_id = ?
-              AND role_id = 'workflow_coordinator'
-              AND assignment_status = 'active'
-              AND effective_from <= ?
-              AND (effective_to IS NULL OR effective_to > ?)
-            LIMIT 1
-            """,
-            (user_id, now, now),
-        ).fetchone() is not None
+            select(wf_role_assignments_table.c.role_assignment_id)
+            .where(
+                wf_role_assignments_table.c.user_id == user_id,
+                wf_role_assignments_table.c.role_id == "workflow_coordinator",
+                wf_role_assignments_table.c.assignment_status == "active",
+                wf_role_assignments_table.c.effective_from <= now,
+                (
+                    wf_role_assignments_table.c.effective_to.is_(None)
+                    | (wf_role_assignments_table.c.effective_to > now)
+                ),
+            )
+            .limit(1)
+        ).first() is not None
 
     def _active_security_coordinator_count(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         *,
         excluding_user_id: str | None = None,
     ) -> int:
         now = self._now()
-        values: list[Any] = [now, now]
-        exclusion = ""
+        conditions = [
+            wf_user_accounts_table.c.status == "active",
+            wf_role_assignments_table.c.role_id == "workflow_coordinator",
+            wf_role_assignments_table.c.assignment_status == "active",
+            wf_role_assignments_table.c.effective_from <= now,
+            (
+                wf_role_assignments_table.c.effective_to.is_(None)
+                | (wf_role_assignments_table.c.effective_to > now)
+            ),
+            wf_user_module_access_table.c.module_id == "security_administration",
+            wf_user_module_access_table.c.allowed == 1,
+        ]
         if excluding_user_id:
-            exclusion = "AND u.user_id <> ?"
-            values.append(excluding_user_id)
-        row = connection.execute(
-            f"""
-            SELECT COUNT(DISTINCT u.user_id) AS count
-            FROM wf_user_accounts u
-            JOIN wf_role_assignments r ON r.user_id = u.user_id
-            JOIN wf_user_module_access m ON m.user_id = u.user_id
-            WHERE u.status = 'active'
-              AND r.role_id = 'workflow_coordinator'
-              AND r.assignment_status = 'active'
-              AND r.effective_from <= ?
-              AND (r.effective_to IS NULL OR r.effective_to > ?)
-              AND m.module_id = 'security_administration'
-              AND m.allowed = 1
-              {exclusion}
-            """,
-            values,
-        ).fetchone()
-        return int(row["count"])
+            conditions.append(wf_user_accounts_table.c.user_id != excluding_user_id)
+        count = connection.execute(
+            select(func.count(func.distinct(wf_user_accounts_table.c.user_id)))
+            .select_from(
+                wf_user_accounts_table.join(
+                    wf_role_assignments_table,
+                    wf_role_assignments_table.c.user_id
+                    == wf_user_accounts_table.c.user_id,
+                ).join(
+                    wf_user_module_access_table,
+                    wf_user_module_access_table.c.user_id
+                    == wf_user_accounts_table.c.user_id,
+                )
+            )
+            .where(*conditions)
+        ).scalar_one()
+        return int(count)
 
     def active_security_coordinator_count(
         self,
         *,
         excluding_user_id: str | None = None,
     ) -> int:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             return self._active_security_coordinator_count(
                 connection,
                 excluding_user_id=excluding_user_id,
             )
-        finally:
-            connection.close()
 
     def change_user_status(
         self,
@@ -1600,29 +1237,28 @@ class WorkflowFoundationRepository:
         expected_version: int,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._engine.begin() as connection:
             row = connection.execute(
-                """
-                SELECT u.status, u.status_version, u.person_id
-                FROM wf_user_accounts u WHERE u.user_id = ?
-                """,
-                (user_id,),
-            ).fetchone()
+                select(
+                    wf_user_accounts_table.c.status,
+                    wf_user_accounts_table.c.status_version,
+                    wf_user_accounts_table.c.person_id,
+                )
+                .where(wf_user_accounts_table.c.user_id == user_id)
+                .with_for_update()
+            ).first()
             if row is None:
                 raise WorkflowFoundationNotFound(f"Workflow user {user_id} was not found.")
-            if row["status_version"] != expected_version:
+            if row.status_version != expected_version:
                 raise WorkflowFoundationConflict(
                     "The account lifecycle changed. Refresh before changing its status."
                 )
-            if row["status"] == status:
-                connection.commit()
-                return self.get_security_user(user_id)
+            if row.status == status:
+                return self._security_user_summary(connection, user_id)
             if (
                 status == "inactive"
-                and row["status"] == "active"
+                and row.status == "active"
                 and self._is_workflow_coordinator(connection, user_id)
                 and "security_administration"
                 in self._configured_module_ids(connection, user_id)
@@ -1636,24 +1272,23 @@ class WorkflowFoundationRepository:
                 )
             next_version = expected_version + 1
             connection.execute(
-                """
-                UPDATE wf_user_accounts
-                SET status = ?, status_version = ?, updated_at = ?
-                WHERE user_id = ?
-                """,
-                (status, next_version, now, user_id),
+                wf_user_accounts_table.update()
+                .where(wf_user_accounts_table.c.user_id == user_id)
+                .values(status=status, status_version=next_version, updated_at=now)
             )
             connection.execute(
-                "UPDATE wf_persons SET status = ? WHERE person_id = ?",
-                (status, row["person_id"]),
+                wf_persons_table.update()
+                .where(wf_persons_table.c.person_id == row.person_id)
+                .values(status=status)
             )
             if status == "inactive":
                 connection.execute(
-                    """
-                    UPDATE wf_sessions SET revoked_at = ?
-                    WHERE user_id = ? AND revoked_at IS NULL
-                    """,
-                    (now, user_id),
+                    wf_sessions_table.update()
+                    .where(
+                        wf_sessions_table.c.user_id == user_id,
+                        wf_sessions_table.c.revoked_at.is_(None),
+                    )
+                    .values(revoked_at=now)
                 )
             self._append_audit(
                 connection,
@@ -1667,7 +1302,7 @@ class WorkflowFoundationRepository:
                 subject_id=user_id,
                 correlation_id=self._id("COR"),
                 details={
-                    "before_status": row["status"],
+                    "before_status": row.status,
                     "after_status": status,
                     "status_version": next_version,
                     "sessions_revoked": status == "inactive",
@@ -1675,15 +1310,9 @@ class WorkflowFoundationRepository:
                 },
                 occurred_at=now,
             )
-            connection.commit()
-            return self.get_security_user(user_id)
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+            return self._security_user_summary(connection, user_id)
 
-    def _invitation_summary(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _invitation_summary(self, row: Any) -> dict[str, Any]:
         return {
             "invitation_id": row["invitation_id"],
             "username": row["username"],
@@ -1700,38 +1329,41 @@ class WorkflowFoundationRepository:
 
     def _expire_pending_invitations(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         now: str,
     ) -> None:
         rows = connection.execute(
-            """
-            SELECT * FROM wf_user_invitations
-            WHERE status = 'pending' AND expires_at <= ?
-            ORDER BY created_at, invitation_id
-            """,
-            (now,),
-        ).fetchall()
+            select(wf_user_invitations_table)
+            .where(
+                wf_user_invitations_table.c.status == "pending",
+                wf_user_invitations_table.c.expires_at <= now,
+            )
+            .order_by(
+                wf_user_invitations_table.c.created_at,
+                wf_user_invitations_table.c.invitation_id,
+            )
+        ).mappings().all()
         for row in rows:
             connection.execute(
-                """
-                UPDATE wf_user_invitations SET status = 'expired'
-                WHERE invitation_id = ? AND status = 'pending'
-                """,
-                (row["invitation_id"],),
+                wf_user_invitations_table.update()
+                .where(
+                    wf_user_invitations_table.c.invitation_id
+                    == row["invitation_id"],
+                    wf_user_invitations_table.c.status == "pending",
+                )
+                .values(status="expired")
             )
             connection.execute(
-                """
-                INSERT INTO wf_invitation_events(
-                    invitation_event_id, invitation_id, event_type,
-                    actor_user_id, created_at, details_json
-                ) VALUES (?, ?, 'expired', NULL, ?, ?)
-                """,
-                (
-                    self._id("IVE"),
-                    row["invitation_id"],
-                    now,
-                    self._canonical_json({"reason": "configured_expiration"}),
-                ),
+                wf_invitation_events_table.insert().values(
+                    invitation_event_id=self._id("IVE"),
+                    invitation_id=row["invitation_id"],
+                    event_type="expired",
+                    actor_user_id=None,
+                    created_at=now,
+                    details_json=self._canonical_json(
+                        {"reason": "configured_expiration"}
+                    ),
+                )
             )
             self._append_audit(
                 connection,
@@ -1755,126 +1387,117 @@ class WorkflowFoundationRepository:
         expires_at: str,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
         invitation_id = self._id("INV")
         try:
-            connection.execute("BEGIN IMMEDIATE")
-            self._expire_pending_invitations(connection, now)
-            if connection.execute(
-                "SELECT 1 FROM wf_user_accounts WHERE username = ? COLLATE NOCASE",
-                (username,),
-            ).fetchone():
-                raise WorkflowFoundationConflict("That local username already exists.")
-            valid_roles = {
-                row["role_id"]
-                for row in connection.execute("SELECT role_id FROM wf_roles").fetchall()
-            }
-            valid_modules = {
-                row["module_id"]
-                for row in connection.execute(
-                    "SELECT module_id FROM wf_modules WHERE status = 'active'"
-                ).fetchall()
-            }
-            requested_roles = sorted(set(role_ids))
-            requested_modules = sorted(set(module_ids))
-            if set(requested_roles) - valid_roles:
-                raise WorkflowFoundationConflict("An unknown workflow role was requested.")
-            if set(requested_modules) - valid_modules:
-                raise WorkflowFoundationConflict("An unknown ETOP module was requested.")
-            connection.execute(
-                """
-                INSERT INTO wf_user_invitations(
-                    invitation_id, username, display_name, token_hash,
-                    role_ids_json, module_ids_json, status,
-                    created_by_user_id, created_at, expires_at,
-                    activated_at, activated_user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, NULL, NULL)
-                """,
-                (
-                    invitation_id,
-                    username,
-                    display_name,
-                    token_hash,
-                    self._canonical_json(requested_roles),
-                    self._canonical_json(requested_modules),
-                    actor_user_id,
-                    now,
-                    expires_at,
-                ),
-            )
-            connection.execute(
-                """
-                INSERT INTO wf_invitation_events(
-                    invitation_event_id, invitation_id, event_type,
-                    actor_user_id, created_at, details_json
-                ) VALUES (?, ?, 'created', ?, ?, ?)
-                """,
-                (
-                    self._id("IVE"),
-                    invitation_id,
-                    actor_user_id,
-                    now,
-                    self._canonical_json(
-                        {
-                            "username": username,
-                            "role_ids": requested_roles,
-                            "module_ids": requested_modules,
-                            "expires_at": expires_at,
-                            "token_stored_as": "sha256",
-                        }
-                    ),
-                ),
-            )
-            self._append_audit(
-                connection,
-                event_type="identity.invitation_created",
-                actor_user_id=actor_user_id,
-                subject_type="user_invitation",
-                subject_id=invitation_id,
-                correlation_id=self._id("COR"),
-                details={
-                    "username": username,
-                    "role_ids": requested_roles,
-                    "module_ids": requested_modules,
-                    "expires_at": expires_at,
-                    "token_stored_as": "sha256",
-                    "authority_effect": "none",
-                },
-                occurred_at=now,
-            )
-            connection.commit()
-            row = connection.execute(
-                "SELECT * FROM wf_user_invitations WHERE invitation_id = ?",
-                (invitation_id,),
-            ).fetchone()
-            return self._invitation_summary(row)
-        except sqlite3.IntegrityError as exc:
-            connection.rollback()
+            with self._engine.begin() as connection:
+                self._expire_pending_invitations(connection, now)
+                if connection.execute(
+                    select(wf_user_accounts_table.c.user_id).where(
+                        func.lower(wf_user_accounts_table.c.username)
+                        == username.lower()
+                    )
+                ).first():
+                    raise WorkflowFoundationConflict(
+                        "That local username already exists."
+                    )
+                valid_roles = {
+                    row.role_id
+                    for row in connection.execute(
+                        select(wf_roles_table.c.role_id)
+                    ).all()
+                }
+                valid_modules = {
+                    row.module_id
+                    for row in connection.execute(
+                        select(wf_modules_table.c.module_id).where(
+                            wf_modules_table.c.status == "active"
+                        )
+                    ).all()
+                }
+                requested_roles = sorted(set(role_ids))
+                requested_modules = sorted(set(module_ids))
+                if set(requested_roles) - valid_roles:
+                    raise WorkflowFoundationConflict(
+                        "An unknown workflow role was requested."
+                    )
+                if set(requested_modules) - valid_modules:
+                    raise WorkflowFoundationConflict(
+                        "An unknown ETOP module was requested."
+                    )
+                connection.execute(
+                    wf_user_invitations_table.insert().values(
+                        invitation_id=invitation_id,
+                        username=username,
+                        display_name=display_name,
+                        token_hash=token_hash,
+                        role_ids_json=self._canonical_json(requested_roles),
+                        module_ids_json=self._canonical_json(requested_modules),
+                        status="pending",
+                        created_by_user_id=actor_user_id,
+                        created_at=now,
+                        expires_at=expires_at,
+                        activated_at=None,
+                        activated_user_id=None,
+                    )
+                )
+                connection.execute(
+                    wf_invitation_events_table.insert().values(
+                        invitation_event_id=self._id("IVE"),
+                        invitation_id=invitation_id,
+                        event_type="created",
+                        actor_user_id=actor_user_id,
+                        created_at=now,
+                        details_json=self._canonical_json(
+                            {
+                                "username": username,
+                                "role_ids": requested_roles,
+                                "module_ids": requested_modules,
+                                "expires_at": expires_at,
+                                "token_stored_as": "sha256",
+                            }
+                        ),
+                    )
+                )
+                self._append_audit(
+                    connection,
+                    event_type="identity.invitation_created",
+                    actor_user_id=actor_user_id,
+                    subject_type="user_invitation",
+                    subject_id=invitation_id,
+                    correlation_id=self._id("COR"),
+                    details={
+                        "username": username,
+                        "role_ids": requested_roles,
+                        "module_ids": requested_modules,
+                        "expires_at": expires_at,
+                        "token_stored_as": "sha256",
+                        "authority_effect": "none",
+                    },
+                    occurred_at=now,
+                )
+                row = connection.execute(
+                    select(wf_user_invitations_table).where(
+                        wf_user_invitations_table.c.invitation_id == invitation_id
+                    )
+                ).mappings().first()
+                return self._invitation_summary(row)
+        except IntegrityError as exc:
             raise WorkflowFoundationConflict(
                 "A pending invitation for that username already exists."
             ) from exc
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def list_invitations(self) -> list[dict[str, Any]]:
-        connection = self._connection()
         now = self._now()
-        try:
-            with connection:
-                self._expire_pending_invitations(connection, now)
+        with self._engine.begin() as connection:
+            self._expire_pending_invitations(connection, now)
             rows = connection.execute(
-                """
-                SELECT * FROM wf_user_invitations
-                ORDER BY created_at DESC, invitation_id DESC
-                """
-            ).fetchall()
+                select(wf_user_invitations_table).order_by(
+                    wf_user_invitations_table.c.created_at.desc(),
+                    wf_user_invitations_table.c.invitation_id.desc(),
+                )
+            ).mappings().all()
             return [self._invitation_summary(row) for row in rows]
-        finally:
-            connection.close()
 
     def revoke_invitation(
         self,
@@ -1882,15 +1505,14 @@ class WorkflowFoundationRepository:
         invitation_id: str,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._engine.begin() as connection:
             self._expire_pending_invitations(connection, now)
             row = connection.execute(
-                "SELECT * FROM wf_user_invitations WHERE invitation_id = ?",
-                (invitation_id,),
-            ).fetchone()
+                select(wf_user_invitations_table).where(
+                    wf_user_invitations_table.c.invitation_id == invitation_id
+                )
+            ).mappings().first()
             if row is None:
                 raise WorkflowFoundationNotFound(
                     f"Invitation {invitation_id} was not found."
@@ -1900,32 +1522,28 @@ class WorkflowFoundationRepository:
                     "Only a pending invitation can be revoked. Refresh its current status."
                 )
             changed = connection.execute(
-                """
-                UPDATE wf_user_invitations SET status = 'revoked'
-                WHERE invitation_id = ? AND status = 'pending'
-                """,
-                (invitation_id,),
+                wf_user_invitations_table.update()
+                .where(
+                    wf_user_invitations_table.c.invitation_id == invitation_id,
+                    wf_user_invitations_table.c.status == "pending",
+                )
+                .values(status="revoked")
             ).rowcount
             if changed != 1:
                 raise WorkflowFoundationConflict(
                     "The invitation changed before it could be revoked."
                 )
             connection.execute(
-                """
-                INSERT INTO wf_invitation_events(
-                    invitation_event_id, invitation_id, event_type,
-                    actor_user_id, created_at, details_json
-                ) VALUES (?, ?, 'revoked', ?, ?, ?)
-                """,
-                (
-                    self._id("IVE"),
-                    invitation_id,
-                    actor_user_id,
-                    now,
-                    self._canonical_json(
+                wf_invitation_events_table.insert().values(
+                    invitation_event_id=self._id("IVE"),
+                    invitation_id=invitation_id,
+                    event_type="revoked",
+                    actor_user_id=actor_user_id,
+                    created_at=now,
+                    details_json=self._canonical_json(
                         {"reason": "coordinator_revocation", "token_reusable": False}
                     ),
-                ),
+                )
             )
             self._append_audit(
                 connection,
@@ -1943,31 +1561,23 @@ class WorkflowFoundationRepository:
                 },
                 occurred_at=now,
             )
-            connection.commit()
             updated = connection.execute(
-                "SELECT * FROM wf_user_invitations WHERE invitation_id = ?",
-                (invitation_id,),
-            ).fetchone()
+                select(wf_user_invitations_table).where(
+                    wf_user_invitations_table.c.invitation_id == invitation_id
+                )
+            ).mappings().first()
             return self._invitation_summary(updated)
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def invitation_for_token_hash(self, token_hash: str) -> dict[str, Any] | None:
-        connection = self._connection()
         now = self._now()
-        try:
-            with connection:
-                self._expire_pending_invitations(connection, now)
+        with self._engine.begin() as connection:
+            self._expire_pending_invitations(connection, now)
             row = connection.execute(
-                "SELECT * FROM wf_user_invitations WHERE token_hash = ?",
-                (token_hash,),
-            ).fetchone()
+                select(wf_user_invitations_table).where(
+                    wf_user_invitations_table.c.token_hash == token_hash
+                )
+            ).mappings().first()
             return self._invitation_summary(row) if row else None
-        finally:
-            connection.close()
 
     def activate_invitation(
         self,
@@ -1976,180 +1586,151 @@ class WorkflowFoundationRepository:
         password_salt: str,
         password_hash: str,
     ) -> str:
-        connection = self._connection()
         now = self._now()
         try:
-            connection.execute("BEGIN IMMEDIATE")
-            self._expire_pending_invitations(connection, now)
-            invitation = connection.execute(
-                "SELECT * FROM wf_user_invitations WHERE token_hash = ?",
-                (token_hash,),
-            ).fetchone()
-            if invitation is None:
-                raise WorkflowFoundationNotFound(
-                    "The invitation token was not recognized by this local ETOP instance."
-                )
-            if invitation["status"] != "pending":
-                raise WorkflowFoundationConflict(
-                    "This invitation is expired, revoked, or has already been activated."
-                )
-            user_id = self._id("USR")
-            person_id = self._id("PER")
-            role_ids = json.loads(invitation["role_ids_json"])
-            module_ids = json.loads(invitation["module_ids_json"])
-            connection.execute(
-                """
-                INSERT INTO wf_persons(
-                    person_id, display_name, status, created_at, created_by_user_id
-                ) VALUES (?, ?, 'active', ?, ?)
-                """,
-                (
-                    person_id,
-                    invitation["display_name"],
-                    now,
-                    invitation["created_by_user_id"],
-                ),
-            )
-            connection.execute(
-                """
-                INSERT INTO wf_user_accounts(
-                    user_id, person_id, username, password_salt, password_hash,
-                    password_algorithm, status, status_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'scrypt-n16384-r8-p1-v1', 'active', 1, ?, ?)
-                """,
-                (
-                    user_id,
-                    person_id,
-                    invitation["username"],
-                    password_salt,
-                    password_hash,
-                    now,
-                    now,
-                ),
-            )
-            for role_id in role_ids:
-                connection.execute(
-                    """
-                    INSERT INTO wf_role_assignments(
-                        role_assignment_id, user_id, role_id, effective_from,
-                        effective_to, assignment_status, assigned_by_user_id, created_at
-                    ) VALUES (?, ?, ?, ?, NULL, 'active', ?, ?)
-                    """,
-                    (
-                        self._id("RLA"),
-                        user_id,
-                        role_id,
-                        now,
-                        invitation["created_by_user_id"],
-                        now,
-                    ),
-                )
-            connection.execute(
-                """
-                INSERT INTO wf_access_profiles(
-                    user_id, access_version, updated_at, updated_by_user_id
-                ) VALUES (?, 1, ?, ?)
-                """,
-                (user_id, now, invitation["created_by_user_id"]),
-            )
-            connection.executemany(
-                """
-                INSERT INTO wf_user_module_access(
-                    user_id, module_id, allowed, updated_at, updated_by_user_id
-                ) VALUES (?, ?, 1, ?, ?)
-                """,
-                [
-                    (
-                        user_id,
-                        module_id,
-                        now,
-                        invitation["created_by_user_id"],
+            with self._engine.begin() as connection:
+                self._expire_pending_invitations(connection, now)
+                invitation = connection.execute(
+                    select(wf_user_invitations_table).where(
+                        wf_user_invitations_table.c.token_hash == token_hash
                     )
-                    for module_id in module_ids
-                ],
-            )
-            connection.execute(
-                """
-                INSERT INTO wf_module_access_events(
-                    access_event_id, user_id, actor_user_id,
-                    before_module_ids_json, after_module_ids_json,
-                    access_version, reason, created_at
-                ) VALUES (?, ?, ?, '[]', ?, 1, ?, ?)
-                """,
-                (
-                    self._id("ACE"),
-                    user_id,
-                    invitation["created_by_user_id"],
-                    self._canonical_json(module_ids),
-                    "invitation_activation",
-                    now,
-                ),
-            )
-            changed = connection.execute(
-                """
-                UPDATE wf_user_invitations
-                SET status = 'activated', activated_at = ?, activated_user_id = ?
-                WHERE invitation_id = ? AND status = 'pending'
-                """,
-                (now, user_id, invitation["invitation_id"]),
-            ).rowcount
-            if changed != 1:
-                raise WorkflowFoundationConflict(
-                    "This invitation was activated by another request."
+                ).mappings().first()
+                if invitation is None:
+                    raise WorkflowFoundationNotFound(
+                        "The invitation token was not recognized by this local ETOP instance."
+                    )
+                if invitation["status"] != "pending":
+                    raise WorkflowFoundationConflict(
+                        "This invitation is expired, revoked, or has already been activated."
+                    )
+                user_id = self._id("USR")
+                person_id = self._id("PER")
+                role_ids = json.loads(invitation["role_ids_json"])
+                module_ids = json.loads(invitation["module_ids_json"])
+                connection.execute(
+                    wf_persons_table.insert().values(
+                        person_id=person_id,
+                        display_name=invitation["display_name"],
+                        status="active",
+                        created_at=now,
+                        created_by_user_id=invitation["created_by_user_id"],
+                    )
                 )
-            connection.execute(
-                """
-                INSERT INTO wf_invitation_events(
-                    invitation_event_id, invitation_id, event_type,
-                    actor_user_id, created_at, details_json
-                ) VALUES (?, ?, 'activated', ?, ?, ?)
-                """,
-                (
-                    self._id("IVE"),
-                    invitation["invitation_id"],
-                    user_id,
-                    now,
-                    self._canonical_json(
-                        {
-                            "user_id": user_id,
-                            "person_id": person_id,
-                            "token_reusable": False,
-                        }
-                    ),
-                ),
-            )
-            self._append_audit(
-                connection,
-                event_type="identity.invitation_activated",
-                actor_user_id=user_id,
-                subject_type="user_account",
-                subject_id=user_id,
-                correlation_id=self._id("COR"),
-                details={
-                    "invitation_id": invitation["invitation_id"],
-                    "person_id": person_id,
-                    "username": invitation["username"],
-                    "role_ids": role_ids,
-                    "module_ids": module_ids,
-                    "token_reusable": False,
-                    "authority_effect": "none",
-                },
-                occurred_at=now,
-            )
-            connection.commit()
-            return user_id
-        except sqlite3.IntegrityError as exc:
-            connection.rollback()
+                connection.execute(
+                    wf_user_accounts_table.insert().values(
+                        user_id=user_id,
+                        person_id=person_id,
+                        username=invitation["username"],
+                        password_salt=password_salt,
+                        password_hash=password_hash,
+                        password_algorithm="scrypt-n16384-r8-p1-v1",
+                        status="active",
+                        status_version=1,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                for role_id in role_ids:
+                    connection.execute(
+                        wf_role_assignments_table.insert().values(
+                            role_assignment_id=self._id("RLA"),
+                            user_id=user_id,
+                            role_id=role_id,
+                            effective_from=now,
+                            effective_to=None,
+                            assignment_status="active",
+                            assigned_by_user_id=invitation["created_by_user_id"],
+                            created_at=now,
+                        )
+                    )
+                connection.execute(
+                    wf_access_profiles_table.insert().values(
+                        user_id=user_id,
+                        access_version=1,
+                        updated_at=now,
+                        updated_by_user_id=invitation["created_by_user_id"],
+                    )
+                )
+                for module_id in module_ids:
+                    connection.execute(
+                        wf_user_module_access_table.insert().values(
+                            user_id=user_id,
+                            module_id=module_id,
+                            allowed=1,
+                            updated_at=now,
+                            updated_by_user_id=invitation["created_by_user_id"],
+                        )
+                    )
+                connection.execute(
+                    wf_module_access_events_table.insert().values(
+                        access_event_id=self._id("ACE"),
+                        user_id=user_id,
+                        actor_user_id=invitation["created_by_user_id"],
+                        before_module_ids_json="[]",
+                        after_module_ids_json=self._canonical_json(module_ids),
+                        access_version=1,
+                        reason="invitation_activation",
+                        created_at=now,
+                    )
+                )
+                changed = connection.execute(
+                    wf_user_invitations_table.update()
+                    .where(
+                        wf_user_invitations_table.c.invitation_id
+                        == invitation["invitation_id"],
+                        wf_user_invitations_table.c.status == "pending",
+                    )
+                    .values(
+                        status="activated",
+                        activated_at=now,
+                        activated_user_id=user_id,
+                    )
+                ).rowcount
+                if changed != 1:
+                    raise WorkflowFoundationConflict(
+                        "This invitation was activated by another request."
+                    )
+                connection.execute(
+                    wf_invitation_events_table.insert().values(
+                        invitation_event_id=self._id("IVE"),
+                        invitation_id=invitation["invitation_id"],
+                        event_type="activated",
+                        actor_user_id=user_id,
+                        created_at=now,
+                        details_json=self._canonical_json(
+                            {
+                                "user_id": user_id,
+                                "person_id": person_id,
+                                "token_reusable": False,
+                            }
+                        ),
+                    )
+                )
+                self._append_audit(
+                    connection,
+                    event_type="identity.invitation_activated",
+                    actor_user_id=user_id,
+                    subject_type="user_account",
+                    subject_id=user_id,
+                    correlation_id=self._id("COR"),
+                    details={
+                        "invitation_id": invitation["invitation_id"],
+                        "person_id": person_id,
+                        "username": invitation["username"],
+                        "role_ids": role_ids,
+                        "module_ids": module_ids,
+                        "token_reusable": False,
+                        "authority_effect": "none",
+                    },
+                    occurred_at=now,
+                )
+                return user_id
+        except IntegrityError as exc:
             raise WorkflowFoundationConflict(
                 "The invited username was activated elsewhere or now conflicts with an account."
             ) from exc
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
-    def _password_reset_summary(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _password_reset_summary(self, row: Any) -> dict[str, Any]:
         return {
             "reset_id": row["reset_id"],
             "user_id": row["user_id"],
@@ -2162,38 +1743,40 @@ class WorkflowFoundationRepository:
 
     def _expire_pending_password_resets(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         now: str,
     ) -> None:
         rows = connection.execute(
-            """
-            SELECT * FROM wf_password_reset_tokens
-            WHERE status = 'pending' AND expires_at <= ?
-            ORDER BY created_at, reset_id
-            """,
-            (now,),
-        ).fetchall()
+            select(wf_password_reset_tokens_table)
+            .where(
+                wf_password_reset_tokens_table.c.status == "pending",
+                wf_password_reset_tokens_table.c.expires_at <= now,
+            )
+            .order_by(
+                wf_password_reset_tokens_table.c.created_at,
+                wf_password_reset_tokens_table.c.reset_id,
+            )
+        ).mappings().all()
         for row in rows:
             connection.execute(
-                """
-                UPDATE wf_password_reset_tokens SET status = 'expired'
-                WHERE reset_id = ? AND status = 'pending'
-                """,
-                (row["reset_id"],),
+                wf_password_reset_tokens_table.update()
+                .where(
+                    wf_password_reset_tokens_table.c.reset_id == row["reset_id"],
+                    wf_password_reset_tokens_table.c.status == "pending",
+                )
+                .values(status="expired")
             )
             connection.execute(
-                """
-                INSERT INTO wf_password_reset_events(
-                    reset_event_id, reset_id, event_type,
-                    actor_user_id, created_at, details_json
-                ) VALUES (?, ?, 'expired', NULL, ?, ?)
-                """,
-                (
-                    self._id("PRE"),
-                    row["reset_id"],
-                    now,
-                    self._canonical_json({"reason": "configured_expiration"}),
-                ),
+                wf_password_reset_events_table.insert().values(
+                    reset_event_id=self._id("PRE"),
+                    reset_id=row["reset_id"],
+                    event_type="expired",
+                    actor_user_id=None,
+                    created_at=now,
+                    details_json=self._canonical_json(
+                        {"reason": "configured_expiration"}
+                    ),
+                )
             )
             self._append_audit(
                 connection,
@@ -2214,46 +1797,43 @@ class WorkflowFoundationRepository:
         expires_at: str,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
         reset_id = self._id("PWR")
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._engine.begin() as connection:
             self._expire_pending_password_resets(connection, now)
             if connection.execute(
-                "SELECT 1 FROM wf_user_accounts WHERE user_id = ?",
-                (user_id,),
-            ).fetchone() is None:
+                select(wf_user_accounts_table.c.user_id).where(
+                    wf_user_accounts_table.c.user_id == user_id
+                )
+            ).first() is None:
                 raise WorkflowFoundationNotFound(f"Workflow user {user_id} was not found.")
             connection.execute(
-                """
-                INSERT INTO wf_password_reset_tokens(
-                    reset_id, user_id, token_hash, status,
-                    created_by_user_id, created_at, expires_at, activated_at
-                ) VALUES (?, ?, ?, 'pending', ?, ?, ?, NULL)
-                """,
-                (reset_id, user_id, token_hash, actor_user_id, now, expires_at),
+                wf_password_reset_tokens_table.insert().values(
+                    reset_id=reset_id,
+                    user_id=user_id,
+                    token_hash=token_hash,
+                    status="pending",
+                    created_by_user_id=actor_user_id,
+                    created_at=now,
+                    expires_at=expires_at,
+                    activated_at=None,
+                )
             )
             connection.execute(
-                """
-                INSERT INTO wf_password_reset_events(
-                    reset_event_id, reset_id, event_type,
-                    actor_user_id, created_at, details_json
-                ) VALUES (?, ?, 'created', ?, ?, ?)
-                """,
-                (
-                    self._id("PRE"),
-                    reset_id,
-                    actor_user_id,
-                    now,
-                    self._canonical_json(
+                wf_password_reset_events_table.insert().values(
+                    reset_event_id=self._id("PRE"),
+                    reset_id=reset_id,
+                    event_type="created",
+                    actor_user_id=actor_user_id,
+                    created_at=now,
+                    details_json=self._canonical_json(
                         {
                             "user_id": user_id,
                             "expires_at": expires_at,
                             "token_stored_as": "sha256",
                         }
                     ),
-                ),
+                )
             )
             self._append_audit(
                 connection,
@@ -2270,31 +1850,23 @@ class WorkflowFoundationRepository:
                 },
                 occurred_at=now,
             )
-            connection.commit()
             row = connection.execute(
-                "SELECT * FROM wf_password_reset_tokens WHERE reset_id = ?",
-                (reset_id,),
-            ).fetchone()
+                select(wf_password_reset_tokens_table).where(
+                    wf_password_reset_tokens_table.c.reset_id == reset_id
+                )
+            ).mappings().first()
             return self._password_reset_summary(row)
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def password_reset_for_token_hash(self, token_hash: str) -> dict[str, Any] | None:
-        connection = self._connection()
         now = self._now()
-        try:
-            with connection:
-                self._expire_pending_password_resets(connection, now)
+        with self._engine.begin() as connection:
+            self._expire_pending_password_resets(connection, now)
             row = connection.execute(
-                "SELECT * FROM wf_password_reset_tokens WHERE token_hash = ?",
-                (token_hash,),
-            ).fetchone()
+                select(wf_password_reset_tokens_table).where(
+                    wf_password_reset_tokens_table.c.token_hash == token_hash
+                )
+            ).mappings().first()
             return self._password_reset_summary(row) if row else None
-        finally:
-            connection.close()
 
     def activate_password_reset(
         self,
@@ -2303,15 +1875,14 @@ class WorkflowFoundationRepository:
         password_salt: str,
         password_hash: str,
     ) -> str:
-        connection = self._connection()
         now = self._now()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._engine.begin() as connection:
             self._expire_pending_password_resets(connection, now)
             reset = connection.execute(
-                "SELECT * FROM wf_password_reset_tokens WHERE token_hash = ?",
-                (token_hash,),
-            ).fetchone()
+                select(wf_password_reset_tokens_table).where(
+                    wf_password_reset_tokens_table.c.token_hash == token_hash
+                )
+            ).mappings().first()
             if reset is None:
                 raise WorkflowFoundationNotFound(
                     "The password reset token was not recognized by this local ETOP instance."
@@ -2322,51 +1893,53 @@ class WorkflowFoundationRepository:
                 )
             user_id = reset["user_id"]
             changed = connection.execute(
-                """
-                UPDATE wf_user_accounts
-                SET password_salt = ?, password_hash = ?,
-                    credential_version = credential_version + 1, updated_at = ?
-                WHERE user_id = ?
-                """,
-                (password_salt, password_hash, now, user_id),
+                wf_user_accounts_table.update()
+                .where(wf_user_accounts_table.c.user_id == user_id)
+                .values(
+                    password_salt=password_salt,
+                    password_hash=password_hash,
+                    credential_version=wf_user_accounts_table.c.credential_version
+                    + 1,
+                    updated_at=now,
+                )
             ).rowcount
             if changed != 1:
                 raise WorkflowFoundationNotFound(f"Workflow user {user_id} was not found.")
             connection.execute(
-                """
-                UPDATE wf_sessions SET revoked_at = ?
-                WHERE user_id = ? AND revoked_at IS NULL
-                """,
-                (now, user_id),
+                wf_sessions_table.update()
+                .where(
+                    wf_sessions_table.c.user_id == user_id,
+                    wf_sessions_table.c.revoked_at.is_(None),
+                )
+                .values(revoked_at=now)
             )
             changed = connection.execute(
-                """
-                UPDATE wf_password_reset_tokens
-                SET status = 'activated', activated_at = ?
-                WHERE reset_id = ? AND status = 'pending'
-                """,
-                (now, reset["reset_id"]),
+                wf_password_reset_tokens_table.update()
+                .where(
+                    wf_password_reset_tokens_table.c.reset_id == reset["reset_id"],
+                    wf_password_reset_tokens_table.c.status == "pending",
+                )
+                .values(status="activated", activated_at=now)
             ).rowcount
             if changed != 1:
                 raise WorkflowFoundationConflict(
                     "This password reset link was activated by another request."
                 )
             connection.execute(
-                """
-                INSERT INTO wf_password_reset_events(
-                    reset_event_id, reset_id, event_type,
-                    actor_user_id, created_at, details_json
-                ) VALUES (?, ?, 'activated', ?, ?, ?)
-                """,
-                (
-                    self._id("PRE"),
-                    reset["reset_id"],
-                    user_id,
-                    now,
-                    self._canonical_json(
-                        {"user_id": user_id, "sessions_revoked": True, "token_reusable": False}
+                wf_password_reset_events_table.insert().values(
+                    reset_event_id=self._id("PRE"),
+                    reset_id=reset["reset_id"],
+                    event_type="activated",
+                    actor_user_id=user_id,
+                    created_at=now,
+                    details_json=self._canonical_json(
+                        {
+                            "user_id": user_id,
+                            "sessions_revoked": True,
+                            "token_reusable": False,
+                        }
                     ),
-                ),
+                )
             )
             self._append_audit(
                 connection,
@@ -2383,13 +1956,7 @@ class WorkflowFoundationRepository:
                 },
                 occurred_at=now,
             )
-            connection.commit()
             return user_id
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def set_user_password(
         self,
@@ -2400,36 +1967,37 @@ class WorkflowFoundationRepository:
         expected_version: int,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._engine.begin() as connection:
             row = connection.execute(
-                "SELECT credential_version FROM wf_user_accounts WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
+                select(wf_user_accounts_table.c.credential_version)
+                .where(wf_user_accounts_table.c.user_id == user_id)
+                .with_for_update()
+            ).first()
             if row is None:
                 raise WorkflowFoundationNotFound(f"Workflow user {user_id} was not found.")
-            if row["credential_version"] != expected_version:
+            if row.credential_version != expected_version:
                 raise WorkflowFoundationConflict(
                     "The account credential changed. Refresh before setting a new password."
                 )
             next_version = expected_version + 1
             connection.execute(
-                """
-                UPDATE wf_user_accounts
-                SET password_salt = ?, password_hash = ?,
-                    credential_version = ?, updated_at = ?
-                WHERE user_id = ?
-                """,
-                (password_salt, password_hash, next_version, now, user_id),
+                wf_user_accounts_table.update()
+                .where(wf_user_accounts_table.c.user_id == user_id)
+                .values(
+                    password_salt=password_salt,
+                    password_hash=password_hash,
+                    credential_version=next_version,
+                    updated_at=now,
+                )
             )
             connection.execute(
-                """
-                UPDATE wf_sessions SET revoked_at = ?
-                WHERE user_id = ? AND revoked_at IS NULL
-                """,
-                (now, user_id),
+                wf_sessions_table.update()
+                .where(
+                    wf_sessions_table.c.user_id == user_id,
+                    wf_sessions_table.c.revoked_at.is_(None),
+                )
+                .values(revoked_at=now)
             )
             self._append_audit(
                 connection,
@@ -2445,30 +2013,25 @@ class WorkflowFoundationRepository:
                 },
                 occurred_at=now,
             )
-            connection.commit()
-            return self.get_security_user(user_id)
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+            return self._security_user_summary(connection, user_id)
 
     def list_roles(self) -> list[dict[str, Any]]:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM wf_roles ORDER BY name, role_id"
-            ).fetchall()
+                select(wf_roles_table).order_by(
+                    wf_roles_table.c.name, wf_roles_table.c.role_id
+                )
+            ).mappings().all()
             return [self._role_summary(row) for row in rows]
-        finally:
-            connection.close()
 
     def list_definitions(self) -> list[dict[str, Any]]:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM wf_definitions ORDER BY definition_id, version"
-            ).fetchall()
+                select(wf_definitions_table).order_by(
+                    wf_definitions_table.c.definition_id,
+                    wf_definitions_table.c.version,
+                )
+            ).mappings().all()
             return [
                 {
                     "definition_id": row["definition_id"],
@@ -2482,39 +2045,34 @@ class WorkflowFoundationRepository:
                 }
                 for row in rows
             ]
-        finally:
-            connection.close()
 
     def user_role_ids(self, user_id: str) -> set[str]:
         return {role["role_id"] for role in self.get_user(user_id)["roles"]}
 
     def _latest_assignee_id(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         task_id: str,
     ) -> str | None:
         row = connection.execute(
-            """
-            SELECT assignee_user_id
-            FROM wf_task_assignments
-            WHERE task_id = ?
-            ORDER BY rowid DESC
-            LIMIT 1
-            """,
-            (task_id,),
-        ).fetchone()
-        return row["assignee_user_id"] if row else None
+            select(wf_task_assignments_table.c.assignee_user_id)
+            .where(wf_task_assignments_table.c.task_id == task_id)
+            .order_by(wf_task_assignments_table.c.sequence.desc())
+            .limit(1)
+        ).first()
+        return row.assignee_user_id if row else None
 
     def _task_summary(
         self,
-        connection: sqlite3.Connection,
-        row: sqlite3.Row,
+        connection: Connection,
+        row: Any,
     ) -> dict[str, Any]:
         assignee_id = self._latest_assignee_id(connection, row["task_id"])
         role_row = connection.execute(
-            "SELECT * FROM wf_roles WHERE role_id = ?",
-            (row["queue_role_id"],),
-        ).fetchone()
+            select(wf_roles_table).where(
+                wf_roles_table.c.role_id == row["queue_role_id"]
+            )
+        ).mappings().first()
         return {
             "task_id": row["task_id"],
             "definition_id": row["definition_id"],
@@ -2539,16 +2097,15 @@ class WorkflowFoundationRepository:
             "execution_effect": row["execution_effect"],
         }
 
-    def _get_task_row(self, connection: sqlite3.Connection, task_id: str) -> sqlite3.Row:
+    def _get_task_row(self, connection: Connection, task_id: str) -> Any:
         row = connection.execute(
-            "SELECT * FROM wf_tasks WHERE task_id = ?", (task_id,)
-        ).fetchone()
+            select(wf_tasks_table).where(wf_tasks_table.c.task_id == task_id)
+        ).mappings().first()
         if row is None:
             raise WorkflowFoundationNotFound(f"Workflow task {task_id} was not found.")
         return row
 
     def create_task(self, payload: dict[str, Any], actor_user_id: str) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
         task_id = self._id("TSK")
         correlation_id = self._id("COR")
@@ -2558,14 +2115,14 @@ class WorkflowFoundationRepository:
             ).encode("utf-8")
         ).hexdigest()
         try:
-            with connection:
+            with self._engine.begin() as connection:
                 existing = connection.execute(
-                    """
-                    SELECT * FROM wf_tasks
-                    WHERE created_by_user_id = ? AND idempotency_key = ?
-                    """,
-                    (actor_user_id, payload["idempotency_key"]),
-                ).fetchone()
+                    select(wf_tasks_table).where(
+                        wf_tasks_table.c.created_by_user_id == actor_user_id,
+                        wf_tasks_table.c.idempotency_key
+                        == payload["idempotency_key"],
+                    )
+                ).mappings().first()
                 if existing:
                     if existing["request_sha256"] != request_sha256:
                         raise WorkflowFoundationConflict(
@@ -2573,54 +2130,44 @@ class WorkflowFoundationRepository:
                         )
                     return self._task_summary(connection, existing)
                 connection.execute(
-                    """
-                    INSERT INTO wf_tasks(
-                        task_id, definition_id, definition_version, title,
-                        description, capability, context_type, context_id,
-                        context_label, queue_role_id, priority, state,
-                        due_date, created_by_user_id, idempotency_key,
-                        request_sha256, created_at, updated_at, version, assignment_effect,
-                        authority_effect, execution_effect
-                    ) VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?,
-                        ?, ?, ?, 1, 'work_ownership_only', 'none', 'none'
+                    wf_tasks_table.insert().values(
+                        task_id=task_id,
+                        definition_id=self.DEFINITION_ID,
+                        definition_version=self.DEFINITION_VERSION,
+                        title=payload["title"],
+                        description=payload["description"],
+                        capability=payload["capability"],
+                        context_type=payload["context_type"],
+                        context_id=payload["context_id"],
+                        context_label=payload["context_label"],
+                        queue_role_id=payload["queue_role_id"],
+                        priority=payload["priority"],
+                        state="open",
+                        due_date=payload.get("due_date"),
+                        created_by_user_id=actor_user_id,
+                        idempotency_key=payload["idempotency_key"],
+                        request_sha256=request_sha256,
+                        created_at=now,
+                        updated_at=now,
+                        version=1,
+                        assignment_effect="work_ownership_only",
+                        authority_effect="none",
+                        execution_effect="none",
                     )
-                    """,
-                    (
-                        task_id,
-                        self.DEFINITION_ID,
-                        self.DEFINITION_VERSION,
-                        payload["title"],
-                        payload["description"],
-                        payload["capability"],
-                        payload["context_type"],
-                        payload["context_id"],
-                        payload["context_label"],
-                        payload["queue_role_id"],
-                        payload["priority"],
-                        payload.get("due_date"),
-                        actor_user_id,
-                        payload["idempotency_key"],
-                        request_sha256,
-                        now,
-                        now,
-                    ),
                 )
                 connection.execute(
-                    """
-                    INSERT INTO wf_task_events(
-                        event_id, task_id, event_type, from_state, to_state,
-                        actor_user_id, note, idempotency_key, task_version, created_at
-                    ) VALUES (?, ?, 'task_created', NULL, 'open', ?, ?, ?, 1, ?)
-                    """,
-                    (
-                        self._id("TEV"),
-                        task_id,
-                        actor_user_id,
-                        "Task created from a governed context reference.",
-                        f"create:{task_id}",
-                        now,
-                    ),
+                    wf_task_events_table.insert().values(
+                        event_id=self._id("TEV"),
+                        task_id=task_id,
+                        event_type="task_created",
+                        from_state=None,
+                        to_state="open",
+                        actor_user_id=actor_user_id,
+                        note="Task created from a governed context reference.",
+                        idempotency_key=f"create:{task_id}",
+                        task_version=1,
+                        created_at=now,
+                    )
                 )
                 self._append_audit(
                     connection,
@@ -2656,16 +2203,14 @@ class WorkflowFoundationRepository:
                         created_at=now,
                     )
             return self.get_task(task_id)
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise WorkflowFoundationConflict(
                 "The task could not be created because its role, assignee, or idempotency evidence is invalid."
             ) from exc
-        finally:
-            connection.close()
 
     def _insert_notification(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         *,
         recipient_user_id: str,
         task_id: str | None,
@@ -2677,29 +2222,23 @@ class WorkflowFoundationRepository:
     ) -> str:
         notification_id = self._id("NTF")
         connection.execute(
-            """
-            INSERT INTO wf_notifications(
-                notification_id, recipient_user_id, task_id,
-                notification_type, title, message, severity,
-                created_at, read_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-            """,
-            (
-                notification_id,
-                recipient_user_id,
-                task_id,
-                notification_type,
-                title,
-                message,
-                severity,
-                created_at,
-            ),
+            wf_notifications_table.insert().values(
+                notification_id=notification_id,
+                recipient_user_id=recipient_user_id,
+                task_id=task_id,
+                notification_type=notification_type,
+                title=title,
+                message=message,
+                severity=severity,
+                created_at=created_at,
+                read_at=None,
+            )
         )
         return notification_id
 
     def _insert_assignment(
         self,
-        connection: sqlite3.Connection,
+        connection: Connection,
         *,
         task_id: str,
         assignee_user_id: str,
@@ -2713,25 +2252,19 @@ class WorkflowFoundationRepository:
     ) -> None:
         prior_assignee = self._latest_assignee_id(connection, task_id)
         connection.execute(
-            """
-            INSERT INTO wf_task_assignments(
-                assignment_event_id, task_id, assignee_user_id,
-                prior_assignee_user_id, assigned_by_user_id, assignment_type,
-                note, idempotency_key, task_version, created_at, authority_effect
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none')
-            """,
-            (
-                self._id("ASN"),
-                task_id,
-                assignee_user_id,
-                prior_assignee,
-                assigned_by_user_id,
-                assignment_type,
-                note,
-                idempotency_key,
-                task_version,
-                created_at,
-            ),
+            wf_task_assignments_table.insert().values(
+                assignment_event_id=self._id("ASN"),
+                task_id=task_id,
+                assignee_user_id=assignee_user_id,
+                prior_assignee_user_id=prior_assignee,
+                assigned_by_user_id=assigned_by_user_id,
+                assignment_type=assignment_type,
+                note=note,
+                idempotency_key=idempotency_key,
+                task_version=task_version,
+                created_at=created_at,
+                authority_effect="none",
+            )
         )
         task = self._get_task_row(connection, task_id)
         self._insert_notification(
@@ -2761,57 +2294,53 @@ class WorkflowFoundationRepository:
             occurred_at=created_at,
         )
 
+    def _task_detail(self, connection: Connection, task_id: str) -> dict[str, Any]:
+        row = self._get_task_row(connection, task_id)
+        task = self._task_summary(connection, row)
+        assignment_rows = connection.execute(
+            select(wf_task_assignments_table)
+            .where(wf_task_assignments_table.c.task_id == task_id)
+            .order_by(wf_task_assignments_table.c.sequence)
+        ).mappings().all()
+        event_rows = connection.execute(
+            select(wf_task_events_table)
+            .where(wf_task_events_table.c.task_id == task_id)
+            .order_by(wf_task_events_table.c.sequence)
+        ).mappings().all()
+        task["assignments"] = [
+            {
+                "assignment_event_id": item["assignment_event_id"],
+                "task_id": item["task_id"],
+                "assignee": self._user_summary(connection, item["assignee_user_id"]),
+                "prior_assignee_user_id": item["prior_assignee_user_id"],
+                "assigned_by": self._user_summary(connection, item["assigned_by_user_id"]),
+                "assignment_type": item["assignment_type"],
+                "note": item["note"],
+                "task_version": item["task_version"],
+                "created_at": item["created_at"],
+                "authority_effect": item["authority_effect"],
+            }
+            for item in assignment_rows
+        ]
+        task["events"] = [
+            {
+                "event_id": item["event_id"],
+                "task_id": item["task_id"],
+                "event_type": item["event_type"],
+                "from_state": item["from_state"],
+                "to_state": item["to_state"],
+                "actor": self._user_summary(connection, item["actor_user_id"]),
+                "note": item["note"],
+                "task_version": item["task_version"],
+                "created_at": item["created_at"],
+            }
+            for item in event_rows
+        ]
+        return task
+
     def get_task(self, task_id: str) -> dict[str, Any]:
-        connection = self._connection()
-        try:
-            row = self._get_task_row(connection, task_id)
-            task = self._task_summary(connection, row)
-            assignment_rows = connection.execute(
-                """
-                SELECT * FROM wf_task_assignments
-                WHERE task_id = ? ORDER BY rowid
-                """,
-                (task_id,),
-            ).fetchall()
-            event_rows = connection.execute(
-                """
-                SELECT * FROM wf_task_events
-                WHERE task_id = ? ORDER BY rowid
-                """,
-                (task_id,),
-            ).fetchall()
-            task["assignments"] = [
-                {
-                    "assignment_event_id": item["assignment_event_id"],
-                    "task_id": item["task_id"],
-                    "assignee": self._user_summary(connection, item["assignee_user_id"]),
-                    "prior_assignee_user_id": item["prior_assignee_user_id"],
-                    "assigned_by": self._user_summary(connection, item["assigned_by_user_id"]),
-                    "assignment_type": item["assignment_type"],
-                    "note": item["note"],
-                    "task_version": item["task_version"],
-                    "created_at": item["created_at"],
-                    "authority_effect": item["authority_effect"],
-                }
-                for item in assignment_rows
-            ]
-            task["events"] = [
-                {
-                    "event_id": item["event_id"],
-                    "task_id": item["task_id"],
-                    "event_type": item["event_type"],
-                    "from_state": item["from_state"],
-                    "to_state": item["to_state"],
-                    "actor": self._user_summary(connection, item["actor_user_id"]),
-                    "note": item["note"],
-                    "task_version": item["task_version"],
-                    "created_at": item["created_at"],
-                }
-                for item in event_rows
-            ]
-            return task
-        finally:
-            connection.close()
+        with self._engine.connect() as connection:
+            return self._task_detail(connection, task_id)
 
     def list_tasks(
         self,
@@ -2822,72 +2351,61 @@ class WorkflowFoundationRepository:
         capability: str | None,
         state: str | None,
     ) -> list[dict[str, Any]]:
-        connection = self._connection()
-        try:
-            clauses: list[str] = []
-            values: list[Any] = []
+        with self._engine.connect() as connection:
+            conditions = []
             if capability:
-                clauses.append("t.capability = ?")
-                values.append(capability)
+                conditions.append(wf_tasks_table.c.capability == capability)
             if state:
-                clauses.append("t.state = ?")
-                values.append(state)
+                conditions.append(wf_tasks_table.c.state == state)
             role_ids = self.user_role_ids(actor_user_id)
+            latest_assignee = (
+                select(wf_task_assignments_table.c.assignee_user_id)
+                .where(wf_task_assignments_table.c.task_id == wf_tasks_table.c.task_id)
+                .order_by(wf_task_assignments_table.c.sequence.desc())
+                .limit(1)
+                .scalar_subquery()
+            )
             if coordinator and not mine:
                 pass
             elif mine:
-                clauses.append(
-                    """(
-                        SELECT a.assignee_user_id
-                        FROM wf_task_assignments a
-                        WHERE a.task_id = t.task_id
-                        ORDER BY a.rowid DESC
-                        LIMIT 1
-                    ) = ?"""
-                )
-                values.append(actor_user_id)
+                conditions.append(latest_assignee == actor_user_id)
             else:
-                placeholders = ",".join("?" for _ in role_ids) or "NULL"
-                clauses.append(
-                    f"""(
-                        (
-                            SELECT a.assignee_user_id
-                            FROM wf_task_assignments a
-                            WHERE a.task_id = t.task_id
-                            ORDER BY a.rowid DESC
-                            LIMIT 1
-                        ) = ?
-                        OR (
-                            NOT EXISTS (
-                                SELECT 1 FROM wf_task_assignments a2
-                                WHERE a2.task_id = t.task_id
-                            )
-                            AND t.queue_role_id IN ({placeholders})
-                        )
-                    )"""
+                has_any_assignment = (
+                    select(wf_task_assignments_table.c.assignment_event_id)
+                    .where(
+                        wf_task_assignments_table.c.task_id
+                        == wf_tasks_table.c.task_id
+                    )
+                    .exists()
                 )
-                values.append(actor_user_id)
-                values.extend(sorted(role_ids))
-            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                conditions.append(
+                    (latest_assignee == actor_user_id)
+                    | (
+                        ~has_any_assignment
+                        & wf_tasks_table.c.queue_role_id.in_(sorted(role_ids))
+                    )
+                )
+            priority_order = case(
+                (wf_tasks_table.c.priority == "critical", 1),
+                (wf_tasks_table.c.priority == "high", 2),
+                (wf_tasks_table.c.priority == "medium", 3),
+                else_=4,
+            )
+            due_date_order = case(
+                (wf_tasks_table.c.due_date.is_(None), 1), else_=0
+            )
             rows = connection.execute(
-                f"""
-                SELECT t.* FROM wf_tasks t
-                {where}
-                ORDER BY
-                    CASE t.priority
-                        WHEN 'critical' THEN 1 WHEN 'high' THEN 2
-                        WHEN 'medium' THEN 3 ELSE 4
-                    END,
-                    CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END,
-                    t.due_date,
-                    t.updated_at DESC,
-                    t.task_id
-                """,
-                values,
-            ).fetchall()
+                select(wf_tasks_table)
+                .where(*conditions)
+                .order_by(
+                    priority_order,
+                    due_date_order,
+                    wf_tasks_table.c.due_date,
+                    wf_tasks_table.c.updated_at.desc(),
+                    wf_tasks_table.c.task_id,
+                )
+            ).mappings().all()
             return [self._task_summary(connection, row) for row in rows]
-        finally:
-            connection.close()
 
     def assign_task(
         self,
@@ -2900,51 +2418,52 @@ class WorkflowFoundationRepository:
         actor_user_id: str,
         assignment_type: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
         correlation_id = self._id("COR")
-        try:
-            with connection:
-                existing = connection.execute(
-                    "SELECT * FROM wf_task_assignments WHERE idempotency_key = ?",
-                    (idempotency_key,),
-                ).fetchone()
-                if existing:
-                    if (
-                        existing["task_id"] != task_id
-                        or existing["assignee_user_id"] != assignee_user_id
-                        or existing["assigned_by_user_id"] != actor_user_id
-                        or existing["note"] != note
-                    ):
-                        raise WorkflowFoundationConflict(
-                            "That assignment idempotency key was already used with a different request."
-                        )
-                    return self.get_task(task_id)
-                task = self._get_task_row(connection, task_id)
-                if task["version"] != expected_version:
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                select(wf_task_assignments_table).where(
+                    wf_task_assignments_table.c.idempotency_key == idempotency_key
+                )
+            ).mappings().first()
+            if existing:
+                if (
+                    existing["task_id"] != task_id
+                    or existing["assignee_user_id"] != assignee_user_id
+                    or existing["assigned_by_user_id"] != actor_user_id
+                    or existing["note"] != note
+                ):
                     raise WorkflowFoundationConflict(
-                        f"Task version changed. Expected {expected_version}; current version is {task['version']}."
+                        "That assignment idempotency key was already used with a different request."
                     )
-                new_version = expected_version + 1
-                connection.execute(
-                    "UPDATE wf_tasks SET version = ?, updated_at = ? WHERE task_id = ? AND version = ?",
-                    (new_version, now, task_id, expected_version),
+                return self._task_detail(connection, task_id)
+            task = self._get_task_row(connection, task_id)
+            if task["version"] != expected_version:
+                raise WorkflowFoundationConflict(
+                    f"Task version changed. Expected {expected_version}; current version is {task['version']}."
                 )
-                self._insert_assignment(
-                    connection,
-                    task_id=task_id,
-                    assignee_user_id=assignee_user_id,
-                    assigned_by_user_id=actor_user_id,
-                    assignment_type=assignment_type,
-                    note=note,
-                    idempotency_key=idempotency_key,
-                    task_version=new_version,
-                    correlation_id=correlation_id,
-                    created_at=now,
+            new_version = expected_version + 1
+            connection.execute(
+                wf_tasks_table.update()
+                .where(
+                    wf_tasks_table.c.task_id == task_id,
+                    wf_tasks_table.c.version == expected_version,
                 )
-            return self.get_task(task_id)
-        finally:
-            connection.close()
+                .values(version=new_version, updated_at=now)
+            )
+            self._insert_assignment(
+                connection,
+                task_id=task_id,
+                assignee_user_id=assignee_user_id,
+                assigned_by_user_id=actor_user_id,
+                assignment_type=assignment_type,
+                note=note,
+                idempotency_key=idempotency_key,
+                task_version=new_version,
+                correlation_id=correlation_id,
+                created_at=now,
+            )
+        return self.get_task(task_id)
 
     def transition_task(
         self,
@@ -2956,110 +2475,101 @@ class WorkflowFoundationRepository:
         idempotency_key: str,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
         correlation_id = self._id("COR")
-        try:
-            with connection:
-                existing = connection.execute(
-                    "SELECT * FROM wf_task_events WHERE idempotency_key = ?",
-                    (idempotency_key,),
-                ).fetchone()
-                if existing:
-                    if (
-                        existing["task_id"] != task_id
-                        or existing["to_state"] != target_state
-                        or existing["actor_user_id"] != actor_user_id
-                        or existing["note"] != note
-                    ):
-                        raise WorkflowFoundationConflict(
-                            "That transition idempotency key was already used with a different request."
-                        )
-                    return self.get_task(task_id)
-                task = self._get_task_row(connection, task_id)
-                if task["version"] != expected_version:
-                    raise WorkflowFoundationConflict(
-                        f"Task version changed. Expected {expected_version}; current version is {task['version']}."
-                    )
-                allowed = self.TRANSITIONS.get(task["state"], [])
-                if target_state not in allowed:
-                    raise WorkflowFoundationConflict(
-                        f"Transition from {task['state']} to {target_state} is not permitted by {self.DEFINITION_ID} {self.DEFINITION_VERSION}."
-                    )
-                new_version = expected_version + 1
-                changed = connection.execute(
-                    """
-                    UPDATE wf_tasks
-                    SET state = ?, version = ?, updated_at = ?
-                    WHERE task_id = ? AND version = ?
-                    """,
-                    (target_state, new_version, now, task_id, expected_version),
-                ).rowcount
-                if changed != 1:
-                    raise WorkflowFoundationConflict("The task changed during transition.")
-                connection.execute(
-                    """
-                    INSERT INTO wf_task_events(
-                        event_id, task_id, event_type, from_state, to_state,
-                        actor_user_id, note, idempotency_key, task_version, created_at
-                    ) VALUES (?, ?, 'task_state_changed', ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self._id("TEV"),
-                        task_id,
-                        task["state"],
-                        target_state,
-                        actor_user_id,
-                        note,
-                        idempotency_key,
-                        new_version,
-                        now,
-                    ),
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                select(wf_task_events_table).where(
+                    wf_task_events_table.c.idempotency_key == idempotency_key
                 )
-                assignee_id = self._latest_assignee_id(connection, task_id)
-                if assignee_id:
-                    self._insert_notification(
-                        connection,
-                        recipient_user_id=assignee_id,
-                        task_id=task_id,
-                        notification_type="task_state_changed",
-                        title="Work state changed",
-                        message=f"{task['title']} is now {target_state.replace('_', ' ')}.",
-                        severity="success" if target_state == "completed" else "info",
-                        created_at=now,
+            ).mappings().first()
+            if existing:
+                if (
+                    existing["task_id"] != task_id
+                    or existing["to_state"] != target_state
+                    or existing["actor_user_id"] != actor_user_id
+                    or existing["note"] != note
+                ):
+                    raise WorkflowFoundationConflict(
+                        "That transition idempotency key was already used with a different request."
                     )
-                self._append_audit(
-                    connection,
-                    event_type="workflow.task_state_changed",
+                return self._task_detail(connection, task_id)
+            task = self._get_task_row(connection, task_id)
+            if task["version"] != expected_version:
+                raise WorkflowFoundationConflict(
+                    f"Task version changed. Expected {expected_version}; current version is {task['version']}."
+                )
+            allowed = self.TRANSITIONS.get(task["state"], [])
+            if target_state not in allowed:
+                raise WorkflowFoundationConflict(
+                    f"Transition from {task['state']} to {target_state} is not permitted by {self.DEFINITION_ID} {self.DEFINITION_VERSION}."
+                )
+            new_version = expected_version + 1
+            changed = connection.execute(
+                wf_tasks_table.update()
+                .where(
+                    wf_tasks_table.c.task_id == task_id,
+                    wf_tasks_table.c.version == expected_version,
+                )
+                .values(state=target_state, version=new_version, updated_at=now)
+            ).rowcount
+            if changed != 1:
+                raise WorkflowFoundationConflict("The task changed during transition.")
+            connection.execute(
+                wf_task_events_table.insert().values(
+                    event_id=self._id("TEV"),
+                    task_id=task_id,
+                    event_type="task_state_changed",
+                    from_state=task["state"],
+                    to_state=target_state,
                     actor_user_id=actor_user_id,
-                    subject_type="workflow_task",
-                    subject_id=task_id,
-                    correlation_id=correlation_id,
-                    details={
-                        "from_state": task["state"],
-                        "to_state": target_state,
-                        "task_version": new_version,
-                        "authority_effect": "none",
-                        "execution_effect": "none",
-                    },
-                    occurred_at=now,
+                    note=note,
+                    idempotency_key=idempotency_key,
+                    task_version=new_version,
+                    created_at=now,
                 )
-            return self.get_task(task_id)
-        finally:
-            connection.close()
+            )
+            assignee_id = self._latest_assignee_id(connection, task_id)
+            if assignee_id:
+                self._insert_notification(
+                    connection,
+                    recipient_user_id=assignee_id,
+                    task_id=task_id,
+                    notification_type="task_state_changed",
+                    title="Work state changed",
+                    message=f"{task['title']} is now {target_state.replace('_', ' ')}.",
+                    severity="success" if target_state == "completed" else "info",
+                    created_at=now,
+                )
+            self._append_audit(
+                connection,
+                event_type="workflow.task_state_changed",
+                actor_user_id=actor_user_id,
+                subject_type="workflow_task",
+                subject_id=task_id,
+                correlation_id=correlation_id,
+                details={
+                    "from_state": task["state"],
+                    "to_state": target_state,
+                    "task_version": new_version,
+                    "authority_effect": "none",
+                    "execution_effect": "none",
+                },
+                occurred_at=now,
+            )
+        return self.get_task(task_id)
 
     def list_notifications(self, user_id: str) -> list[dict[str, Any]]:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT * FROM wf_notifications
-                WHERE recipient_user_id = ?
-                ORDER BY created_at DESC, notification_id DESC
-                LIMIT 250
-                """,
-                (user_id,),
-            ).fetchall()
+                select(wf_notifications_table)
+                .where(wf_notifications_table.c.recipient_user_id == user_id)
+                .order_by(
+                    wf_notifications_table.c.created_at.desc(),
+                    wf_notifications_table.c.notification_id.desc(),
+                )
+                .limit(250)
+            ).mappings().all()
             return [
                 {
                     "notification_id": row["notification_id"],
@@ -3073,60 +2583,60 @@ class WorkflowFoundationRepository:
                 }
                 for row in rows
             ]
-        finally:
-            connection.close()
 
     def mark_notification_read(
         self,
         notification_id: str,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        connection = self._connection()
         now = self._now()
-        try:
-            with connection:
-                row = connection.execute(
-                    """
-                    SELECT * FROM wf_notifications
-                    WHERE notification_id = ? AND recipient_user_id = ?
-                    """,
-                    (notification_id, actor_user_id),
-                ).fetchone()
-                if row is None:
-                    raise WorkflowFoundationNotFound(
-                        f"Notification {notification_id} was not found for this user."
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                select(wf_notifications_table).where(
+                    wf_notifications_table.c.notification_id == notification_id,
+                    wf_notifications_table.c.recipient_user_id == actor_user_id,
+                )
+            ).mappings().first()
+            if row is None:
+                raise WorkflowFoundationNotFound(
+                    f"Notification {notification_id} was not found for this user."
+                )
+            if row["read_at"] is None:
+                connection.execute(
+                    wf_notifications_table.update()
+                    .where(
+                        wf_notifications_table.c.notification_id == notification_id
                     )
-                if row["read_at"] is None:
-                    connection.execute(
-                        "UPDATE wf_notifications SET read_at = ? WHERE notification_id = ?",
-                        (now, notification_id),
-                    )
-                    self._append_audit(
-                        connection,
-                        event_type="notification.read",
-                        actor_user_id=actor_user_id,
-                        subject_type="notification",
-                        subject_id=notification_id,
-                        correlation_id=self._id("COR"),
-                        details={"task_id": row["task_id"], "delivery_scope": "in_app_local"},
-                        occurred_at=now,
-                    )
-                updated = connection.execute(
-                    "SELECT * FROM wf_notifications WHERE notification_id = ?",
-                    (notification_id,),
-                ).fetchone()
-                return {
-                    "notification_id": updated["notification_id"],
-                    "task_id": updated["task_id"],
-                    "notification_type": updated["notification_type"],
-                    "title": updated["title"],
-                    "message": updated["message"],
-                    "severity": updated["severity"],
-                    "created_at": updated["created_at"],
-                    "read_at": updated["read_at"],
-                }
-        finally:
-            connection.close()
+                    .values(read_at=now)
+                )
+                self._append_audit(
+                    connection,
+                    event_type="notification.read",
+                    actor_user_id=actor_user_id,
+                    subject_type="notification",
+                    subject_id=notification_id,
+                    correlation_id=self._id("COR"),
+                    details={
+                        "task_id": row["task_id"],
+                        "delivery_scope": "in_app_local",
+                    },
+                    occurred_at=now,
+                )
+            updated = connection.execute(
+                select(wf_notifications_table).where(
+                    wf_notifications_table.c.notification_id == notification_id
+                )
+            ).mappings().first()
+            return {
+                "notification_id": updated["notification_id"],
+                "task_id": updated["task_id"],
+                "notification_type": updated["notification_type"],
+                "title": updated["title"],
+                "message": updated["message"],
+                "severity": updated["severity"],
+                "created_at": updated["created_at"],
+                "read_at": updated["read_at"],
+            }
 
     def list_audit(
         self,
@@ -3135,26 +2645,18 @@ class WorkflowFoundationRepository:
         subject_id: str | None = None,
         limit: int = 250,
     ) -> list[dict[str, Any]]:
-        connection = self._connection()
-        try:
-            clauses: list[str] = []
-            values: list[Any] = []
+        with self._engine.connect() as connection:
+            conditions = []
             if subject_type:
-                clauses.append("subject_type = ?")
-                values.append(subject_type)
+                conditions.append(wf_audit_events_table.c.subject_type == subject_type)
             if subject_id:
-                clauses.append("subject_id = ?")
-                values.append(subject_id)
-            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-            values.append(limit)
+                conditions.append(wf_audit_events_table.c.subject_id == subject_id)
             rows = connection.execute(
-                f"""
-                SELECT * FROM wf_audit_events
-                {where}
-                ORDER BY rowid DESC LIMIT ?
-                """,
-                values,
-            ).fetchall()
+                select(wf_audit_events_table)
+                .where(*conditions)
+                .order_by(wf_audit_events_table.c.sequence.desc())
+                .limit(limit)
+            ).mappings().all()
             return [
                 {
                     "audit_id": row["audit_id"],
@@ -3171,15 +2673,14 @@ class WorkflowFoundationRepository:
                 }
                 for row in rows
             ]
-        finally:
-            connection.close()
 
     def verify_audit_integrity(self) -> dict[str, Any]:
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM wf_audit_events ORDER BY rowid"
-            ).fetchall()
+                select(wf_audit_events_table).order_by(
+                    wf_audit_events_table.c.sequence
+                )
+            ).mappings().all()
             previous_hash = "0" * 64
             for index, row in enumerate(rows):
                 details = json.loads(row["details_json"])
@@ -3212,32 +2713,33 @@ class WorkflowFoundationRepository:
                 "first_invalid_audit_id": None,
                 "algorithm": "sha256_hash_chain",
             }
-        finally:
-            connection.close()
 
     def counts(self, user_id: str | None = None) -> dict[str, int]:
-        connection = self._connection()
-        try:
-            users = int(connection.execute("SELECT COUNT(*) AS c FROM wf_user_accounts").fetchone()["c"])
-            open_tasks = int(
-                connection.execute(
-                    "SELECT COUNT(*) AS c FROM wf_tasks WHERE state NOT IN ('completed', 'cancelled')"
-                ).fetchone()["c"]
-            )
-            audit_records = int(connection.execute("SELECT COUNT(*) AS c FROM wf_audit_events").fetchone()["c"])
+        with self._engine.connect() as connection:
+            users = connection.execute(
+                select(func.count()).select_from(wf_user_accounts_table)
+            ).scalar_one()
+            open_tasks = connection.execute(
+                select(func.count())
+                .select_from(wf_tasks_table)
+                .where(wf_tasks_table.c.state.notin_(("completed", "cancelled")))
+            ).scalar_one()
+            audit_records = connection.execute(
+                select(func.count()).select_from(wf_audit_events_table)
+            ).scalar_one()
             unread = 0
             if user_id:
-                unread = int(
-                    connection.execute(
-                        "SELECT COUNT(*) AS c FROM wf_notifications WHERE recipient_user_id = ? AND read_at IS NULL",
-                        (user_id,),
-                    ).fetchone()["c"]
-                )
+                unread = connection.execute(
+                    select(func.count())
+                    .select_from(wf_notifications_table)
+                    .where(
+                        wf_notifications_table.c.recipient_user_id == user_id,
+                        wf_notifications_table.c.read_at.is_(None),
+                    )
+                ).scalar_one()
             return {
                 "users": users,
                 "open_tasks": open_tasks,
                 "audit_records": audit_records,
                 "unread_notifications": unread,
             }
-        finally:
-            connection.close()

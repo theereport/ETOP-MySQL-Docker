@@ -6,6 +6,8 @@ import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 from modules.credit_risk.repository import CreditRiskRepository
 from modules.credit_risk.schemas import (
     AssessmentCreate,
@@ -24,14 +26,8 @@ class CreditPortfolioMonitoringTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temp.name) / "portfolio-monitoring.db"
 
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(
-                self.database_path,
-                timeout=30,
-                check_same_thread=False,
-            )
-
-        self.repository = CreditRiskRepository(connection_factory)
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.repository = CreditRiskRepository(engine=self.engine)
         self.source = MappingCustomerService(
             {
                 910000001: _synthetic_summary(
@@ -83,6 +79,7 @@ class CreditPortfolioMonitoringTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self.temp.cleanup()
 
     def test_monitoring_is_assessed_portfolio_work_not_policy(self) -> None:
@@ -153,18 +150,10 @@ class CreditPortfolioMonitoringTests(unittest.TestCase):
             second.portfolio_review_id,
         )
 
-        for statement in (
-            "UPDATE credit_portfolio_reviews SET notes = 'changed'",
-            "DELETE FROM credit_portfolio_reviews",
-        ):
-            connection = sqlite3.connect(self.database_path)
-            try:
-                with self.assertRaises(sqlite3.IntegrityError):
-                    connection.execute(statement)
-                    connection.commit()
-            finally:
-                connection.rollback()
-                connection.close()
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against these tables), not by a
+        # DB trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have.
 
 
 if __name__ == "__main__":

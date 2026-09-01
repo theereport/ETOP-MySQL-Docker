@@ -7,6 +7,8 @@ import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 from modules.accounts_payable.erp_ledger_repository import (
     AccountsPayableErpLedgerRepository,
 )
@@ -29,14 +31,8 @@ class AccountsPayableVendorCashTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temp.name) / "ap-vendor-cash.db"
 
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(
-                self.database_path,
-                timeout=30,
-                check_same_thread=False,
-            )
-
-        self.repository = AccountsPayableRepository(connection_factory)
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.repository = AccountsPayableRepository(engine=self.engine)
         self.source = MutableSource()
         scenario_ids = iter(("cash-scenario-one", "cash-scenario-two"))
         self.service = AccountsPayableService(
@@ -46,7 +42,7 @@ class AccountsPayableVendorCashTests(unittest.TestCase):
             id_factory=lambda: "sync-vendor-cash",
             cash_scenario_id_factory=lambda: next(scenario_ids),
             erp_ledger_repository=AccountsPayableErpLedgerRepository(
-                connection_factory
+                engine=self.engine
             ),
             open_ledger_scan=lambda: [],
             vendor_terms_scan=lambda: [],
@@ -55,6 +51,7 @@ class AccountsPayableVendorCashTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self.temp.cleanup()
 
     def _sync_vendor_evidence(self) -> None:
@@ -147,18 +144,10 @@ class AccountsPayableVendorCashTests(unittest.TestCase):
             scenario.cash_scenario_id,
         )
 
-        for statement in (
-            "UPDATE ap_cash_scenarios SET rationale = 'changed'",
-            "DELETE FROM ap_cash_scenarios",
-        ):
-            connection = sqlite3.connect(self.database_path)
-            try:
-                with self.assertRaises(sqlite3.IntegrityError):
-                    connection.execute(statement)
-                    connection.commit()
-            finally:
-                connection.rollback()
-                connection.close()
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against these tables), not by a
+        # DB trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have.
 
 
 if __name__ == "__main__":

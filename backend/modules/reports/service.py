@@ -1,13 +1,11 @@
 import json
-import sqlite3
 
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from data.database import (
-    get_connection,
-    initialize_database,
-)
+from sqlalchemy.exc import IntegrityError
+
+from data.mysql import get_engine, metadata, reports_table
 
 from .schemas import (
     ReportCreate,
@@ -17,41 +15,9 @@ from .schemas import (
 
 
 def initialize_reports_database() -> None:
-    """Startup migration hook for the shared SQLite initialization boundary."""
+    """Startup hook: creates the reports table in MySQL."""
 
-    with get_connection() as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS reports (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT 'General',
-                sql_text TEXT NOT NULL,
-                database_name TEXT NOT NULL DEFAULT 'ERP',
-                output_format TEXT NOT NULL DEFAULT 'xlsx',
-                parameters_json TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            """
-        )
-
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_reports_name
-            ON reports(name);
-            """
-        )
-
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_reports_updated_at
-            ON reports(updated_at);
-            """
-        )
-
-        connection.commit()
+    metadata.create_all(get_engine(), checkfirst=True, tables=[reports_table])
 
 
 def _utc_now() -> datetime:
@@ -88,7 +54,7 @@ def _deserialize_parameters(
 
 
 def _row_to_report(
-    row: sqlite3.Row,
+    row,
 ) -> ReportRecord:
     return ReportRecord(
         id=row["id"],
@@ -107,28 +73,15 @@ def _row_to_report(
 
 
 def list_reports() -> list[ReportRecord]:
-    initialize_database()
+    initialize_reports_database()
 
-    with get_connection() as connection:
+    with get_engine().connect() as connection:
         rows = connection.execute(
-            """
-            SELECT
-                id,
-                name,
-                description,
-                category,
-                sql_text,
-                database_name,
-                output_format,
-                parameters_json,
-                created_at,
-                updated_at
-            FROM reports
-            ORDER BY
-                updated_at DESC,
-                name ASC;
-            """
-        ).fetchall()
+            reports_table.select().order_by(
+                reports_table.c.updated_at.desc(),
+                reports_table.c.name.asc(),
+            )
+        ).mappings().all()
 
     return [
         _row_to_report(row)
@@ -139,27 +92,12 @@ def list_reports() -> list[ReportRecord]:
 def get_report(
     report_id: str,
 ) -> ReportRecord | None:
-    initialize_database()
+    initialize_reports_database()
 
-    with get_connection() as connection:
+    with get_engine().connect() as connection:
         row = connection.execute(
-            """
-            SELECT
-                id,
-                name,
-                description,
-                category,
-                sql_text,
-                database_name,
-                output_format,
-                parameters_json,
-                created_at,
-                updated_at
-            FROM reports
-            WHERE id = ?;
-            """,
-            (report_id,),
-        ).fetchone()
+            reports_table.select().where(reports_table.c.id == report_id)
+        ).mappings().first()
 
     if row is None:
         return None
@@ -170,7 +108,7 @@ def get_report(
 def create_report(
     payload: ReportCreate,
 ) -> ReportRecord:
-    initialize_database()
+    initialize_reports_database()
 
     now = _utc_now()
     report_id = payload.id or f"report-{uuid4().hex}"
@@ -189,42 +127,22 @@ def create_report(
     )
 
     try:
-        with get_connection() as connection:
+        with get_engine().begin() as connection:
             connection.execute(
-                """
-                INSERT INTO reports (
-                    id,
-                    name,
-                    description,
-                    category,
-                    sql_text,
-                    database_name,
-                    output_format,
-                    parameters_json,
-                    created_at,
-                    updated_at
+                reports_table.insert().values(
+                    id=report.id,
+                    name=report.name,
+                    description=report.description,
+                    category=report.category,
+                    sql_text=report.sql,
+                    database_name=report.database,
+                    output_format=report.outputFormat,
+                    parameters_json=_serialize_parameters(report.parameters),
+                    created_at=report.createdAt.isoformat(),
+                    updated_at=report.updatedAt.isoformat(),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
-                    report.id,
-                    report.name,
-                    report.description,
-                    report.category,
-                    report.sql,
-                    report.database,
-                    report.outputFormat,
-                    _serialize_parameters(
-                        report.parameters,
-                    ),
-                    report.createdAt.isoformat(),
-                    report.updatedAt.isoformat(),
-                ),
             )
-
-            connection.commit()
-
-    except sqlite3.IntegrityError as exc:
+    except IntegrityError as exc:
         raise ValueError(
             f"A report with ID '{report_id}' already exists."
         ) from exc
@@ -236,7 +154,7 @@ def update_report(
     report_id: str,
     payload: ReportUpdate,
 ) -> ReportRecord | None:
-    initialize_database()
+    initialize_reports_database()
 
     existing_report = get_report(
         report_id,
@@ -263,37 +181,23 @@ def update_report(
         updated_data,
     )
 
-    with get_connection() as connection:
+    with get_engine().begin() as connection:
         connection.execute(
-            """
-            UPDATE reports
-            SET
-                name = ?,
-                description = ?,
-                category = ?,
-                sql_text = ?,
-                database_name = ?,
-                output_format = ?,
-                parameters_json = ?,
-                updated_at = ?
-            WHERE id = ?;
-            """,
-            (
-                updated_report.name.strip(),
-                updated_report.description,
-                updated_report.category,
-                updated_report.sql.strip(),
-                updated_report.database,
-                updated_report.outputFormat,
-                _serialize_parameters(
+            reports_table.update()
+            .where(reports_table.c.id == report_id)
+            .values(
+                name=updated_report.name.strip(),
+                description=updated_report.description,
+                category=updated_report.category,
+                sql_text=updated_report.sql.strip(),
+                database_name=updated_report.database,
+                output_format=updated_report.outputFormat,
+                parameters_json=_serialize_parameters(
                     updated_report.parameters,
                 ),
-                updated_report.updatedAt.isoformat(),
-                report_id,
-            ),
+                updated_at=updated_report.updatedAt.isoformat(),
+            )
         )
-
-        connection.commit()
 
     return get_report(
         report_id,
@@ -303,17 +207,11 @@ def update_report(
 def delete_report(
     report_id: str,
 ) -> bool:
-    initialize_database()
+    initialize_reports_database()
 
-    with get_connection() as connection:
-        cursor = connection.execute(
-            """
-            DELETE FROM reports
-            WHERE id = ?;
-            """,
-            (report_id,),
+    with get_engine().begin() as connection:
+        result = connection.execute(
+            reports_table.delete().where(reports_table.c.id == report_id)
         )
 
-        connection.commit()
-
-        return cursor.rowcount > 0
+        return result.rowcount > 0

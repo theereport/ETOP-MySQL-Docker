@@ -2,114 +2,27 @@ from __future__ import annotations
 
 import json
 from calendar import monthrange
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
-from data.database import get_connection
+from sqlalchemy import delete, func, select, text
 
+from data.mysql import (
+    automation_executions_table,
+    automations_table,
+    get_engine,
+    metadata,
+    reports_table,
+)
 from .schemas import (
     AutomationDefinition,
     AutomationExecution,
 )
 
 
-@contextmanager
-def _connection():
-    """Wraps get_connection() to guarantee the connection is closed.
-
-    sqlite3.Connection's own context-manager protocol only commits or
-    rolls back the open transaction on exit - it never closes the
-    connection. Every `with _connection() as connection:` call in this
-    module was leaking a file handle. On Windows this locks workbench.db
-    open indefinitely (confirmed live: TemporaryDirectory.cleanup() in
-    this module's own tests fails with WinError 32 because a prior
-    connection was never released); on Linux the leak is silent until the
-    process exhausts its file-descriptor limit."""
-
-    connection = get_connection()
-    try:
-        with connection:
-            yield connection
-    finally:
-        connection.close()
-
-
 def initialize_automations_database() -> None:
-    """Startup migration hook for the shared SQLite initialization boundary."""
+    """Startup hook: creates the automations/automation_executions tables."""
 
-    with _connection() as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS automations (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'draft',
-                source_type TEXT NOT NULL,
-                frequency TEXT NOT NULL DEFAULT 'manual',
-                timezone TEXT NOT NULL DEFAULT 'America/New_York',
-                next_run_at TEXT,
-                last_run_at TEXT,
-                last_run_status TEXT,
-                definition_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            """
-        )
-
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_automations_due
-            ON automations(status, next_run_at);
-            """
-        )
-
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_automations_updated
-            ON automations(updated_at DESC);
-            """
-        )
-
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS automation_executions (
-                id TEXT PRIMARY KEY,
-                automation_id TEXT NOT NULL,
-                automation_name TEXT NOT NULL,
-                status TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                completed_at TEXT,
-                duration_ms INTEGER,
-                row_count INTEGER,
-                output_file_name TEXT NOT NULL DEFAULT '',
-                output_file_path TEXT NOT NULL DEFAULT '',
-                message TEXT NOT NULL DEFAULT '',
-                error_details TEXT NOT NULL DEFAULT '',
-                triggered_by TEXT NOT NULL,
-                FOREIGN KEY (automation_id)
-                    REFERENCES automations(id)
-                    ON DELETE CASCADE
-            );
-            """
-        )
-
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_automation_executions_recent
-            ON automation_executions(started_at DESC);
-            """
-        )
-
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_automation_executions_automation
-            ON automation_executions(automation_id, started_at DESC);
-            """
-        )
-
-        connection.commit()
+    metadata.create_all(get_engine(), checkfirst=True)
 from .validation import (
     AutomationValidationError,
     AutomationValidationIssue,
@@ -126,16 +39,10 @@ class AutomationStateConflict(RuntimeError):
     """Raised when durable execution state makes a mutation unsafe."""
 
 
-def _saved_report_exists(connection: Any, report_id: str) -> bool:
+def _saved_report_exists(connection, report_id: str) -> bool:
     return connection.execute(
-        """
-        SELECT 1
-        FROM reports
-        WHERE id = ?
-        LIMIT 1
-        """,
-        (report_id,),
-    ).fetchone() is not None
+        select(reports_table.c.id).where(reports_table.c.id == report_id).limit(1)
+    ).first() is not None
 
 
 def _now_iso() -> str:
@@ -252,7 +159,7 @@ def validate_repository_bindings(
     if automation.source_type != "report":
         return
 
-    with _connection() as connection:
+    with get_engine().connect() as connection:
         report_exists = _saved_report_exists(
             connection,
             automation.report_id,
@@ -298,29 +205,8 @@ def save_automation(
         by_alias=True,
     )
 
-    with _connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
-
-        running = connection.execute(
-            """
-            SELECT 1
-            FROM automation_executions
-            WHERE automation_id = ?
-              AND status = 'running'
-            LIMIT 1
-            """,
-            (automation.id,),
-        ).fetchone()
-
-        if running is not None:
-            raise AutomationStateConflict(
-                "Automation cannot be changed while its execution is running."
-            )
-
-        if (
-            automation.status == "active"
-            and automation.source_type == "report"
-        ):
+    if automation.status == "active" and automation.source_type == "report":
+        with get_engine().connect() as connection:
             if not _saved_report_exists(connection, automation.report_id):
                 raise AutomationValidationError(
                     [
@@ -336,51 +222,53 @@ def save_automation(
                     ]
                 )
 
-        connection.execute(
-            """
-            INSERT INTO automations (
-                id,
-                name,
-                status,
-                source_type,
-                frequency,
-                timezone,
-                next_run_at,
-                last_run_at,
-                last_run_status,
-                definition_json,
-                created_at,
-                updated_at
+    values = {
+        "id": automation.id,
+        "name": automation.name,
+        "status": automation.status,
+        "source_type": automation.source_type,
+        "frequency": automation.schedule.frequency,
+        "timezone": automation.schedule.timezone,
+        "next_run_at": automation.next_run_at,
+        "last_run_at": automation.last_run_at,
+        "last_run_status": automation.last_run_status,
+        "definition_json": json.dumps(payload),
+        "created_at": automation.created_at,
+        "updated_at": automation.updated_at,
+    }
+
+    with get_engine().begin() as connection:
+        running = connection.execute(
+            select(automation_executions_table.c.id)
+            .where(
+                automation_executions_table.c.automation_id == automation.id,
+                automation_executions_table.c.status == "running",
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                name = excluded.name,
-                status = excluded.status,
-                source_type = excluded.source_type,
-                frequency = excluded.frequency,
-                timezone = excluded.timezone,
-                next_run_at = excluded.next_run_at,
-                last_run_at = excluded.last_run_at,
-                last_run_status = excluded.last_run_status,
-                definition_json = excluded.definition_json,
-                updated_at = excluded.updated_at
-            """,
-            (
-                automation.id,
-                automation.name,
-                automation.status,
-                automation.source_type,
-                automation.schedule.frequency,
-                automation.schedule.timezone,
-                automation.next_run_at,
-                automation.last_run_at,
-                automation.last_run_status,
-                json.dumps(payload),
-                automation.created_at,
-                automation.updated_at,
-            ),
-        )
-        connection.commit()
+            .limit(1)
+            .with_for_update()
+        ).first()
+
+        if running is not None:
+            raise AutomationStateConflict(
+                "Automation cannot be changed while its execution is running."
+            )
+
+        existing = connection.execute(
+            select(automations_table.c.id)
+            .where(automations_table.c.id == automation.id)
+            .with_for_update()
+        ).first()
+
+        if existing is None:
+            connection.execute(automations_table.insert().values(**values))
+        else:
+            update_values = dict(values)
+            update_values.pop("id")
+            connection.execute(
+                automations_table.update()
+                .where(automations_table.c.id == automation.id)
+                .values(**update_values)
+            )
 
     return automation
 
@@ -388,72 +276,58 @@ def save_automation(
 def get_automation(
     automation_id: str,
 ) -> AutomationDefinition | None:
-    with _connection() as connection:
+    with get_engine().connect() as connection:
         row = connection.execute(
-            """
-            SELECT definition_json
-            FROM automations
-            WHERE id = ?
-            """,
-            (automation_id,),
-        ).fetchone()
+            select(automations_table.c.definition_json).where(
+                automations_table.c.id == automation_id
+            )
+        ).first()
 
     if row is None:
         return None
 
-    return AutomationDefinition.model_validate_json(
-        row["definition_json"]
-    )
+    return AutomationDefinition.model_validate_json(row.definition_json)
 
 
 def list_automations() -> list[AutomationDefinition]:
-    with _connection() as connection:
+    with get_engine().connect() as connection:
         rows = connection.execute(
-            """
-            SELECT definition_json
-            FROM automations
-            ORDER BY updated_at DESC, name ASC
-            """
-        ).fetchall()
+            select(automations_table.c.definition_json).order_by(
+                automations_table.c.updated_at.desc(),
+                automations_table.c.name.asc(),
+            )
+        ).all()
 
     return [
-        AutomationDefinition.model_validate_json(
-            row["definition_json"]
-        )
+        AutomationDefinition.model_validate_json(row.definition_json)
         for row in rows
     ]
 
 
 def delete_automation(automation_id: str) -> bool:
-    with _connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
-
+    with get_engine().begin() as connection:
         running = connection.execute(
-            """
-            SELECT 1
-            FROM automation_executions
-            WHERE automation_id = ?
-              AND status = 'running'
-            LIMIT 1
-            """,
-            (automation_id,),
-        ).fetchone()
+            select(automation_executions_table.c.id)
+            .where(
+                automation_executions_table.c.automation_id == automation_id,
+                automation_executions_table.c.status == "running",
+            )
+            .limit(1)
+            .with_for_update()
+        ).first()
 
         if running is not None:
             raise AutomationStateConflict(
                 "Automation cannot be deleted while its execution is running."
             )
 
-        cursor = connection.execute(
-            """
-            DELETE FROM automations
-            WHERE id = ?
-            """,
-            (automation_id,),
+        result = connection.execute(
+            delete(automations_table).where(
+                automations_table.c.id == automation_id
+            )
         )
-        connection.commit()
 
-    return cursor.rowcount > 0
+    return result.rowcount > 0
 
 
 def list_due_automations(
@@ -464,24 +338,24 @@ def list_due_automations(
         current = current.astimezone()
     current_utc = current.astimezone(UTC)
 
-    with _connection() as connection:
+    with get_engine().connect() as connection:
         rows = connection.execute(
-            """
-            SELECT
-                next_run_at,
-                definition_json
-            FROM automations
-            WHERE status = 'active'
-              AND next_run_at IS NOT NULL
-            ORDER BY next_run_at ASC
-            """
-        ).fetchall()
+            select(
+                automations_table.c.next_run_at,
+                automations_table.c.definition_json,
+            )
+            .where(
+                automations_table.c.status == "active",
+                automations_table.c.next_run_at.is_not(None),
+            )
+            .order_by(automations_table.c.next_run_at.asc())
+        ).all()
 
     due: list[tuple[datetime, AutomationDefinition]] = []
 
     for row in rows:
         try:
-            next_run = datetime.fromisoformat(row["next_run_at"])
+            next_run = datetime.fromisoformat(row.next_run_at)
         except (TypeError, ValueError):
             continue
 
@@ -493,7 +367,7 @@ def list_due_automations(
                 (
                     next_run.astimezone(UTC),
                     AutomationDefinition.model_validate_json(
-                        row["definition_json"]
+                        row.definition_json
                     ),
                 )
             )
@@ -508,22 +382,18 @@ def update_after_run(
     status: str,
     completed_at: datetime,
 ) -> AutomationDefinition:
-    with _connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+    with get_engine().begin() as connection:
         row = connection.execute(
-            """
-            SELECT definition_json
-            FROM automations
-            WHERE id = ?
-            """,
-            (automation.id,),
-        ).fetchone()
+            select(automations_table.c.definition_json)
+            .where(automations_table.c.id == automation.id)
+            .with_for_update()
+        ).first()
 
         if row is None:
             return automation
 
         current = AutomationDefinition.model_validate_json(
-            row["definition_json"]
+            row.definition_json
         )
         current.last_run_at = completed_at.isoformat()
         current.last_run_status = status
@@ -542,28 +412,17 @@ def update_after_run(
         )
 
         connection.execute(
-            """
-            UPDATE automations
-            SET
-                status = ?,
-                next_run_at = ?,
-                last_run_at = ?,
-                last_run_status = ?,
-                definition_json = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                current.status,
-                current.next_run_at,
-                current.last_run_at,
-                current.last_run_status,
-                json.dumps(payload),
-                current.updated_at,
-                current.id,
-            ),
+            automations_table.update()
+            .where(automations_table.c.id == automation.id)
+            .values(
+                status=current.status,
+                next_run_at=current.next_run_at,
+                last_run_at=current.last_run_at,
+                last_run_status=current.last_run_status,
+                definition_json=json.dumps(payload),
+                updated_at=current.updated_at,
+            )
         )
-        connection.commit()
 
     return current
 
@@ -571,53 +430,56 @@ def update_after_run(
 def create_execution(
     execution: AutomationExecution,
 ) -> bool:
-    with _connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        cursor = connection.execute(
-            """
-            INSERT INTO automation_executions (
-                id,
-                automation_id,
-                automation_name,
-                status,
-                started_at,
-                completed_at,
-                duration_ms,
-                row_count,
-                output_file_name,
-                output_file_path,
-                message,
-                error_details,
-                triggered_by
-            )
-            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM automation_executions
-                WHERE automation_id = ?
-                  AND status = 'running'
-            )
-            """,
-            (
-                execution.id,
-                execution.automation_id,
-                execution.automation_name,
-                execution.status,
-                execution.started_at,
-                execution.completed_at,
-                execution.duration_ms,
-                execution.row_count,
-                execution.output_file_name,
-                execution.output_file_path,
-                execution.message,
-                execution.error_details,
-                execution.triggered_by,
-                execution.automation_id,
+    with get_engine().begin() as connection:
+        result = connection.execute(
+            text(
+                """
+                INSERT INTO automation_executions (
+                    id,
+                    automation_id,
+                    automation_name,
+                    status,
+                    started_at,
+                    completed_at,
+                    duration_ms,
+                    row_count,
+                    output_file_name,
+                    output_file_path,
+                    message,
+                    error_details,
+                    triggered_by
+                )
+                SELECT
+                    :id, :automation_id, :automation_name, :status,
+                    :started_at, :completed_at, :duration_ms, :row_count,
+                    :output_file_name, :output_file_path, :message,
+                    :error_details, :triggered_by
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM automation_executions
+                    WHERE automation_id = :automation_id
+                      AND status = 'running'
+                )
+                """
             ),
+            {
+                "id": execution.id,
+                "automation_id": execution.automation_id,
+                "automation_name": execution.automation_name,
+                "status": execution.status,
+                "started_at": execution.started_at,
+                "completed_at": execution.completed_at,
+                "duration_ms": execution.duration_ms,
+                "row_count": execution.row_count,
+                "output_file_name": execution.output_file_name,
+                "output_file_path": execution.output_file_path,
+                "message": execution.message,
+                "error_details": execution.error_details,
+                "triggered_by": execution.triggered_by,
+            },
         )
-        connection.commit()
 
-    return cursor.rowcount > 0
+    return result.rowcount > 0
 
 
 def finish_execution(
@@ -632,106 +494,70 @@ def finish_execution(
     message: str,
     error_details: str,
 ) -> None:
-    with _connection() as connection:
+    with get_engine().begin() as connection:
         connection.execute(
-            """
-            UPDATE automation_executions
-            SET
-                status = ?,
-                completed_at = ?,
-                duration_ms = ?,
-                row_count = ?,
-                output_file_name = ?,
-                output_file_path = ?,
-                message = ?,
-                error_details = ?
-            WHERE id = ?
-            """,
-            (
-                status,
-                completed_at,
-                duration_ms,
-                row_count,
-                output_file_name,
-                output_file_path,
-                message,
-                error_details,
-                execution_id,
-            ),
+            automation_executions_table.update()
+            .where(automation_executions_table.c.id == execution_id)
+            .values(
+                status=status,
+                completed_at=completed_at,
+                duration_ms=duration_ms,
+                row_count=row_count,
+                output_file_name=output_file_name,
+                output_file_path=output_file_path,
+                message=message,
+                error_details=error_details,
+            )
         )
-        connection.commit()
 
 
 def list_executions(
     limit: int = 250,
 ) -> list[AutomationExecution]:
-    with _connection() as connection:
+    with get_engine().connect() as connection:
         rows = connection.execute(
-            """
-            SELECT
-                id,
-                automation_id,
-                automation_name,
-                status,
-                started_at,
-                completed_at,
-                duration_ms,
-                row_count,
-                output_file_name,
-                output_file_path,
-                message,
-                error_details,
-                triggered_by
-            FROM automation_executions
-            ORDER BY started_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+            select(automation_executions_table)
+            .order_by(automation_executions_table.c.started_at.desc())
+            .limit(limit)
+        ).all()
 
     return [
         AutomationExecution(
-            id=row["id"],
-            automationId=row["automation_id"],
-            automationName=row["automation_name"],
-            status=row["status"],
-            startedAt=row["started_at"],
-            completedAt=row["completed_at"],
-            durationMs=row["duration_ms"],
-            rowCount=row["row_count"],
-            outputFileName=row["output_file_name"],
-            outputFilePath=row["output_file_path"],
-            message=row["message"],
-            errorDetails=row["error_details"],
-            triggeredBy=row["triggered_by"],
+            id=row.id,
+            automationId=row.automation_id,
+            automationName=row.automation_name,
+            status=row.status,
+            startedAt=row.started_at,
+            completedAt=row.completed_at,
+            durationMs=row.duration_ms,
+            rowCount=row.row_count,
+            outputFileName=row.output_file_name,
+            outputFilePath=row.output_file_path,
+            message=row.message,
+            errorDetails=row.error_details,
+            triggeredBy=row.triggered_by,
         )
         for row in rows
     ]
 
 
 def clear_executions() -> int:
-    with _connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        running = connection.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM automation_executions
-            WHERE status = 'running'
-            """
-        ).fetchone()
+    with get_engine().begin() as connection:
+        running_count = connection.execute(
+            select(func.count())
+            .select_from(automation_executions_table)
+            .where(automation_executions_table.c.status == "running")
+        ).scalar_one()
 
-        if running is not None and int(running["count"]) > 0:
+        if running_count > 0:
             raise AutomationStateConflict(
                 "Execution history cannot be cleared while an automation "
                 "is running."
             )
 
-        cursor = connection.execute(
-            "DELETE FROM automation_executions"
-        )
-        connection.commit()
+        result = connection.execute(delete(automation_executions_table))
 
-    return cursor.rowcount
+    return result.rowcount
 
 
 def _duration_since(started_at: str, completed_at: datetime) -> int | None:
@@ -774,67 +600,56 @@ def recover_interrupted_executions(
         completed_at = completed_at.astimezone()
     completed_iso = completed_at.isoformat()
 
-    with _connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+    with get_engine().begin() as connection:
         rows = connection.execute(
-            """
-            SELECT
-                id,
-                automation_id,
-                started_at
-            FROM automation_executions
-            WHERE status = 'running'
-            ORDER BY started_at ASC
-            """
-        ).fetchall()
+            select(
+                automation_executions_table.c.id,
+                automation_executions_table.c.automation_id,
+                automation_executions_table.c.started_at,
+            )
+            .where(automation_executions_table.c.status == "running")
+            .order_by(automation_executions_table.c.started_at.asc())
+            .with_for_update()
+        ).all()
 
         recovered_ids: list[str] = []
 
         for row in rows:
-            execution_id = str(row["id"])
-            automation_id = str(row["automation_id"])
+            execution_id = str(row.id)
+            automation_id = str(row.automation_id)
             recovered_ids.append(execution_id)
 
             connection.execute(
-                """
-                UPDATE automation_executions
-                SET
-                    status = 'failed',
-                    completed_at = ?,
-                    duration_ms = ?,
-                    message = ?,
-                    error_details = ?
-                WHERE id = ?
-                  AND status = 'running'
-                """,
-                (
-                    completed_iso,
-                    _duration_since(row["started_at"], completed_at),
-                    "Automation execution was interrupted.",
-                    (
+                automation_executions_table.update()
+                .where(
+                    automation_executions_table.c.id == execution_id,
+                    automation_executions_table.c.status == "running",
+                )
+                .values(
+                    status="failed",
+                    completed_at=completed_iso,
+                    duration_ms=_duration_since(row.started_at, completed_at),
+                    message="Automation execution was interrupted.",
+                    error_details=(
                         "The backend stopped before this execution recorded "
                         "completion. Automatic replay is blocked to prevent "
                         "duplicate effects; review the prior run and "
                         "explicitly retry or reactivate the automation."
                     ),
-                    execution_id,
-                ),
+                )
             )
 
             definition_row = connection.execute(
-                """
-                SELECT definition_json
-                FROM automations
-                WHERE id = ?
-                """,
-                (automation_id,),
-            ).fetchone()
+                select(automations_table.c.definition_json).where(
+                    automations_table.c.id == automation_id
+                )
+            ).first()
 
             if definition_row is None:
                 continue
 
             automation = AutomationDefinition.model_validate_json(
-                definition_row["definition_json"]
+                definition_row.definition_json
             )
             automation.status = "error"
             automation.last_run_at = completed_iso
@@ -843,26 +658,19 @@ def recover_interrupted_executions(
             automation.updated_at = completed_iso
 
             connection.execute(
-                """
-                UPDATE automations
-                SET
-                    status = 'error',
-                    next_run_at = NULL,
-                    last_run_at = ?,
-                    last_run_status = 'failed',
-                    definition_json = ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    completed_iso,
-                    json.dumps(automation.model_dump(by_alias=True)),
-                    completed_iso,
-                    automation_id,
-                ),
+                automations_table.update()
+                .where(automations_table.c.id == automation_id)
+                .values(
+                    status="error",
+                    next_run_at=None,
+                    last_run_at=completed_iso,
+                    last_run_status="failed",
+                    definition_json=json.dumps(
+                        automation.model_dump(by_alias=True)
+                    ),
+                    updated_at=completed_iso,
+                )
             )
-
-        connection.commit()
 
     return recovered_ids
 
@@ -872,44 +680,35 @@ def quarantine_automation(
 ) -> bool:
     now = _now_iso()
 
-    with _connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+    with get_engine().begin() as connection:
         row = connection.execute(
-            """
-            SELECT definition_json
-            FROM automations
-            WHERE id = ?
-            """,
-            (automation_id,),
-        ).fetchone()
+            select(automations_table.c.definition_json)
+            .where(automations_table.c.id == automation_id)
+            .with_for_update()
+        ).first()
 
         if row is None:
             return False
 
         automation = AutomationDefinition.model_validate_json(
-            row["definition_json"]
+            row.definition_json
         )
         automation.status = "error"
         automation.next_run_at = None
         automation.updated_at = now
 
         connection.execute(
-            """
-            UPDATE automations
-            SET
-                status = 'error',
-                next_run_at = NULL,
-                definition_json = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                json.dumps(automation.model_dump(by_alias=True)),
-                now,
-                automation.id,
-            ),
+            automations_table.update()
+            .where(automations_table.c.id == automation.id)
+            .values(
+                status="error",
+                next_run_at=None,
+                definition_json=json.dumps(
+                    automation.model_dump(by_alias=True)
+                ),
+                updated_at=now,
+            )
         )
-        connection.commit()
 
     return True
 
@@ -919,21 +718,22 @@ def quarantine_invalid_active_automations() -> list[str]:
 
     now = _now_iso()
 
-    with _connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+    with get_engine().begin() as connection:
         rows = connection.execute(
-            """
-            SELECT id, next_run_at, definition_json
-            FROM automations
-            WHERE status = 'active'
-            """
-        ).fetchall()
+            select(
+                automations_table.c.id,
+                automations_table.c.next_run_at,
+                automations_table.c.definition_json,
+            )
+            .where(automations_table.c.status == "active")
+            .with_for_update()
+        ).all()
 
         quarantined: list[str] = []
 
         for row in rows:
             automation = AutomationDefinition.model_validate_json(
-                row["definition_json"]
+                row.definition_json
             )
             issues = validate_automation(automation)
 
@@ -954,7 +754,7 @@ def quarantine_invalid_active_automations() -> list[str]:
 
             if automation.schedule.frequency != "manual":
                 try:
-                    next_run = datetime.fromisoformat(row["next_run_at"])
+                    next_run = datetime.fromisoformat(row.next_run_at)
                     if next_run.tzinfo is None:
                         raise ValueError
                 except (TypeError, ValueError):
@@ -979,23 +779,17 @@ def quarantine_invalid_active_automations() -> list[str]:
             quarantined.append(automation.id)
 
             connection.execute(
-                """
-                UPDATE automations
-                SET
-                    status = 'error',
-                    next_run_at = NULL,
-                    definition_json = ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    json.dumps(automation.model_dump(by_alias=True)),
-                    now,
-                    automation.id,
-                ),
+                automations_table.update()
+                .where(automations_table.c.id == automation.id)
+                .values(
+                    status="error",
+                    next_run_at=None,
+                    definition_json=json.dumps(
+                        automation.model_dump(by_alias=True)
+                    ),
+                    updated_at=now,
+                )
             )
-
-        connection.commit()
 
     return quarantined
 
@@ -1006,22 +800,18 @@ def automation_service_health(
 ) -> dict[str, object]:
     automations = list_automations()
 
-    with _connection() as connection:
-        running_row = connection.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM automation_executions
-            WHERE status = 'running'
-            """
-        ).fetchone()
+    with get_engine().connect() as connection:
+        running_count = connection.execute(
+            select(func.count())
+            .select_from(automation_executions_table)
+            .where(automation_executions_table.c.status == "running")
+        ).scalar_one()
 
-        failed_row = connection.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM automation_executions
-            WHERE status = 'failed'
-            """
-        ).fetchone()
+        failed_count = connection.execute(
+            select(func.count())
+            .select_from(automation_executions_table)
+            .where(automation_executions_table.c.status == "failed")
+        ).scalar_one()
 
     automation_health = [
         health_for_automation(automation)
@@ -1056,10 +846,8 @@ def automation_service_health(
             ),
             "blocked": blocked_count,
             "error": error_count,
-            "running": int(running_row["count"]) if running_row else 0,
-            "failedExecutions": (
-                int(failed_row["count"]) if failed_row else 0
-            ),
+            "running": running_count,
+            "failedExecutions": failed_count,
         },
         "automations": automation_health,
     }

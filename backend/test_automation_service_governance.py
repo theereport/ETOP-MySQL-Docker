@@ -45,9 +45,12 @@ def _test_connection():
         connection.close()
 
 
-import modules.automations.repository as automations_repository  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
 
-_REAL_GET_CONNECTION = automations_repository.get_connection
+from data.mysql import (  # noqa: E402
+    _reset_engine_override,
+    _set_engine_override,
+)
 
 from modules.automations.repository import (  # noqa: E402
     AutomationStateConflict,
@@ -186,22 +189,22 @@ class AutomationGovernanceTests(unittest.TestCase):
         self.temp_directory = tempfile.TemporaryDirectory()
         _DATABASE_PATH = Path(self.temp_directory.name) / "workbench.db"
         _initialize_database(_DATABASE_PATH)
-        # Rebinding the name inside modules.automations.repository's own
-        # namespace (rather than sys.modules["data.database"] before
-        # import) is what actually isolates these tests: repository.py's
-        # functions look up `get_connection` as a bare module-global at
-        # call time, so this works regardless of whether the real
-        # data.database module was already imported by something else in
-        # this same pytest process. The prior sys.modules.setdefault
-        # approach was a no-op whenever that was already true, and every
-        # automation these tests created (including a permanently
-        # "running" execution row) was silently written into and executed
-        # against the real workbench.db by the live scheduler.
-        automations_repository.get_connection = _get_connection
+        # automations, automation_executions, AND reports (now that the
+        # reports module has also moved off SQLite) all go through
+        # get_engine() from data.mysql - overriding it here redirects all
+        # three at once to this temp SQLite file, so these tests never
+        # touch the real MySQL etop schema.
+        self._test_engine = create_engine(f"sqlite:///{_DATABASE_PATH}")
+        _set_engine_override(self._test_engine)
 
     def tearDown(self) -> None:
         global _DATABASE_PATH
-        automations_repository.get_connection = _REAL_GET_CONNECTION
+        _reset_engine_override()
+        # Disposing releases the pooled sqlite3 connection's file handle -
+        # without this, TemporaryDirectory.cleanup() below fails with
+        # WinError 32 for the same reason _connection()/_test_connection()
+        # have to explicitly .close() their sqlite3 connections.
+        self._test_engine.dispose()
         _DATABASE_PATH = None
         self.temp_directory.cleanup()
 

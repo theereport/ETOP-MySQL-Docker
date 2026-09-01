@@ -19,7 +19,9 @@ from fastapi import HTTPException
 from sql_workspace import execute_mysql_query
 from core.sql_validator import normalize_and_validate_sql
 
-from .repository import _connection
+from data.mysql import get_engine, reports_table
+from sqlalchemy import select
+
 from .schemas import (
     AutomationDefinition,
     RunAutomationResponse,
@@ -290,17 +292,12 @@ def _load_saved_report_sql(report_id: str) -> tuple[str, str]:
             "Select a saved report before running this automation."
         )
 
-    with _connection() as connection:
+    with get_engine().connect() as connection:
         row = connection.execute(
-            """
-            SELECT
-                name,
-                sql_text
-            FROM reports
-            WHERE id = ?
-            """,
-            (report_id,),
-        ).fetchone()
+            select(reports_table.c.name, reports_table.c.sql_text).where(
+                reports_table.c.id == report_id
+            )
+        ).mappings().first()
 
     if row is None:
         raise AutomationExecutionError(

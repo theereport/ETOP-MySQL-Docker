@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from sqlalchemy import create_engine
 
 
 BACKEND_ROOT = Path(__file__).resolve().parent
@@ -22,12 +23,9 @@ class JobQueueRepositoryTest(unittest.TestCase):
         self.database_path = str(
             Path(self.temp_directory.name) / "job_queue.db"
         )
-        self.repository = JobQueueRepository(self._connection_factory)
-
-    def _connection_factory(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.addCleanup(self.engine.dispose)
+        self.repository = JobQueueRepository(engine=self.engine)
 
     def test_enqueue_starts_a_job_as_queued(self) -> None:
         self.repository.enqueue("job-1", "lockbox_preparation", "Lockbox batch A")
@@ -163,13 +161,10 @@ class JobQueueServiceTest(unittest.TestCase):
         self.database_path = str(
             Path(self.temp_directory.name) / "job_queue.db"
         )
-        repository = JobQueueRepository(self._connection_factory)
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.addCleanup(self.engine.dispose)
+        repository = JobQueueRepository(engine=self.engine)
         self.service = JobQueueService(repository)
-
-    def _connection_factory(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
 
     def test_summary_reports_active_counts_and_recent_unacknowledged(self) -> None:
         self.service.enqueue("job-running", "lockbox_preparation", "Running")

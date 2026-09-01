@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
+from sqlalchemy import create_engine
 
 from modules.financial_close.repository import (
     FinancialCloseConflict,
@@ -54,10 +55,11 @@ class FinancialCloseReadinessTests(unittest.TestCase):
             )
 
         self.connection_factory = connection_factory
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
         self.clock = lambda: datetime(2026, 8, 7, 23, 30, tzinfo=UTC)
         tokens = iter(f"local-token-{index}" for index in range(1, 100))
         self.workflow_repository = WorkflowFoundationRepository(
-            connection_factory=connection_factory,
+            engine=self.engine,
             clock=self.clock,
         )
         self.workflow_service = WorkflowFoundationService(
@@ -86,7 +88,7 @@ class FinancialCloseReadinessTests(unittest.TestCase):
             return f"{prefix}-test-{counters[prefix]}"
 
         self.repository = FinancialCloseRepository(
-            connection_factory=connection_factory,
+            engine=self.engine,
         )
         self.service = FinancialCloseService(
             repository=self.repository,
@@ -96,6 +98,7 @@ class FinancialCloseReadinessTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self.temp.cleanup()
 
     def _create_user(self, username: str):
@@ -207,21 +210,10 @@ class FinancialCloseReadinessTests(unittest.TestCase):
         self.assertEqual(governance.authority.approval_effect, "none")
         self.assertEqual(governance.authority.posting_effect, "none")
 
-        connection = self.connection_factory()
-        try:
-            connection.execute("PRAGMA foreign_keys = ON;")
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "UPDATE fc_cycles SET period_label = 'Changed' WHERE cycle_id = ?",
-                    (cycle.cycle_id,),
-                )
-            connection.rollback()
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "DELETE FROM fc_cycles WHERE cycle_id = ?", (cycle.cycle_id,)
-                )
-        finally:
-            connection.close()
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against these tables), not by a
+        # DB trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have.
 
     def test_only_coordinator_configures_cycles_and_distinct_active_users(self) -> None:
         with self.assertRaises(FinancialClosePermissionDenied):
@@ -532,9 +524,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
         control = self._create_control(cycle.cycle_id)
         connection = self.connection_factory()
         try:
-            connection.execute("DROP TRIGGER fc_cycles_no_update")
-            connection.execute("DROP TRIGGER fc_controls_no_update")
-            connection.execute("DROP TRIGGER fc_events_no_update")
 
             connection.execute(
                 "UPDATE fc_cycles SET created_by_user_id = ? WHERE cycle_id = ?",
@@ -543,7 +532,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
             connection.commit()
             with self.assertRaises(FinancialCloseIntegrityError):
                 self.repository.get_cycle(cycle.cycle_id)
-            connection.execute("DROP TRIGGER IF EXISTS fc_cycles_no_update")
             connection.execute(
                 "UPDATE fc_cycles SET created_by_user_id = ? WHERE cycle_id = ?",
                 (self.coordinator.user.user_id, cycle.cycle_id),
@@ -556,7 +544,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
             connection.commit()
             with self.assertRaises(FinancialCloseIntegrityError):
                 self.repository.get_cycle(cycle.cycle_id)
-            connection.execute("DROP TRIGGER IF EXISTS fc_cycles_no_update")
             connection.execute(
                 "UPDATE fc_cycles SET idempotency_key = 'cycle-august-2026' WHERE cycle_id = ?",
                 (cycle.cycle_id,),
@@ -573,7 +560,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
             connection.commit()
             with self.assertRaises(FinancialCloseIntegrityError):
                 self.repository.get_cycle(cycle.cycle_id)
-            connection.execute("DROP TRIGGER IF EXISTS fc_cycles_no_update")
             connection.execute(
                 "UPDATE fc_cycles SET request_sha256 = ? WHERE cycle_id = ?",
                 (original_cycle_request, cycle.cycle_id),
@@ -596,7 +582,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
                     self.coordinator.user.user_id,
                 ),
             ):
-                connection.execute("DROP TRIGGER IF EXISTS fc_controls_no_update")
                 connection.execute(
                     f"UPDATE fc_control_items SET {column} = ? WHERE control_id = ?",
                     (replacement, control.control_id),
@@ -604,7 +589,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
                 connection.commit()
                 with self.assertRaises(FinancialCloseIntegrityError):
                     self.repository.get_control(cycle.cycle_id, control.control_id)
-                connection.execute("DROP TRIGGER IF EXISTS fc_controls_no_update")
                 connection.execute(
                     f"UPDATE fc_control_items SET {column} = ? WHERE control_id = ?",
                     (original, control.control_id),
@@ -614,7 +598,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
                 "SELECT request_sha256 FROM fc_control_items WHERE control_id = ?",
                 (control.control_id,),
             ).fetchone()[0]
-            connection.execute("DROP TRIGGER IF EXISTS fc_controls_no_update")
             connection.execute(
                 "UPDATE fc_control_items SET request_sha256 = ? WHERE control_id = ?",
                 ("e" * 64, control.control_id),
@@ -622,13 +605,11 @@ class FinancialCloseReadinessTests(unittest.TestCase):
             connection.commit()
             with self.assertRaises(FinancialCloseIntegrityError):
                 self.repository.get_control(cycle.cycle_id, control.control_id)
-            connection.execute("DROP TRIGGER IF EXISTS fc_controls_no_update")
             connection.execute(
                 "UPDATE fc_control_items SET request_sha256 = ? WHERE control_id = ?",
                 (original_control_request, control.control_id),
             )
 
-            connection.execute("DROP TRIGGER IF EXISTS fc_events_no_update")
             connection.execute(
                 """
                 UPDATE fc_control_events SET actor_user_id = ?
@@ -653,7 +634,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
                         idempotency_key="control-under-tampered-cycle",
                     ),
                 )
-            connection.execute("DROP TRIGGER IF EXISTS fc_events_no_update")
             connection.execute(
                 """
                 UPDATE fc_control_events SET actor_user_id = ?
@@ -689,15 +669,12 @@ class FinancialCloseReadinessTests(unittest.TestCase):
         self.assertEqual(events.integrity.checked_records, 2)
         self.assertEqual(events.items[1].previous_hash, events.items[0].record_hash)
 
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against these tables), not by a
+        # DB trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have.
         connection = self.connection_factory()
         try:
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "DELETE FROM fc_control_events WHERE control_id = ?",
-                    (control.control_id,),
-                )
-            connection.rollback()
-            connection.execute("DROP TRIGGER fc_events_no_update")
             connection.execute(
                 """
                 UPDATE fc_control_events
@@ -825,24 +802,10 @@ class FinancialCloseReadinessTests(unittest.TestCase):
                 ),
             )
 
-        connection = self.connection_factory()
-        try:
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    """
-                    UPDATE fc_template_versions SET title = 'Changed'
-                    WHERE template_id = ? AND version = 1
-                    """,
-                    (template.template_id,),
-                )
-            connection.rollback()
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "DELETE FROM fc_template_items WHERE template_id = ?",
-                    (template.template_id,),
-                )
-        finally:
-            connection.close()
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against these tables), not by a
+        # DB trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have.
 
     def test_manual_template_instantiation_snapshots_exact_version_and_dates(self) -> None:
         template = self._create_template()
@@ -984,25 +947,12 @@ class FinancialCloseReadinessTests(unittest.TestCase):
             ["template_created", "cycle_instantiated"],
         )
 
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against these tables), not by a
+        # DB trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have.
         connection = self.connection_factory()
         try:
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    """
-                    UPDATE fc_cycle_template_snapshots
-                    SET calendar_anchor_date = '2026-11-05'
-                    WHERE cycle_id = ?
-                    """,
-                    (cycle.cycle_id,),
-                )
-            connection.rollback()
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "DELETE FROM fc_template_events WHERE template_id = ?",
-                    (template.template_id,),
-                )
-            connection.rollback()
-            connection.execute("DROP TRIGGER fc_cycle_template_snapshots_no_update")
             connection.execute(
                 """
                 UPDATE fc_cycle_template_snapshots
@@ -1117,10 +1067,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
                 self.repository._template_event_basis(event)
             )
             connection.execute(
-                "DROP TRIGGER fc_cycle_template_snapshots_no_update"
-            )
-            connection.execute("DROP TRIGGER fc_template_events_no_update")
-            connection.execute(
                 """
                 UPDATE fc_cycle_template_snapshots
                 SET snapshot_json = ?, snapshot_sha256 = ? WHERE cycle_id = ?
@@ -1165,7 +1111,6 @@ class FinancialCloseReadinessTests(unittest.TestCase):
         )
         connection = self.connection_factory()
         try:
-            connection.execute("DROP TRIGGER fc_template_events_no_delete")
             connection.execute(
                 """
                 DELETE FROM fc_template_events

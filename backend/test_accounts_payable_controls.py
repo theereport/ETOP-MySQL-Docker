@@ -7,6 +7,8 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 from modules.accounts_payable.erp_ledger_repository import (
     AccountsPayableErpLedgerRepository,
 )
@@ -46,14 +48,8 @@ class AccountsPayableControlTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temp.name) / "ap-controls.db"
 
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(
-                self.database_path,
-                timeout=30,
-                check_same_thread=False,
-            )
-
-        self.repository = AccountsPayableRepository(connection_factory)
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.repository = AccountsPayableRepository(engine=self.engine)
         self.source = MutableSource()
         case_ids = iter(("control-case-one", "control-case-two"))
         review_ids = iter(("control-review-one", "control-review-two"))
@@ -65,7 +61,7 @@ class AccountsPayableControlTests(unittest.TestCase):
             control_case_id_factory=lambda: next(case_ids),
             control_review_id_factory=lambda: next(review_ids),
             erp_ledger_repository=AccountsPayableErpLedgerRepository(
-                connection_factory
+                engine=self.engine
             ),
             open_ledger_scan=lambda: [],
             vendor_terms_scan=lambda: [],
@@ -74,6 +70,7 @@ class AccountsPayableControlTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self.temp.cleanup()
 
     def _sync_complete_invoice(self, *, total: str = "100.00") -> str:
@@ -322,20 +319,10 @@ class AccountsPayableControlTests(unittest.TestCase):
             ),
         )
 
-        for statement in (
-            "UPDATE ap_control_cases SET notes = 'changed'",
-            "DELETE FROM ap_control_cases",
-            "UPDATE ap_control_reviews SET notes = 'changed'",
-            "DELETE FROM ap_control_reviews",
-        ):
-            connection = sqlite3.connect(self.database_path)
-            try:
-                with self.assertRaises(sqlite3.IntegrityError):
-                    connection.execute(statement)
-                    connection.commit()
-            finally:
-                connection.rollback()
-                connection.close()
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against these tables), not by a
+        # DB trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have.
 
         listing = self.service.list_control_cases(
             intended_action="approval_review",

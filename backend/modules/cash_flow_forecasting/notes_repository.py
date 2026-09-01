@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import threading
-from collections.abc import Callable
 from typing import Any
 
-from data.database import get_connection
+from sqlalchemy import delete, func, select
+from sqlalchemy.engine import Engine
+
+from data.mysql import (
+    cash_flow_ap_due_date_cache_table,
+    cash_flow_forecast_actuals_table,
+    cash_flow_forecast_snapshots_table,
+    cash_flow_forecast_weeks_table,
+    get_engine,
+    metadata,
+)
 
 
 class CashFlowForecastIntegrityError(RuntimeError):
@@ -15,15 +23,23 @@ class CashFlowForecastIntegrityError(RuntimeError):
     integrity check."""
 
 
+_CFF_TABLES = [
+    cash_flow_forecast_snapshots_table,
+    cash_flow_forecast_weeks_table,
+    cash_flow_forecast_actuals_table,
+    cash_flow_ap_due_date_cache_table,
+]
+
+
 class CashFlowForecastingNotesRepository:
     """Local ETOP-owned storage for cash flow forecasting.
 
     Three tables, two different durability rules:
-    - `cash_flow_forecast_snapshots` / `_weeks`: append-only (update and
-      delete blocked by trigger). A snapshot is a permanent record of
-      what this module projected as of a given date - it must never be
-      silently rewritten, the same way every other ETOP evidence-note
-      table in this codebase is append-only.
+    - `cash_flow_forecast_snapshots` / `_weeks`: append-only (enforced by
+      convention in this repository layer). A snapshot is a permanent
+      record of what this module projected as of a given date - it must
+      never be silently rewritten, the same way every other ETOP
+      evidence-note table in this codebase is append-only.
     - `cash_flow_forecast_actuals`: append-only for the same reason - once
       a week's actual figures are recorded, that record stands even if a
       later re-run recomputes it (multiple rows for the same week are
@@ -36,148 +52,13 @@ class CashFlowForecastingNotesRepository:
       of its own.
     """
 
-    def __init__(
-        self,
-        connection_factory: Callable[[], sqlite3.Connection] = get_connection,
-    ) -> None:
-        self._connection_factory = connection_factory
+    def __init__(self, engine: Engine | None = None) -> None:
+        self._engine = engine or get_engine()
         self._initialization_lock = threading.Lock()
-
-    def _connection(self) -> sqlite3.Connection:
-        connection = self._connection_factory()
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON;")
-        return connection
 
     def initialize(self) -> None:
         with self._initialization_lock:
-            connection = self._connection()
-            try:
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS cash_flow_forecast_snapshots (
-                        snapshot_id TEXT PRIMARY KEY,
-                        as_of TEXT NOT NULL,
-                        generated_at TEXT NOT NULL,
-                        horizon_weeks INTEGER NOT NULL,
-                        starting_balance_business_day TEXT,
-                        starting_balance_amount REAL,
-                        loc_balance REAL,
-                        loc_available REAL,
-                        evidence_snapshot_json TEXT NOT NULL,
-                        evidence_snapshot_sha256 TEXT NOT NULL
-                            CHECK (length(evidence_snapshot_sha256) = 64)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_cff_snapshots_as_of
-                    ON cash_flow_forecast_snapshots(as_of DESC, snapshot_id DESC);
-
-                    CREATE TRIGGER IF NOT EXISTS cff_snapshots_no_update
-                    BEFORE UPDATE ON cash_flow_forecast_snapshots
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'Cash flow forecast snapshots are append-only.'
-                        );
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS cff_snapshots_no_delete
-                    BEFORE DELETE ON cash_flow_forecast_snapshots
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'Cash flow forecast snapshots are append-only.'
-                        );
-                    END;
-
-                    CREATE TABLE IF NOT EXISTS cash_flow_forecast_weeks (
-                        week_id TEXT PRIMARY KEY,
-                        snapshot_id TEXT NOT NULL
-                            REFERENCES cash_flow_forecast_snapshots(snapshot_id),
-                        week_index INTEGER NOT NULL,
-                        week_start TEXT NOT NULL,
-                        week_end TEXT NOT NULL,
-                        projected_ar REAL NOT NULL,
-                        projected_ap REAL,
-                        projected_ap_on_hold REAL,
-                        projected_other REAL NOT NULL,
-                        projected_ending_balance REAL
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_cff_weeks_snapshot
-                    ON cash_flow_forecast_weeks(snapshot_id, week_index);
-
-                    CREATE TRIGGER IF NOT EXISTS cff_weeks_no_update
-                    BEFORE UPDATE ON cash_flow_forecast_weeks
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'Cash flow forecast weeks are append-only.'
-                        );
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS cff_weeks_no_delete
-                    BEFORE DELETE ON cash_flow_forecast_weeks
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'Cash flow forecast weeks are append-only.'
-                        );
-                    END;
-
-                    CREATE TABLE IF NOT EXISTS cash_flow_forecast_actuals (
-                        actual_id TEXT PRIMARY KEY,
-                        week_start TEXT NOT NULL,
-                        week_end TEXT NOT NULL,
-                        actual_ar REAL NOT NULL,
-                        actual_ap REAL NOT NULL,
-                        actual_other REAL NOT NULL,
-                        actual_ending_balance REAL,
-                        projected_ar REAL,
-                        projected_ap REAL,
-                        projected_other REAL,
-                        projected_ending_balance REAL,
-                        recorded_at TEXT NOT NULL,
-                        evidence_snapshot_json TEXT NOT NULL,
-                        evidence_snapshot_sha256 TEXT NOT NULL
-                            CHECK (length(evidence_snapshot_sha256) = 64)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_cff_actuals_week
-                    ON cash_flow_forecast_actuals(
-                        week_start, week_end, recorded_at DESC
-                    );
-
-                    CREATE TRIGGER IF NOT EXISTS cff_actuals_no_update
-                    BEFORE UPDATE ON cash_flow_forecast_actuals
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'Cash flow forecast actuals are append-only.'
-                        );
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS cff_actuals_no_delete
-                    BEFORE DELETE ON cash_flow_forecast_actuals
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'Cash flow forecast actuals are append-only.'
-                        );
-                    END;
-
-                    CREATE TABLE IF NOT EXISTS cash_flow_ap_due_date_cache (
-                        week_start TEXT PRIMARY KEY,
-                        week_end TEXT NOT NULL,
-                        open_amount REAL NOT NULL,
-                        open_on_hold_amount REAL NOT NULL,
-                        refreshed_at TEXT NOT NULL
-                    );
-                    """
-                )
-                connection.commit()
-            finally:
-                connection.close()
+            metadata.create_all(self._engine, checkfirst=True, tables=_CFF_TABLES)
 
     # -- forecast snapshots --------------------------------------------
 
@@ -197,77 +78,60 @@ class CashFlowForecastingNotesRepository:
         )
         evidence_sha256 = hashlib.sha256(evidence_json.encode("utf-8")).hexdigest()
 
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
+        with self._engine.begin() as connection:
             connection.execute(
-                """
-                INSERT INTO cash_flow_forecast_snapshots (
-                    snapshot_id, as_of, generated_at, horizon_weeks,
-                    starting_balance_business_day, starting_balance_amount,
-                    loc_balance, loc_available,
-                    evidence_snapshot_json, evidence_snapshot_sha256
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
-                    snapshot["snapshot_id"],
-                    snapshot["as_of"],
-                    snapshot["generated_at"],
-                    snapshot["horizon_weeks"],
-                    snapshot.get("starting_balance_business_day"),
-                    snapshot.get("starting_balance_amount"),
-                    snapshot.get("loc_balance"),
-                    snapshot.get("loc_available"),
-                    evidence_json,
-                    evidence_sha256,
-                ),
+                cash_flow_forecast_snapshots_table.insert().values(
+                    snapshot_id=snapshot["snapshot_id"],
+                    as_of=snapshot["as_of"],
+                    generated_at=snapshot["generated_at"],
+                    horizon_weeks=snapshot["horizon_weeks"],
+                    starting_balance_business_day=snapshot.get(
+                        "starting_balance_business_day"
+                    ),
+                    starting_balance_amount=snapshot.get(
+                        "starting_balance_amount"
+                    ),
+                    loc_balance=snapshot.get("loc_balance"),
+                    loc_available=snapshot.get("loc_available"),
+                    evidence_snapshot_json=evidence_json,
+                    evidence_snapshot_sha256=evidence_sha256,
+                )
             )
             for week in weeks:
                 connection.execute(
-                    """
-                    INSERT INTO cash_flow_forecast_weeks (
-                        week_id, snapshot_id, week_index, week_start,
-                        week_end, projected_ar, projected_ap,
-                        projected_ap_on_hold, projected_other,
-                        projected_ending_balance
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    (
-                        week["week_id"],
-                        snapshot["snapshot_id"],
-                        week["week_index"],
-                        week["week_start"],
-                        week["week_end"],
-                        week["projected_ar"],
-                        week.get("projected_ap"),
-                        week.get("projected_ap_on_hold"),
-                        week["projected_other"],
-                        week.get("projected_ending_balance"),
-                    ),
+                    cash_flow_forecast_weeks_table.insert().values(
+                        week_id=week["week_id"],
+                        snapshot_id=snapshot["snapshot_id"],
+                        week_index=week["week_index"],
+                        week_start=week["week_start"],
+                        week_end=week["week_end"],
+                        projected_ar=week["projected_ar"],
+                        projected_ap=week.get("projected_ap"),
+                        projected_ap_on_hold=week.get("projected_ap_on_hold"),
+                        projected_other=week["projected_other"],
+                        projected_ending_balance=week.get(
+                            "projected_ending_balance"
+                        ),
+                    )
                 )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
         return snapshot["snapshot_id"]
 
     def list_snapshots(self, limit: int = 50) -> list[dict[str, Any]]:
         self.initialize()
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT snapshot_id, as_of, generated_at, horizon_weeks
-                FROM cash_flow_forecast_snapshots
-                ORDER BY as_of DESC, snapshot_id DESC
-                LIMIT ?;
-                """,
-                (limit,),
-            ).fetchall()
-        finally:
-            connection.close()
+                select(
+                    cash_flow_forecast_snapshots_table.c.snapshot_id,
+                    cash_flow_forecast_snapshots_table.c.as_of,
+                    cash_flow_forecast_snapshots_table.c.generated_at,
+                    cash_flow_forecast_snapshots_table.c.horizon_weeks,
+                )
+                .order_by(
+                    cash_flow_forecast_snapshots_table.c.as_of.desc(),
+                    cash_flow_forecast_snapshots_table.c.snapshot_id.desc(),
+                )
+                .limit(limit)
+            ).mappings().all()
         return [dict(row) for row in rows]
 
     # -- actuals ---------------------------------------------------------
@@ -283,84 +147,77 @@ class CashFlowForecastingNotesRepository:
         )
         evidence_sha256 = hashlib.sha256(evidence_json.encode("utf-8")).hexdigest()
 
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
+        with self._engine.begin() as connection:
             connection.execute(
-                """
-                INSERT INTO cash_flow_forecast_actuals (
-                    actual_id, week_start, week_end, actual_ar, actual_ap,
-                    actual_other, actual_ending_balance, projected_ar,
-                    projected_ap, projected_other, projected_ending_balance,
-                    recorded_at, evidence_snapshot_json,
-                    evidence_snapshot_sha256
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
-                    record["actual_id"],
-                    record["week_start"],
-                    record["week_end"],
-                    record["actual_ar"],
-                    record["actual_ap"],
-                    record["actual_other"],
-                    record.get("actual_ending_balance"),
-                    record.get("projected_ar"),
-                    record.get("projected_ap"),
-                    record.get("projected_other"),
-                    record.get("projected_ending_balance"),
-                    record["recorded_at"],
-                    evidence_json,
-                    evidence_sha256,
-                ),
+                cash_flow_forecast_actuals_table.insert().values(
+                    actual_id=record["actual_id"],
+                    week_start=record["week_start"],
+                    week_end=record["week_end"],
+                    actual_ar=record["actual_ar"],
+                    actual_ap=record["actual_ap"],
+                    actual_other=record["actual_other"],
+                    actual_ending_balance=record.get("actual_ending_balance"),
+                    projected_ar=record.get("projected_ar"),
+                    projected_ap=record.get("projected_ap"),
+                    projected_other=record.get("projected_other"),
+                    projected_ending_balance=record.get(
+                        "projected_ending_balance"
+                    ),
+                    recorded_at=record["recorded_at"],
+                    evidence_snapshot_json=evidence_json,
+                    evidence_snapshot_sha256=evidence_sha256,
+                )
             )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def latest_actual_for_week(
         self, week_start: str, week_end: str
     ) -> dict[str, Any] | None:
         self.initialize()
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT * FROM cash_flow_forecast_actuals
-                WHERE week_start = ? AND week_end = ?
-                ORDER BY recorded_at DESC
-                LIMIT 1;
-                """,
-                (week_start, week_end),
-            ).fetchone()
-        finally:
-            connection.close()
+                select(cash_flow_forecast_actuals_table)
+                .where(
+                    cash_flow_forecast_actuals_table.c.week_start == week_start,
+                    cash_flow_forecast_actuals_table.c.week_end == week_end,
+                )
+                .order_by(cash_flow_forecast_actuals_table.c.recorded_at.desc())
+                .limit(1)
+            ).mappings().first()
         if row is None:
             return None
         return self._actual_from_row(row)
 
     def list_actuals(self, limit: int = 200) -> list[dict[str, Any]]:
         self.initialize()
-        connection = self._connection()
-        try:
+        # The original SQLite query used `SELECT * ... GROUP BY week_start,
+        # week_end HAVING MAX(recorded_at)`, relying on SQLite's
+        # non-standard "bare column in an aggregate query" extension to
+        # pick a row per group - it isn't actually guaranteed to be the
+        # row with the max recorded_at, and MySQL's default
+        # ONLY_FULL_GROUP_BY mode rejects the query outright. A window
+        # function is the portable way to get "the latest row per week"
+        # on both engines.
+        table = cash_flow_forecast_actuals_table
+        row_number = (
+            func.row_number()
+            .over(
+                partition_by=[table.c.week_start, table.c.week_end],
+                order_by=table.c.recorded_at.desc(),
+            )
+            .label("row_number")
+        )
+        ranked = select(table, row_number).subquery()
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT * FROM cash_flow_forecast_actuals
-                GROUP BY week_start, week_end
-                HAVING MAX(recorded_at)
-                ORDER BY week_start DESC
-                LIMIT ?;
-                """,
-                (limit,),
-            ).fetchall()
-        finally:
-            connection.close()
+                select(ranked)
+                .where(ranked.c.row_number == 1)
+                .order_by(ranked.c.week_start.desc())
+                .limit(limit)
+            ).mappings().all()
         return [self._actual_from_row(row) for row in rows]
 
     @staticmethod
-    def _actual_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _actual_from_row(row) -> dict[str, Any]:
         snapshot_json = row["evidence_snapshot_json"]
         expected_hash = row["evidence_snapshot_sha256"]
         actual_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
@@ -369,7 +226,11 @@ class CashFlowForecastingNotesRepository:
                 "Stored cash flow actual record failed its SHA-256 "
                 "integrity check."
             )
-        result = dict(row)
+        result = {
+            key: value
+            for key, value in dict(row).items()
+            if key != "row_number"
+        }
         result["evidence_snapshot"] = json.loads(
             result.pop("evidence_snapshot_json")
         )
@@ -381,63 +242,38 @@ class CashFlowForecastingNotesRepository:
         self, buckets: list[dict[str, Any]], *, refreshed_at: str
     ) -> None:
         self.initialize()
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
-            connection.execute("DELETE FROM cash_flow_ap_due_date_cache;")
-            connection.executemany(
-                """
-                INSERT INTO cash_flow_ap_due_date_cache (
-                    week_start, week_end, open_amount, open_on_hold_amount,
-                    refreshed_at
-                ) VALUES (?, ?, ?, ?, ?);
-                """,
-                [
-                    (
-                        bucket["week_start"],
-                        bucket["week_end"],
-                        bucket["open_amount"],
-                        bucket["open_on_hold_amount"],
-                        refreshed_at,
+        with self._engine.begin() as connection:
+            connection.execute(delete(cash_flow_ap_due_date_cache_table))
+            for bucket in buckets:
+                connection.execute(
+                    cash_flow_ap_due_date_cache_table.insert().values(
+                        week_start=bucket["week_start"],
+                        week_end=bucket["week_end"],
+                        open_amount=bucket["open_amount"],
+                        open_on_hold_amount=bucket["open_on_hold_amount"],
+                        refreshed_at=refreshed_at,
                     )
-                    for bucket in buckets
-                ],
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+                )
 
     def get_ap_due_date_cache(
         self, week_start: str, week_end: str
     ) -> dict[str, Any] | None:
         self.initialize()
-        connection = self._connection()
-        try:
+        with self._engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT * FROM cash_flow_ap_due_date_cache
-                WHERE week_start = ? AND week_end = ?;
-                """,
-                (week_start, week_end),
-            ).fetchone()
-        finally:
-            connection.close()
+                select(cash_flow_ap_due_date_cache_table).where(
+                    cash_flow_ap_due_date_cache_table.c.week_start == week_start,
+                    cash_flow_ap_due_date_cache_table.c.week_end == week_end,
+                )
+            ).mappings().first()
         return dict(row) if row is not None else None
 
     def ap_cache_refreshed_at(self) -> str | None:
         self.initialize()
-        connection = self._connection()
-        try:
-            row = connection.execute(
-                "SELECT MAX(refreshed_at) AS refreshed_at "
-                "FROM cash_flow_ap_due_date_cache;"
-            ).fetchone()
-        finally:
-            connection.close()
-        return row["refreshed_at"] if row is not None else None
+        with self._engine.connect() as connection:
+            return connection.execute(
+                select(func.max(cash_flow_ap_due_date_cache_table.c.refreshed_at))
+            ).scalar_one_or_none()
 
 
 cash_flow_forecasting_notes_repository = CashFlowForecastingNotesRepository()

@@ -3,17 +3,23 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import fitz
+from sqlalchemy import select
+from sqlalchemy.engine import Engine
 
-from data.database import DATA_DIR, get_connection
+from data.mysql import (
+    credit_potential_customer_documents_table,
+    credit_potential_customers_table,
+    get_engine,
+    metadata,
+)
 from modules.document_intelligence.service import ocr_region
 
 
@@ -389,8 +395,8 @@ def validate_tmcust_readiness(fields: dict[str, Any], km_setup: dict[str, Any] |
 
 
 class PotentialCustomerRepository:
-    def __init__(self, connection_factory: Callable[[], sqlite3.Connection] = get_connection) -> None:
-        self._connection_factory = connection_factory
+    def __init__(self, engine: Engine | None = None) -> None:
+        self._engine = engine or get_engine()
         self._lock = threading.Lock()
         self._initialized = False
 
@@ -400,108 +406,115 @@ class PotentialCustomerRepository:
         with self._lock:
             if self._initialized:
                 return
-            with self._connection_factory() as connection:
-                connection.executescript("""
-                    CREATE TABLE IF NOT EXISTS credit_potential_customers (
-                        potential_customer_id TEXT PRIMARY KEY,
-                        status TEXT NOT NULL,
-                        source_file_name TEXT NOT NULL,
-                        source_sha256 TEXT NOT NULL,
-                        parser_name TEXT NOT NULL,
-                        parser_version TEXT NOT NULL,
-                        classifier_confidence REAL NOT NULL,
-                        received_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        fields_json TEXT NOT NULL,
-                        evidence_json TEXT NOT NULL,
-                        km_setup_json TEXT NOT NULL DEFAULT '{}',
-                        matched_customer_number INTEGER,
-                        match_disposition TEXT,
-                        review_notes TEXT NOT NULL DEFAULT '',
-                        erp_write INTEGER NOT NULL DEFAULT 0 CHECK (erp_write = 0)
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_credit_potential_customers_status_time
-                    ON credit_potential_customers(status, received_at DESC);
-                    CREATE TABLE IF NOT EXISTS credit_potential_customer_documents (
-                        potential_customer_id TEXT PRIMARY KEY,
-                        file_name TEXT NOT NULL,
-                        content_type TEXT NOT NULL,
-                        content BLOB NOT NULL,
-                        sha256 TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        FOREIGN KEY (potential_customer_id)
-                            REFERENCES credit_potential_customers(potential_customer_id)
-                    );
-                """)
+            metadata.create_all(
+                self._engine,
+                checkfirst=True,
+                tables=[
+                    credit_potential_customers_table,
+                    credit_potential_customer_documents_table,
+                ],
+            )
             self._initialized = True
 
     def create(self, record: dict[str, Any], document_content: bytes | None = None) -> dict[str, Any]:
         self._initialize()
-        with self._connection_factory() as connection:
+        with self._engine.begin() as connection:
             connection.execute(
-                """INSERT INTO credit_potential_customers (
-                    potential_customer_id,status,source_file_name,source_sha256,
-                    parser_name,parser_version,classifier_confidence,received_at,
-                    updated_at,fields_json,evidence_json,km_setup_json,erp_write
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0)""",
-                (
-                    record["potential_customer_id"], record["status"], record["source_file_name"],
-                    record["source_sha256"], record["parser_name"], record["parser_version"],
-                    record["classifier_confidence"], record["received_at"], record["updated_at"],
-                    json.dumps(record["fields"], sort_keys=True), json.dumps(record["evidence"], sort_keys=True), "{}",
-                ),
+                credit_potential_customers_table.insert().values(
+                    potential_customer_id=record["potential_customer_id"],
+                    status=record["status"],
+                    source_file_name=record["source_file_name"],
+                    source_sha256=record["source_sha256"],
+                    parser_name=record["parser_name"],
+                    parser_version=record["parser_version"],
+                    classifier_confidence=record["classifier_confidence"],
+                    received_at=record["received_at"],
+                    updated_at=record["updated_at"],
+                    fields_json=json.dumps(record["fields"], sort_keys=True),
+                    evidence_json=json.dumps(record["evidence"], sort_keys=True),
+                    km_setup_json="{}",
+                    review_notes="",
+                    erp_write=0,
+                )
             )
             if document_content is not None:
                 connection.execute(
-                    """INSERT INTO credit_potential_customer_documents
-                       (potential_customer_id,file_name,content_type,content,sha256,created_at)
-                       VALUES (?,?,?,?,?,?)""",
-                    (record["potential_customer_id"], record["source_file_name"], "application/pdf",
-                     document_content, record["source_sha256"], record["received_at"]),
+                    credit_potential_customer_documents_table.insert().values(
+                        potential_customer_id=record["potential_customer_id"],
+                        file_name=record["source_file_name"],
+                        content_type="application/pdf",
+                        content=document_content,
+                        sha256=record["source_sha256"],
+                        created_at=record["received_at"],
+                    )
                 )
         return self.get(record["potential_customer_id"])
 
     def list(self) -> list[dict[str, Any]]:
         self._initialize()
-        with self._connection_factory() as connection:
-            rows = connection.execute("SELECT * FROM credit_potential_customers ORDER BY received_at DESC").fetchall()
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(credit_potential_customers_table).order_by(
+                    credit_potential_customers_table.c.received_at.desc()
+                )
+            ).mappings().all()
         return [self._deserialize(row) for row in rows]
 
     def get(self, potential_customer_id: str) -> dict[str, Any]:
         self._initialize()
-        with self._connection_factory() as connection:
-            row = connection.execute("SELECT * FROM credit_potential_customers WHERE potential_customer_id=?", (potential_customer_id,)).fetchone()
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                select(credit_potential_customers_table).where(
+                    credit_potential_customers_table.c.potential_customer_id
+                    == potential_customer_id
+                )
+            ).mappings().first()
         if row is None:
             raise KeyError(potential_customer_id)
         return self._deserialize(row)
 
     def get_document(self, potential_customer_id: str) -> tuple[str, bytes, str]:
         self._initialize()
-        with self._connection_factory() as connection:
+        with self._engine.connect() as connection:
             row = connection.execute(
-                "SELECT file_name, content, sha256 FROM credit_potential_customer_documents WHERE potential_customer_id=?",
-                (potential_customer_id,),
-            ).fetchone()
+                select(
+                    credit_potential_customer_documents_table.c.file_name,
+                    credit_potential_customer_documents_table.c.content,
+                    credit_potential_customer_documents_table.c.sha256,
+                ).where(
+                    credit_potential_customer_documents_table.c.potential_customer_id
+                    == potential_customer_id
+                )
+            ).first()
         if row is None:
             raise KeyError(potential_customer_id)
-        return str(row["file_name"]), bytes(row["content"]), str(row["sha256"])
+        return str(row.file_name), bytes(row.content), str(row.sha256)
 
     def update_review(self, potential_customer_id: str, *, status: str, km_setup: dict[str, Any], review_notes: str, fields: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
         self._initialize()
         now = datetime.now(UTC).isoformat()
-        with self._connection_factory() as connection:
+        with self._engine.begin() as connection:
             result = connection.execute(
-                """UPDATE credit_potential_customers
-                   SET status=?, km_setup_json=?, review_notes=?, fields_json=?, evidence_json=?, updated_at=?
-                   WHERE potential_customer_id=?""",
-                (status, json.dumps(km_setup, sort_keys=True), review_notes.strip(), json.dumps(fields, sort_keys=True), json.dumps(evidence, sort_keys=True), now, potential_customer_id),
+                credit_potential_customers_table.update()
+                .where(
+                    credit_potential_customers_table.c.potential_customer_id
+                    == potential_customer_id
+                )
+                .values(
+                    status=status,
+                    km_setup_json=json.dumps(km_setup, sort_keys=True),
+                    review_notes=review_notes.strip(),
+                    fields_json=json.dumps(fields, sort_keys=True),
+                    evidence_json=json.dumps(evidence, sort_keys=True),
+                    updated_at=now,
+                )
             )
             if result.rowcount != 1:
                 raise KeyError(potential_customer_id)
         return self.get(potential_customer_id)
 
     @staticmethod
-    def _deserialize(row: sqlite3.Row) -> dict[str, Any]:
+    def _deserialize(row) -> dict[str, Any]:
         data = dict(row)
         data["fields"] = json.loads(data.pop("fields_json"))
         data["evidence"] = json.loads(data.pop("evidence_json"))

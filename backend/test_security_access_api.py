@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlsplit
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
 
 from modules.workflow_foundation import router as workflow_api
 from modules.workflow_foundation.access_control import ModuleAccessMiddleware
@@ -27,14 +28,12 @@ class SecurityAccessApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         database_path = Path(self.temp.name) / "security-access-api.db"
-
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(database_path, timeout=30, check_same_thread=False)
+        self.engine = create_engine(f"sqlite:///{database_path}")
 
         clock = lambda: datetime(2026, 8, 7, 17, 30, tzinfo=UTC)
         self.service = WorkflowFoundationService(
             repository=WorkflowFoundationRepository(
-                connection_factory=connection_factory,
+                engine=self.engine,
                 clock=clock,
             ),
             clock=clock,
@@ -90,6 +89,7 @@ class SecurityAccessApiTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.client.close()
         workflow_api.workflow_foundation_service = self.original_api_service
+        self.engine.dispose()
         self.temp.cleanup()
 
     def test_public_bootstrap_health_and_cors_preflight_do_not_require_session(self) -> None:
@@ -222,67 +222,68 @@ class SecurityAccessApiTests(unittest.TestCase):
 
     def test_signed_session_hash_is_namespace_isolated_and_invite_uses_app_url(self) -> None:
         database_path = Path(self.temp.name) / "signed-session.db"
-
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(database_path, timeout=30, check_same_thread=False)
+        engine = create_engine(f"sqlite:///{database_path}")
 
         clock = lambda: datetime(2026, 8, 7, 17, 30, tzinfo=UTC)
-        with patch.dict(
-            "os.environ",
-            {
-                "ETOP_APP_URL": "http://127.0.0.1:5174",
-                "ETOP_SESSION_SIGNING_SECRET": "test-only-secret-with-at-least-32-characters",
-                "ETOP_SESSION_NAMESPACE": "test-port-8001",
-            },
-            clear=False,
-        ):
-            signed_service = WorkflowFoundationService(
+        try:
+            with patch.dict(
+                "os.environ",
+                {
+                    "ETOP_APP_URL": "http://127.0.0.1:5174",
+                    "ETOP_SESSION_SIGNING_SECRET": "test-only-secret-with-at-least-32-characters",
+                    "ETOP_SESSION_NAMESPACE": "test-port-8001",
+                },
+                clear=False,
+            ):
+                signed_service = WorkflowFoundationService(
+                    repository=WorkflowFoundationRepository(
+                        engine=engine,
+                        clock=clock,
+                    ),
+                    clock=clock,
+                )
+                session = signed_service.bootstrap(
+                    BootstrapRequest(
+                        username="signed_coordinator",
+                        display_name="Signed Coordinator",
+                        password="controlled-local-password",
+                    )
+                )
+                invitation = signed_service.create_invitation(
+                    session.token,
+                    InvitationCreate(
+                        username="test_link_user",
+                        display_name="Test Link User",
+                        role_ids=["workflow_observer"],
+                        module_ids=["dashboard"],
+                    ),
+                )
+            self.assertTrue(
+                invitation.invitation_link.startswith("http://127.0.0.1:5174/#invite=")
+            )
+            connection = sqlite3.connect(database_path)
+            try:
+                stored_hash = connection.execute(
+                    "SELECT token_hash FROM wf_sessions ORDER BY issued_at LIMIT 1"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertNotEqual(stored_hash, sha256(session.token.encode()).hexdigest())
+
+            other_namespace = WorkflowFoundationService(
                 repository=WorkflowFoundationRepository(
-                    connection_factory=connection_factory,
+                    engine=engine,
                     clock=clock,
                 ),
                 clock=clock,
+                session_signing_secret="test-only-secret-with-at-least-32-characters",
+                session_namespace="different-environment",
             )
-            session = signed_service.bootstrap(
-                BootstrapRequest(
-                    username="signed_coordinator",
-                    display_name="Signed Coordinator",
-                    password="controlled-local-password",
-                )
-            )
-            invitation = signed_service.create_invitation(
-                session.token,
-                InvitationCreate(
-                    username="test_link_user",
-                    display_name="Test Link User",
-                    role_ids=["workflow_observer"],
-                    module_ids=["dashboard"],
-                ),
-            )
-        self.assertTrue(
-            invitation.invitation_link.startswith("http://127.0.0.1:5174/#invite=")
-        )
-        connection = connection_factory()
-        try:
-            stored_hash = connection.execute(
-                "SELECT token_hash FROM wf_sessions ORDER BY issued_at LIMIT 1"
-            ).fetchone()[0]
+            with self.assertRaises(WorkflowAuthenticationRequired) as error:
+                other_namespace.current_session(session.token)
+            self.assertIn("missing, expired, or signed out", str(error.exception))
         finally:
-            connection.close()
-        self.assertNotEqual(stored_hash, sha256(session.token.encode()).hexdigest())
-
-        other_namespace = WorkflowFoundationService(
-            repository=WorkflowFoundationRepository(
-                connection_factory=connection_factory,
-                clock=clock,
-            ),
-            clock=clock,
-            session_signing_secret="test-only-secret-with-at-least-32-characters",
-            session_namespace="different-environment",
-        )
-        with self.assertRaises(WorkflowAuthenticationRequired) as error:
-            other_namespace.current_session(session.token)
-        self.assertIn("missing, expired, or signed out", str(error.exception))
+            engine.dispose()
 
 
 if __name__ == "__main__":

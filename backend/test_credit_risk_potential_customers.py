@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+from sqlalchemy import create_engine
 
 from modules.credit_risk.potential_customers import (
     PotentialCustomerRepository,
@@ -119,76 +119,76 @@ def test_tmcust_mapping_flags_length_and_governed_translation():
 
 def test_repository_persists_potential_customer_and_never_enables_erp_write(tmp_path, monkeypatch):
     db = tmp_path / "potential.db"
-    def factory():
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
-        return conn
-    repo = PotentialCustomerRepository(factory)
-    service = PotentialCustomerService(repo)
-    monkeypatch.setattr(service, "find_existing_matches", lambda fields: [])
-    record = {
-        "potential_customer_id": "PCA-TEST",
-        "status": "needs_review",
-        "source_file_name": "application.pdf",
-        "source_sha256": "a" * 64,
-        "parser_name": "km-credit-application",
-        "parser_version": "r72.1",
-        "classifier_confidence": 1.0,
-        "received_at": "2026-08-21T17:00:00+00:00",
-        "updated_at": "2026-08-21T17:00:00+00:00",
-        "fields": {"legal_business_name": "Test LLC"},
-        "evidence": {},
-    }
-    saved = repo.create(record)
-    enriched = service.enrich(saved)
-    assert enriched["erp_write"] is False
-    assert enriched["governance"]["automatic_customer_creation"] is False
-    assert repo.get("PCA-TEST")["fields"]["legal_business_name"] == "Test LLC"
+    engine = create_engine(f"sqlite:///{db}")
+    try:
+        repo = PotentialCustomerRepository(engine=engine)
+        service = PotentialCustomerService(repo)
+        monkeypatch.setattr(service, "find_existing_matches", lambda fields: [])
+        record = {
+            "potential_customer_id": "PCA-TEST",
+            "status": "needs_review",
+            "source_file_name": "application.pdf",
+            "source_sha256": "a" * 64,
+            "parser_name": "km-credit-application",
+            "parser_version": "r72.1",
+            "classifier_confidence": 1.0,
+            "received_at": "2026-08-21T17:00:00+00:00",
+            "updated_at": "2026-08-21T17:00:00+00:00",
+            "fields": {"legal_business_name": "Test LLC"},
+            "evidence": {},
+        }
+        saved = repo.create(record)
+        enriched = service.enrich(saved)
+        assert enriched["erp_write"] is False
+        assert enriched["governance"]["automatic_customer_creation"] is False
+        assert repo.get("PCA-TEST")["fields"]["legal_business_name"] == "Test LLC"
+    finally:
+        engine.dispose()
 
 def test_document_and_human_corrections_persist(tmp_path, monkeypatch):
     db = tmp_path / "potential-doc.db"
-    def factory():
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
-        return conn
-    repo = PotentialCustomerRepository(factory)
-    service = PotentialCustomerService(repo)
-    monkeypatch.setattr(service, "find_existing_matches", lambda fields: [])
-    record = {
-        "potential_customer_id": "PCA-DOC",
-        "status": "needs_review",
-        "source_file_name": "application.pdf",
-        "source_sha256": "b" * 64,
-        "parser_name": "km-credit-application",
-        "parser_version": "r72.1",
-        "classifier_confidence": 1.0,
-        "received_at": "2026-08-21T17:00:00+00:00",
-        "updated_at": "2026-08-21T17:00:00+00:00",
-        "fields": {
-            "legal_business_name": "OCR Name",
-            "business_phone": "",
-            "shipping_address": {"street": "", "city": "", "state": "", "zip": ""},
-            "billing_address": {"street": "", "city": "", "state": "", "zip": ""},
-        },
-        "evidence": {},
-    }
-    repo.create(record, b"%PDF-test")
-    name, content, digest = repo.get_document("PCA-DOC")
-    assert name == "application.pdf"
-    assert content == b"%PDF-test"
-    assert digest == "b" * 64
-    updated = service.update_review("PCA-DOC", {
-        "status": "application_complete",
-        "field_updates": {
-            "legal_business_name": "Verified Name",
-            "shipping_address": {"street": "1 Main St", "city": "Delphos", "state": "OH", "zip": "45833"},
-        },
-        "km_setup": {"route_code": "94", "terms_code": "1"},
-    })
-    assert updated["fields"]["legal_business_name"] == "Verified Name"
-    assert updated["evidence"]["legal_business_name"]["status"] == "human_verified"
-    assert updated["fields"]["shipping_address"]["city"] == "Delphos"
-    assert updated["evidence"]["shipping_address"]["status"] == "human_verified"
-    assert updated["km_setup"]["route_code"] == "94"
-    assert updated["status"] == "application_complete"
-    assert updated["erp_write"] is False
+    engine = create_engine(f"sqlite:///{db}")
+    try:
+        repo = PotentialCustomerRepository(engine=engine)
+        service = PotentialCustomerService(repo)
+        monkeypatch.setattr(service, "find_existing_matches", lambda fields: [])
+        record = {
+            "potential_customer_id": "PCA-DOC",
+            "status": "needs_review",
+            "source_file_name": "application.pdf",
+            "source_sha256": "b" * 64,
+            "parser_name": "km-credit-application",
+            "parser_version": "r72.1",
+            "classifier_confidence": 1.0,
+            "received_at": "2026-08-21T17:00:00+00:00",
+            "updated_at": "2026-08-21T17:00:00+00:00",
+            "fields": {
+                "legal_business_name": "OCR Name",
+                "business_phone": "",
+                "shipping_address": {"street": "", "city": "", "state": "", "zip": ""},
+                "billing_address": {"street": "", "city": "", "state": "", "zip": ""},
+            },
+            "evidence": {},
+        }
+        repo.create(record, b"%PDF-test")
+        name, content, digest = repo.get_document("PCA-DOC")
+        assert name == "application.pdf"
+        assert content == b"%PDF-test"
+        assert digest == "b" * 64
+        updated = service.update_review("PCA-DOC", {
+            "status": "application_complete",
+            "field_updates": {
+                "legal_business_name": "Verified Name",
+                "shipping_address": {"street": "1 Main St", "city": "Delphos", "state": "OH", "zip": "45833"},
+            },
+            "km_setup": {"route_code": "94", "terms_code": "1"},
+        })
+        assert updated["fields"]["legal_business_name"] == "Verified Name"
+        assert updated["evidence"]["legal_business_name"]["status"] == "human_verified"
+        assert updated["fields"]["shipping_address"]["city"] == "Delphos"
+        assert updated["evidence"]["shipping_address"]["status"] == "human_verified"
+        assert updated["km_setup"]["route_code"] == "94"
+        assert updated["status"] == "application_complete"
+        assert updated["erp_write"] is False
+    finally:
+        engine.dispose()

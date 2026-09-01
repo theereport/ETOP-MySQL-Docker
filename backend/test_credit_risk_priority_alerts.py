@@ -7,6 +7,8 @@ import unittest
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 from modules.credit_risk.repository import CreditRiskRepository
 from modules.credit_risk.schemas import AssessmentCreate
 from modules.credit_risk.service import CreditRiskService
@@ -91,14 +93,8 @@ class CreditRiskPriorityAlertsTests(unittest.TestCase):
             / "credit-risk-priority-synthetic-test.db"
         )
 
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(
-                self.database_path,
-                timeout=5,
-                check_same_thread=False,
-            )
-
-        self.repository = CreditRiskRepository(connection_factory)
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.repository = CreditRiskRepository(engine=self.engine)
         self.customer_numbers = {
             "overdue_deteriorated": 990000001,
             "overdue_higher_rating": 990000002,
@@ -176,6 +172,7 @@ class CreditRiskPriorityAlertsTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self._temporary_directory.cleanup()
 
     def _assess(
@@ -255,26 +252,23 @@ class CreditRiskPriorityAlertsTests(unittest.TestCase):
             / "credit-risk-priority-empty-synthetic-test.db"
         )
 
-        def empty_connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(
-                empty_database_path,
-                timeout=5,
-                check_same_thread=False,
-            )
-
+        empty_engine = create_engine(f"sqlite:///{empty_database_path}")
         empty_customer_service = MappingCustomerService({})
         service = CreditRiskService(
-            repository=CreditRiskRepository(empty_connection_factory),
+            repository=CreditRiskRepository(engine=empty_engine),
             customer_summary_service=empty_customer_service,
             clock=lambda: datetime(2026, 8, 20, 9, 30, tzinfo=UTC),
         )
 
-        result = service.get_priority_alerts()
+        try:
+            result = service.get_priority_alerts()
 
-        self.assertEqual(result.summary.assessed_customer_count, 0)
-        self.assertEqual(result.items, [])
-        self.assertTrue(result.unassessed_customers_excluded)
-        self.assertEqual(empty_customer_service.calls, [])
+            self.assertEqual(result.summary.assessed_customer_count, 0)
+            self.assertEqual(result.items, [])
+            self.assertTrue(result.unassessed_customers_excluded)
+            self.assertEqual(empty_customer_service.calls, [])
+        finally:
+            empty_engine.dispose()
 
     def test_ordering_is_categorical_stable_and_explainable(self) -> None:
         result = self.priority_service.get_priority_alerts()

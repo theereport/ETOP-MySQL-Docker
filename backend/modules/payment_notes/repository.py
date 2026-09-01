@@ -4,15 +4,49 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
-import threading
-from collections.abc import Callable
 from typing import Any
 
-from data.database import get_connection
+from sqlalchemy import event, func, select
+from sqlalchemy.engine import Engine
+
+from data.mysql import (
+    get_engine,
+    metadata,
+    pn_review_events_table,
+    pn_route_reference_activations_table,
+    pn_route_references_table,
+    pn_runs_table,
+)
 
 
 ZERO_HASH = "0" * 64
+
+_sqlite_locking_configured: set[int] = set()
+
+
+def _configure_sqlite_locking(engine: Engine) -> None:
+    """Make engine.begin() take a real exclusive lock on SQLite.
+
+    pysqlite manages its own implicit transaction independently of
+    SQLAlchemy's BEGIN/COMMIT, which can silently drop a write under
+    concurrent access (see SQLAlchemy's "Serializable isolation" recipe).
+    This also upgrades the lock to BEGIN IMMEDIATE so the hash-chain reads
+    in activate_route_reference/append_review are correctly serialized
+    against concurrent writers - the portable equivalent for MySQL is the
+    .with_for_update() locks used in those same methods.
+    """
+
+    if engine.dialect.name != "sqlite" or id(engine) in _sqlite_locking_configured:
+        return
+    _sqlite_locking_configured.add(id(engine))
+
+    @event.listens_for(engine, "connect")
+    def _disable_pysqlite_transaction_tracking(dbapi_connection, _record) -> None:
+        dbapi_connection.isolation_level = None
+
+    @event.listens_for(engine, "begin")
+    def _begin_immediate(connection) -> None:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 class PaymentNotesConflict(RuntimeError):
@@ -28,13 +62,13 @@ class PaymentNotesIntegrityError(RuntimeError):
 
 
 class PaymentNotesRepository:
-    def __init__(
-        self,
-        connection_factory: Callable[[], sqlite3.Connection] = get_connection,
-    ) -> None:
-        self._connection_factory = connection_factory
-        self._initialize_lock = threading.Lock()
+    def __init__(self, engine: Engine | None = None) -> None:
+        self._engine = engine
         self._initialized = False
+
+    @property
+    def engine(self) -> Engine:
+        return self._engine if self._engine is not None else get_engine()
 
     @staticmethod
     def canonical_json(value: Any) -> str:
@@ -50,131 +84,21 @@ class PaymentNotesRepository:
     def sha256(cls, value: Any) -> str:
         return hashlib.sha256(cls.canonical_json(value).encode("utf-8")).hexdigest()
 
-    def _connection(self) -> sqlite3.Connection:
-        connection = self._connection_factory()
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON;")
-        return connection
-
     def initialize(self) -> None:
-        with self._initialize_lock:
-            if self._initialized:
-                return
-            connection = self._connection()
-            try:
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS pn_route_references (
-                        reference_id TEXT PRIMARY KEY,
-                        version_label TEXT NOT NULL,
-                        source_name TEXT NOT NULL,
-                        source_sha256 TEXT NOT NULL CHECK(length(source_sha256) = 64),
-                        source_size INTEGER NOT NULL CHECK(source_size > 0),
-                        parser_version TEXT NOT NULL,
-                        payload_json TEXT NOT NULL,
-                        payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256) = 64),
-                        created_by TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        request_sha256 TEXT NOT NULL CHECK(length(request_sha256) = 64),
-                        UNIQUE(created_by, idempotency_key)
-                    );
-
-                    CREATE UNIQUE INDEX IF NOT EXISTS uq_pn_route_content_version
-                    ON pn_route_references(source_sha256, version_label);
-
-                    CREATE TABLE IF NOT EXISTS pn_route_reference_activations (
-                        activation_id TEXT PRIMARY KEY,
-                        reference_id TEXT NOT NULL,
-                        actor TEXT NOT NULL,
-                        occurred_at TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        request_sha256 TEXT NOT NULL CHECK(length(request_sha256) = 64),
-                        previous_hash TEXT NOT NULL CHECK(length(previous_hash) = 64),
-                        record_hash TEXT NOT NULL UNIQUE CHECK(length(record_hash) = 64),
-                        UNIQUE(actor, idempotency_key),
-                        FOREIGN KEY(reference_id) REFERENCES pn_route_references(reference_id)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_pn_route_activation_current
-                    ON pn_route_reference_activations(occurred_at DESC, activation_id DESC);
-
-                    CREATE TABLE IF NOT EXISTS pn_runs (
-                        run_id TEXT PRIMARY KEY,
-                        source_name TEXT NOT NULL,
-                        source_sha256 TEXT NOT NULL CHECK(length(source_sha256) = 64),
-                        source_size INTEGER NOT NULL CHECK(source_size > 0),
-                        route_reference_id TEXT NOT NULL,
-                        route_reference_sha256 TEXT NOT NULL CHECK(length(route_reference_sha256) = 64),
-                        date_from TEXT NOT NULL,
-                        date_to TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        deposit_count INTEGER NOT NULL CHECK(deposit_count >= 0),
-                        physical_item_count INTEGER NOT NULL CHECK(physical_item_count >= 0),
-                        quarantined_row_count INTEGER NOT NULL CHECK(quarantined_row_count >= 0),
-                        payload_json TEXT NOT NULL,
-                        payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256) = 64),
-                        created_by TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        request_sha256 TEXT NOT NULL CHECK(length(request_sha256) = 64),
-                        UNIQUE(created_by, idempotency_key),
-                        FOREIGN KEY(route_reference_id) REFERENCES pn_route_references(reference_id)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_pn_runs_created
-                    ON pn_runs(created_at DESC, run_id DESC);
-
-                    CREATE UNIQUE INDEX IF NOT EXISTS uq_pn_run_content_scope
-                    ON pn_runs(source_sha256, route_reference_id, date_from, date_to);
-
-                    CREATE TABLE IF NOT EXISTS pn_review_events (
-                        event_id TEXT PRIMARY KEY,
-                        run_id TEXT NOT NULL,
-                        item_id TEXT NOT NULL,
-                        decision TEXT NOT NULL CHECK(decision IN (
-                            'accept_candidate', 'leave_unmatched', 'hold'
-                        )),
-                        selected_payment_id TEXT,
-                        reason TEXT NOT NULL,
-                        actor TEXT NOT NULL,
-                        occurred_at TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        request_sha256 TEXT NOT NULL CHECK(length(request_sha256) = 64),
-                        previous_hash TEXT NOT NULL CHECK(length(previous_hash) = 64),
-                        record_hash TEXT NOT NULL UNIQUE CHECK(length(record_hash) = 64),
-                        UNIQUE(actor, idempotency_key),
-                        FOREIGN KEY(run_id) REFERENCES pn_runs(run_id)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_pn_review_item
-                    ON pn_review_events(run_id, item_id, occurred_at, event_id);
-                    """
-                )
-                for table in (
-                    "pn_route_references",
-                    "pn_route_reference_activations",
-                    "pn_runs",
-                    "pn_review_events",
-                ):
-                    connection.executescript(
-                        f"""
-                        CREATE TRIGGER IF NOT EXISTS {table}_no_update
-                        BEFORE UPDATE ON {table}
-                        BEGIN
-                            SELECT RAISE(ABORT, '{table} is append-only.');
-                        END;
-                        CREATE TRIGGER IF NOT EXISTS {table}_no_delete
-                        BEFORE DELETE ON {table}
-                        BEGIN
-                            SELECT RAISE(ABORT, '{table} is append-only.');
-                        END;
-                        """
-                    )
-                connection.commit()
-            finally:
-                connection.close()
-            self._initialized = True
+        if self._initialized:
+            return
+        _configure_sqlite_locking(self.engine)
+        metadata.create_all(
+            self.engine,
+            checkfirst=True,
+            tables=[
+                pn_route_references_table,
+                pn_route_reference_activations_table,
+                pn_runs_table,
+                pn_review_events_table,
+            ],
+        )
+        self._initialized = True
 
     def _ensure_initialized(self) -> None:
         if not self._initialized:
@@ -191,21 +115,20 @@ class PaymentNotesRepository:
         idempotency_key: str,
     ) -> dict[str, Any]:
         self._ensure_initialized()
+        table = pn_route_references_table
         request = {
             "version_label": version_label,
             "source_sha256": payload["source_sha256"],
             "payload_sha256": self.sha256(payload),
         }
         request_hash = self.sha256(request)
-        connection = self._connection()
-        try:
+        with self.engine.begin() as connection:
             existing = connection.execute(
-                """
-                SELECT * FROM pn_route_references
-                WHERE created_by = ? AND idempotency_key = ?
-                """,
-                (actor, idempotency_key),
-            ).fetchone()
+                select(table).where(
+                    table.c.created_by == actor,
+                    table.c.idempotency_key == idempotency_key,
+                )
+            ).mappings().first()
             if existing:
                 if existing["request_sha256"] != request_hash:
                     raise PaymentNotesConflict(
@@ -213,70 +136,55 @@ class PaymentNotesRepository:
                     )
                 return self._route_row(existing)
             same_content = connection.execute(
-                """
-                SELECT * FROM pn_route_references
-                WHERE source_sha256 = ? AND version_label = ?
-                """,
-                (payload["source_sha256"], version_label),
-            ).fetchone()
+                select(table).where(
+                    table.c.source_sha256 == payload["source_sha256"],
+                    table.c.version_label == version_label,
+                )
+            ).mappings().first()
             if same_content:
                 return self._route_row(same_content)
             connection.execute(
-                """
-                INSERT INTO pn_route_references (
-                    reference_id, version_label, source_name, source_sha256,
-                    source_size, parser_version, payload_json, payload_sha256,
-                    created_by, created_at, idempotency_key, request_sha256
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    reference_id,
-                    version_label,
-                    payload["source_name"],
-                    payload["source_sha256"],
-                    payload["source_size"],
-                    payload["parser_version"],
-                    self.canonical_json(payload),
-                    request["payload_sha256"],
-                    actor,
-                    occurred_at,
-                    idempotency_key,
-                    request_hash,
-                ),
+                table.insert().values(
+                    reference_id=reference_id,
+                    version_label=version_label,
+                    source_name=payload["source_name"],
+                    source_sha256=payload["source_sha256"],
+                    source_size=payload["source_size"],
+                    parser_version=payload["parser_version"],
+                    payload_json=self.canonical_json(payload),
+                    payload_sha256=request["payload_sha256"],
+                    created_by=actor,
+                    created_at=occurred_at,
+                    idempotency_key=idempotency_key,
+                    request_sha256=request_hash,
+                )
             )
-            connection.commit()
             row = connection.execute(
-                "SELECT * FROM pn_route_references WHERE reference_id = ?",
-                (reference_id,),
-            ).fetchone()
+                select(table).where(table.c.reference_id == reference_id)
+            ).mappings().first()
             return self._route_row(row)
-        finally:
-            connection.close()
 
     def list_route_references(self) -> list[dict[str, Any]]:
         self._ensure_initialized()
-        connection = self._connection()
-        try:
+        table = pn_route_references_table
+        with self.engine.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM pn_route_references ORDER BY created_at DESC, reference_id DESC"
-            ).fetchall()
+                select(table).order_by(
+                    table.c.created_at.desc(), table.c.reference_id.desc()
+                )
+            ).mappings().all()
             return [self._route_row(row) for row in rows]
-        finally:
-            connection.close()
 
     def get_route_reference(self, reference_id: str) -> dict[str, Any]:
         self._ensure_initialized()
-        connection = self._connection()
-        try:
+        table = pn_route_references_table
+        with self.engine.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM pn_route_references WHERE reference_id = ?",
-                (reference_id,),
-            ).fetchone()
+                select(table).where(table.c.reference_id == reference_id)
+            ).mappings().first()
             if row is None:
                 raise PaymentNotesNotFound(f"Route reference {reference_id} was not found.")
             return self._route_row(row)
-        finally:
-            connection.close()
 
     def activate_route_reference(
         self,
@@ -288,26 +196,26 @@ class PaymentNotesRepository:
         idempotency_key: str,
     ) -> dict[str, Any]:
         self._ensure_initialized()
+        references = pn_route_references_table
+        activations = pn_route_reference_activations_table
         request = {"reference_id": reference_id}
         request_hash = self.sha256(request)
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self.engine.begin() as connection:
             reference = connection.execute(
-                "SELECT reference_id FROM pn_route_references WHERE reference_id = ?",
-                (reference_id,),
-            ).fetchone()
+                select(references.c.reference_id)
+                .where(references.c.reference_id == reference_id)
+                .with_for_update()
+            ).first()
             if reference is None:
                 raise PaymentNotesNotFound(
                     f"Route reference {reference_id} was not found."
                 )
             existing = connection.execute(
-                """
-                SELECT * FROM pn_route_reference_activations
-                WHERE actor = ? AND idempotency_key = ?
-                """,
-                (actor, idempotency_key),
-            ).fetchone()
+                select(activations).where(
+                    activations.c.actor == actor,
+                    activations.c.idempotency_key == idempotency_key,
+                )
+            ).mappings().first()
             if existing:
                 if existing["request_sha256"] != request_hash:
                     raise PaymentNotesConflict(
@@ -315,12 +223,12 @@ class PaymentNotesRepository:
                     )
                 return dict(existing)
             previous = connection.execute(
-                """
-                SELECT record_hash FROM pn_route_reference_activations
-                ORDER BY rowid DESC LIMIT 1
-                """
-            ).fetchone()
-            previous_hash = previous["record_hash"] if previous else ZERO_HASH
+                select(activations.c.record_hash)
+                .order_by(activations.c.sequence.desc())
+                .limit(1)
+                .with_for_update()
+            ).first()
+            previous_hash = previous[0] if previous else ZERO_HASH
             record = {
                 "activation_id": activation_id,
                 "reference_id": reference_id,
@@ -331,50 +239,45 @@ class PaymentNotesRepository:
             }
             record_hash = self.sha256(record)
             connection.execute(
-                """
-                INSERT INTO pn_route_reference_activations (
-                    activation_id, reference_id, actor, occurred_at,
-                    idempotency_key, request_sha256, previous_hash, record_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    activation_id,
-                    reference_id,
-                    actor,
-                    occurred_at,
-                    idempotency_key,
-                    request_hash,
-                    previous_hash,
-                    record_hash,
-                ),
+                activations.insert().values(
+                    activation_id=activation_id,
+                    reference_id=reference_id,
+                    actor=actor,
+                    occurred_at=occurred_at,
+                    idempotency_key=idempotency_key,
+                    request_sha256=request_hash,
+                    previous_hash=previous_hash,
+                    record_hash=record_hash,
+                )
             )
-            connection.commit()
             return {**record, "idempotency_key": idempotency_key, "record_hash": record_hash}
-        finally:
-            connection.close()
 
     def get_active_route_reference(self) -> dict[str, Any] | None:
         self._ensure_initialized()
-        connection = self._connection()
-        try:
+        references = pn_route_references_table
+        activations = pn_route_reference_activations_table
+        with self.engine.connect() as connection:
             activation_rows = connection.execute(
-                """
-                SELECT rowid AS chain_ordinal, *
-                FROM pn_route_reference_activations
-                ORDER BY rowid
-                """
-            ).fetchall()
+                select(activations).order_by(activations.c.sequence)
+            ).mappings().all()
             self._verify_activation_chain(activation_rows)
             row = connection.execute(
-                """
-                SELECT r.*, a.activation_id, a.occurred_at AS activated_at,
-                       a.actor AS activated_by, a.record_hash AS activation_hash
-                FROM pn_route_reference_activations a
-                JOIN pn_route_references r ON r.reference_id = a.reference_id
-                ORDER BY a.rowid DESC
-                LIMIT 1
-                """
-            ).fetchone()
+                select(
+                    references,
+                    activations.c.activation_id,
+                    activations.c.occurred_at.label("activated_at"),
+                    activations.c.actor.label("activated_by"),
+                    activations.c.record_hash.label("activation_hash"),
+                )
+                .select_from(
+                    activations.join(
+                        references,
+                        references.c.reference_id == activations.c.reference_id,
+                    )
+                )
+                .order_by(activations.c.sequence.desc())
+                .limit(1)
+            ).mappings().first()
             if row is None:
                 return None
             payload = self._route_row(row)
@@ -387,8 +290,6 @@ class PaymentNotesRepository:
                 }
             )
             return payload
-        finally:
-            connection.close()
 
     def create_run(
         self,
@@ -400,6 +301,7 @@ class PaymentNotesRepository:
         idempotency_key: str,
     ) -> dict[str, Any]:
         self._ensure_initialized()
+        table = pn_runs_table
         request = {
             "source_sha256": payload["source"]["sha256"],
             "route_reference_id": payload["route_reference"]["reference_id"],
@@ -409,13 +311,13 @@ class PaymentNotesRepository:
         }
         request_hash = self.sha256(request)
         payload_hash = self.sha256(payload)
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self.engine.begin() as connection:
             existing = connection.execute(
-                "SELECT * FROM pn_runs WHERE created_by = ? AND idempotency_key = ?",
-                (actor, idempotency_key),
-            ).fetchone()
+                select(table).where(
+                    table.c.created_by == actor,
+                    table.c.idempotency_key == idempotency_key,
+                )
+            ).mappings().first()
             if existing:
                 if existing["request_sha256"] != request_hash:
                     raise PaymentNotesConflict(
@@ -423,18 +325,14 @@ class PaymentNotesRepository:
                     )
                 return self._run_row(existing, include_payload=True)
             same_scope = connection.execute(
-                """
-                SELECT * FROM pn_runs
-                WHERE source_sha256 = ? AND route_reference_id = ?
-                  AND date_from = ? AND date_to = ?
-                """,
-                (
-                    payload["source"]["sha256"],
-                    payload["route_reference"]["reference_id"],
-                    payload["date_from"],
-                    payload["date_to"],
-                ),
-            ).fetchone()
+                select(table).where(
+                    table.c.source_sha256 == payload["source"]["sha256"],
+                    table.c.route_reference_id
+                    == payload["route_reference"]["reference_id"],
+                    table.c.date_from == payload["date_from"],
+                    table.c.date_to == payload["date_to"],
+                )
+            ).mappings().first()
             if same_scope:
                 return self._run_row(same_scope, include_payload=True)
             proposed_payment_ids = {
@@ -452,90 +350,72 @@ class PaymentNotesRepository:
                         "appeared in prior run evidence while the run was being saved."
                     )
             connection.execute(
-                """
-                INSERT INTO pn_runs (
-                    run_id, source_name, source_sha256, source_size,
-                    route_reference_id, route_reference_sha256, date_from,
-                    date_to, status, deposit_count, physical_item_count,
-                    quarantined_row_count, payload_json, payload_sha256,
-                    created_by, created_at, idempotency_key, request_sha256
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    payload["source"]["name"],
-                    payload["source"]["sha256"],
-                    payload["source"]["size"],
-                    payload["route_reference"]["reference_id"],
-                    payload["route_reference"]["source_sha256"],
-                    payload["date_from"],
-                    payload["date_to"],
-                    payload["status"],
-                    len(payload["deposits"]),
-                    len(payload["items"]),
-                    len(payload["quarantined_rows"]),
-                    self.canonical_json(payload),
-                    payload_hash,
-                    actor,
-                    occurred_at,
-                    idempotency_key,
-                    request_hash,
-                ),
+                table.insert().values(
+                    run_id=run_id,
+                    source_name=payload["source"]["name"],
+                    source_sha256=payload["source"]["sha256"],
+                    source_size=payload["source"]["size"],
+                    route_reference_id=payload["route_reference"]["reference_id"],
+                    route_reference_sha256=payload["route_reference"]["source_sha256"],
+                    date_from=payload["date_from"],
+                    date_to=payload["date_to"],
+                    status=payload["status"],
+                    deposit_count=len(payload["deposits"]),
+                    physical_item_count=len(payload["items"]),
+                    quarantined_row_count=len(payload["quarantined_rows"]),
+                    payload_json=self.canonical_json(payload),
+                    payload_sha256=payload_hash,
+                    created_by=actor,
+                    created_at=occurred_at,
+                    idempotency_key=idempotency_key,
+                    request_sha256=request_hash,
+                )
             )
-            connection.commit()
             row = connection.execute(
-                "SELECT * FROM pn_runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
+                select(table).where(table.c.run_id == run_id)
+            ).mappings().first()
             return self._run_row(row, include_payload=True)
-        finally:
-            connection.close()
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         self._ensure_initialized()
-        connection = self._connection()
-        try:
+        runs = pn_runs_table
+        reviews_table = pn_review_events_table
+        with self.engine.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM pn_runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
+                select(runs).where(runs.c.run_id == run_id)
+            ).mappings().first()
             if row is None:
                 raise PaymentNotesNotFound(f"Payment Notes run {run_id} was not found.")
             result = self._run_row(row, include_payload=True)
             reviews = connection.execute(
-                """
-                SELECT * FROM pn_review_events
-                WHERE run_id = ? ORDER BY occurred_at, event_id
-                """,
-                (run_id,),
-            ).fetchall()
+                select(reviews_table)
+                .where(reviews_table.c.run_id == run_id)
+                .order_by(reviews_table.c.occurred_at, reviews_table.c.event_id)
+            ).mappings().all()
             self._verify_review_chains(reviews)
             result["reviews"] = [dict(review) for review in reviews]
             return result
-        finally:
-            connection.close()
 
     def list_runs(self, limit: int, offset: int) -> list[dict[str, Any]]:
         self._ensure_initialized()
+        table = pn_runs_table
         bounded = max(1, min(limit, 200))
-        connection = self._connection()
-        try:
+        with self.engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT * FROM pn_runs
-                ORDER BY created_at DESC, run_id DESC LIMIT ? OFFSET ?
-                """,
-                (bounded, max(0, offset)),
-            ).fetchall()
+                select(table)
+                .order_by(table.c.created_at.desc(), table.c.run_id.desc())
+                .limit(bounded)
+                .offset(max(0, offset))
+            ).mappings().all()
             return [self._run_row(row, include_payload=False) for row in rows]
-        finally:
-            connection.close()
 
     def count_runs(self) -> int:
         self._ensure_initialized()
-        connection = self._connection()
-        try:
-            return int(connection.execute("SELECT COUNT(*) FROM pn_runs").fetchone()[0])
-        finally:
-            connection.close()
+        table = pn_runs_table
+        with self.engine.connect() as connection:
+            return int(
+                connection.execute(select(func.count()).select_from(table)).scalar()
+            )
 
     def prior_run_payment_uses(
         self,
@@ -549,15 +429,12 @@ class PaymentNotesRepository:
         wanted = {str(value).strip() for value in payment_ids if str(value).strip()}
         if not wanted:
             return {}
-        connection = self._connection()
-        try:
+        with self.engine.connect() as connection:
             return self._payment_uses_on_connection(
                 connection,
                 wanted,
                 exclude_run_id=exclude_run_id,
             )
-        finally:
-            connection.close()
 
     def append_review(
         self,
@@ -573,6 +450,8 @@ class PaymentNotesRepository:
         idempotency_key: str,
     ) -> dict[str, Any]:
         self._ensure_initialized()
+        runs = pn_runs_table
+        reviews_table = pn_review_events_table
         request = {
             "run_id": run_id,
             "item_id": item_id,
@@ -581,18 +460,18 @@ class PaymentNotesRepository:
             "reason": reason,
         }
         request_hash = self.sha256(request)
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
+        with self.engine.begin() as connection:
             run_row = connection.execute(
-                "SELECT * FROM pn_runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
+                select(runs).where(runs.c.run_id == run_id).with_for_update()
+            ).mappings().first()
             if run_row is None:
                 raise PaymentNotesNotFound(f"Payment Notes run {run_id} was not found.")
             existing = connection.execute(
-                "SELECT * FROM pn_review_events WHERE actor = ? AND idempotency_key = ?",
-                (actor, idempotency_key),
-            ).fetchone()
+                select(reviews_table).where(
+                    reviews_table.c.actor == actor,
+                    reviews_table.c.idempotency_key == idempotency_key,
+                )
+            ).mappings().first()
             if existing:
                 if existing["request_sha256"] != request_hash:
                     raise PaymentNotesConflict(
@@ -612,12 +491,10 @@ class PaymentNotesRepository:
                     )
                 run_payload = json.loads(run_row["payload_json"])
                 review_rows = connection.execute(
-                    """
-                    SELECT * FROM pn_review_events
-                    WHERE run_id = ? ORDER BY occurred_at, event_id
-                    """,
-                    (run_id,),
-                ).fetchall()
+                    select(reviews_table)
+                    .where(reviews_table.c.run_id == run_id)
+                    .order_by(reviews_table.c.occurred_at, reviews_table.c.event_id)
+                ).mappings().all()
                 latest = {str(row["item_id"]): row for row in review_rows}
                 for other in run_payload.get("items", []):
                     other_id = str(other.get("item_id", ""))
@@ -637,14 +514,19 @@ class PaymentNotesRepository:
                             "The selected Payment Note is already assigned to another bank item in this run."
                         )
             prior = connection.execute(
-                """
-                SELECT record_hash FROM pn_review_events
-                WHERE run_id = ? AND item_id = ?
-                ORDER BY occurred_at DESC, event_id DESC LIMIT 1
-                """,
-                (run_id, item_id),
-            ).fetchone()
-            previous_hash = prior["record_hash"] if prior else ZERO_HASH
+                select(reviews_table.c.record_hash)
+                .where(
+                    reviews_table.c.run_id == run_id,
+                    reviews_table.c.item_id == item_id,
+                )
+                .order_by(
+                    reviews_table.c.occurred_at.desc(),
+                    reviews_table.c.event_id.desc(),
+                )
+                .limit(1)
+                .with_for_update()
+            ).first()
+            previous_hash = prior[0] if prior else ZERO_HASH
             record = {
                 "event_id": event_id,
                 **request,
@@ -655,45 +537,37 @@ class PaymentNotesRepository:
             }
             record_hash = self.sha256(record)
             connection.execute(
-                """
-                INSERT INTO pn_review_events (
-                    event_id, run_id, item_id, decision, selected_payment_id,
-                    reason, actor, occurred_at, idempotency_key, request_sha256,
-                    previous_hash, record_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_id,
-                    run_id,
-                    item_id,
-                    decision,
-                    selected_payment_id,
-                    reason,
-                    actor,
-                    occurred_at,
-                    idempotency_key,
-                    request_hash,
-                    previous_hash,
-                    record_hash,
-                ),
+                reviews_table.insert().values(
+                    event_id=event_id,
+                    run_id=run_id,
+                    item_id=item_id,
+                    decision=decision,
+                    selected_payment_id=selected_payment_id,
+                    reason=reason,
+                    actor=actor,
+                    occurred_at=occurred_at,
+                    idempotency_key=idempotency_key,
+                    request_sha256=request_hash,
+                    previous_hash=previous_hash,
+                    record_hash=record_hash,
+                )
             )
-            connection.commit()
             return {**record, "idempotency_key": idempotency_key, "record_hash": record_hash}
-        finally:
-            connection.close()
 
     @classmethod
     def _payment_uses_on_connection(
         cls,
-        connection: sqlite3.Connection,
+        connection,
         payment_ids: set[str],
         *,
         exclude_run_id: str | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
+        runs = pn_runs_table
+        reviews_table = pn_review_events_table
         uses: dict[str, list[dict[str, Any]]] = {}
         run_rows = connection.execute(
-            "SELECT * FROM pn_runs ORDER BY created_at, run_id"
-        ).fetchall()
+            select(runs).order_by(runs.c.created_at, runs.c.run_id)
+        ).mappings().all()
         included_run_ids: set[str] = set()
         for row in run_rows:
             run_id = str(row["run_id"])
@@ -715,15 +589,15 @@ class PaymentNotesRepository:
                         }
                     )
         if included_run_ids:
-            placeholders = ",".join("?" for _ in included_run_ids)
             review_rows = connection.execute(
-                f"""
-                SELECT * FROM pn_review_events
-                WHERE run_id IN ({placeholders})
-                ORDER BY run_id, occurred_at, event_id
-                """,
-                tuple(sorted(included_run_ids)),
-            ).fetchall()
+                select(reviews_table)
+                .where(reviews_table.c.run_id.in_(included_run_ids))
+                .order_by(
+                    reviews_table.c.run_id,
+                    reviews_table.c.occurred_at,
+                    reviews_table.c.event_id,
+                )
+            ).mappings().all()
             cls._verify_review_chains(review_rows)
             for row in review_rows:
                 payment_id = str(row["selected_payment_id"] or "")
@@ -749,7 +623,7 @@ class PaymentNotesRepository:
         }
 
     @classmethod
-    def _route_row(cls, row: sqlite3.Row) -> dict[str, Any]:
+    def _route_row(cls, row) -> dict[str, Any]:
         result = dict(row)
         payload = json.loads(result.pop("payload_json"))
         if cls.sha256(payload) != result["payload_sha256"]:
@@ -760,7 +634,7 @@ class PaymentNotesRepository:
         return result
 
     @classmethod
-    def _run_row(cls, row: sqlite3.Row, *, include_payload: bool) -> dict[str, Any]:
+    def _run_row(cls, row, *, include_payload: bool) -> dict[str, Any]:
         result = dict(row)
         payload_json = result.pop("payload_json")
         payload = json.loads(payload_json)
@@ -773,7 +647,7 @@ class PaymentNotesRepository:
         return result
 
     @classmethod
-    def _verify_activation_chain(cls, rows: list[sqlite3.Row]) -> None:
+    def _verify_activation_chain(cls, rows) -> None:
         previous_hash = ZERO_HASH
         for row in rows:
             record = {
@@ -791,7 +665,7 @@ class PaymentNotesRepository:
             previous_hash = row["record_hash"]
 
     @classmethod
-    def _verify_review_chains(cls, rows: list[sqlite3.Row]) -> None:
+    def _verify_review_chains(cls, rows) -> None:
         previous: dict[str, str] = {}
         for row in rows:
             item_key = str(row["item_id"])

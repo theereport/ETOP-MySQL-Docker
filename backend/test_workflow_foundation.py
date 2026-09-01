@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from sqlalchemy import create_engine
+
 from modules.workflow_foundation.access_policy import required_modules_for_path
 from modules.workflow_foundation.repository import (
     WorkflowFoundationConflict,
@@ -41,17 +43,10 @@ class WorkflowFoundationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temp.name) / "workflow-foundation.db"
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
 
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(
-                self.database_path,
-                timeout=30,
-                check_same_thread=False,
-            )
-
-        self.connection_factory = connection_factory
         self.repository = WorkflowFoundationRepository(
-            connection_factory=connection_factory,
+            engine=self.engine,
             clock=lambda: datetime(2026, 8, 7, 17, 30, tzinfo=UTC),
         )
         self.service = WorkflowFoundationService(
@@ -67,6 +62,7 @@ class WorkflowFoundationTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self.temp.cleanup()
 
     def create_user(
@@ -128,7 +124,7 @@ class WorkflowFoundationTests(unittest.TestCase):
         )
         reloaded = WorkflowFoundationService(
             repository=WorkflowFoundationRepository(
-                connection_factory=self.connection_factory,
+                engine=self.engine,
                 clock=lambda: datetime(2026, 8, 7, 17, 31, tzinfo=UTC),
             ),
             clock=lambda: datetime(2026, 8, 7, 17, 31, tzinfo=UTC),
@@ -342,17 +338,16 @@ class WorkflowFoundationTests(unittest.TestCase):
         )
         integrity = self.service.verify_audit(self.coordinator.token)
         self.assertTrue(integrity.valid)
-        connection = self.connection_factory()
+        # Append-only is enforced by convention in the repository layer (it
+        # never issues UPDATE/DELETE against these tables), not by a DB
+        # trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have. This simulates an out-of-band tamper (e.g.
+        # a bug or a direct SQL edit) to prove the hash chain still
+        # catches it even without DB-level enforcement.
+        connection = sqlite3.connect(self.database_path)
         try:
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "DELETE FROM wf_task_assignments WHERE task_id = ?",
-                    (task.task_id,),
-                )
-            connection.rollback()
-            connection.execute("DROP TRIGGER wf_audit_events_no_update")
             connection.execute(
-                "UPDATE wf_audit_events SET details_json = '{}' WHERE rowid = 1"
+                "UPDATE wf_audit_events SET details_json = '{}' WHERE sequence = 1"
             )
             connection.commit()
         finally:
@@ -374,7 +369,7 @@ class WorkflowFoundationTests(unittest.TestCase):
         )
         token = unquote(urlsplit(invitation.invitation_link).fragment.removeprefix("invite="))
         self.assertGreaterEqual(len(token), 32)
-        connection = self.connection_factory()
+        connection = sqlite3.connect(self.database_path)
         try:
             stored = connection.execute(
                 "SELECT token_hash FROM wf_user_invitations WHERE invitation_id = ?",
@@ -480,7 +475,7 @@ class WorkflowFoundationTests(unittest.TestCase):
             urlsplit(reset.reset_link).fragment.removeprefix("reset-password=")
         )
         self.assertGreaterEqual(len(token), 32)
-        connection = self.connection_factory()
+        connection = sqlite3.connect(self.database_path)
         try:
             stored = connection.execute(
                 "SELECT token_hash FROM wf_password_reset_tokens WHERE reset_id = ?",
@@ -643,7 +638,7 @@ class WorkflowFoundationTests(unittest.TestCase):
                     expected_version=profile.access_version,
                 ),
             )
-        connection = self.connection_factory()
+        connection = sqlite3.connect(self.database_path)
         try:
             connection.execute(
                 """

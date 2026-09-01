@@ -1,14 +1,31 @@
 from __future__ import annotations
 
-import sqlite3
 import threading
-from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from data.database import get_connection
+from sqlalchemy import case, func, or_, select
+from sqlalchemy.engine import Engine
+
+from data.mysql import (
+    ap_erp_open_ledger_cache_table,
+    ap_erp_vendor_terms_cache_table,
+    ap_invoices_table,
+    ap_vendor_terms_reference_table,
+    ap_warehouse_approval_actions_table,
+    get_engine,
+    metadata,
+)
 
 from .repository import AccountsPayableRepository
+
+
+_ERP_LEDGER_TABLES = [
+    ap_erp_open_ledger_cache_table,
+    ap_erp_vendor_terms_cache_table,
+    ap_vendor_terms_reference_table,
+    ap_warehouse_approval_actions_table,
+]
 
 
 def _now() -> str:
@@ -38,144 +55,15 @@ class AccountsPayableErpLedgerRepository:
     cash_flow_forecasting's cash_flow_ap_due_date_cache, except this one
     retains invoice-level rows instead of pre-aggregated weekly buckets."""
 
-    def __init__(
-        self,
-        connection_factory: Callable[[], sqlite3.Connection] = get_connection,
-    ) -> None:
-        self._connection_factory = connection_factory
+    def __init__(self, engine: Engine | None = None) -> None:
+        self._engine = engine or get_engine()
         self._initialization_lock = threading.Lock()
-
-    def _connection(self) -> sqlite3.Connection:
-        connection = self._connection_factory()
-        connection.row_factory = sqlite3.Row
-        return connection
 
     def initialize(self) -> None:
         with self._initialization_lock:
-            connection = self._connection()
-            try:
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS ap_erp_open_ledger_cache (
-                        vendor_number TEXT NOT NULL,
-                        invoice_number TEXT NOT NULL,
-                        invoice_date TEXT,
-                        due_date TEXT,
-                        amount_invoiced REAL NOT NULL,
-                        amount_discount REAL NOT NULL,
-                        on_hold INTEGER NOT NULL DEFAULT 0,
-                        refreshed_at TEXT NOT NULL,
-                        PRIMARY KEY (vendor_number, invoice_number)
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_ap_erp_open_ledger_due_date
-                    ON ap_erp_open_ledger_cache(due_date);
-
-                    CREATE TABLE IF NOT EXISTS ap_erp_vendor_terms_cache (
-                        vendor_number TEXT PRIMARY KEY,
-                        terms_code TEXT,
-                        refreshed_at TEXT NOT NULL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ap_vendor_terms_reference (
-                        terms_code TEXT PRIMARY KEY,
-                        discount_percent REAL NOT NULL DEFAULT 0,
-                        num_periods INTEGER,
-                        num_months INTEGER,
-                        num_days INTEGER,
-                        second_period INTEGER,
-                        third_period INTEGER,
-                        next_period INTEGER,
-                        day_of_month INTEGER,
-                        cutoff_day INTEGER,
-                        description TEXT NOT NULL DEFAULT '',
-                        updated_at TEXT NOT NULL
-                    );
-
-                    CREATE TABLE IF NOT EXISTS ap_warehouse_approval_actions (
-                        action_id TEXT PRIMARY KEY,
-                        vendor_number TEXT NOT NULL,
-                        invoice_number TEXT NOT NULL,
-                        from_status TEXT NOT NULL,
-                        to_status TEXT NOT NULL CHECK (
-                            to_status IN (
-                                'needs_approval',
-                                'approved_by_warehouse',
-                                'approved_and_entered_by_ap'
-                            )
-                        ),
-                        actor_identity TEXT NOT NULL,
-                        actor_identity_source TEXT NOT NULL DEFAULT 'operator_supplied'
-                            CHECK (
-                                actor_identity_source IN (
-                                    'operator_supplied', 'sso'
-                                )
-                            ),
-                        notes TEXT NOT NULL DEFAULT '',
-                        created_at TEXT NOT NULL
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_ap_warehouse_approval_actions_invoice
-                    ON ap_warehouse_approval_actions(
-                        vendor_number,
-                        invoice_number,
-                        created_at DESC
-                    );
-
-                    CREATE TRIGGER IF NOT EXISTS ap_warehouse_approval_actions_no_update
-                    BEFORE UPDATE ON ap_warehouse_approval_actions
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'AP warehouse approval actions are append-only.'
-                        );
-                    END;
-
-                    CREATE TRIGGER IF NOT EXISTS ap_warehouse_approval_actions_no_delete
-                    BEFORE DELETE ON ap_warehouse_approval_actions
-                    BEGIN
-                        SELECT RAISE(
-                            ABORT,
-                            'AP warehouse approval actions are append-only.'
-                        );
-                    END;
-                    """
-                )
-                ledger_columns = {
-                    str(row[1])
-                    for row in connection.execute(
-                        "PRAGMA table_info(ap_erp_open_ledger_cache)"
-                    ).fetchall()
-                }
-                if "gl_division" not in ledger_columns:
-                    connection.execute(
-                        "ALTER TABLE ap_erp_open_ledger_cache "
-                        "ADD COLUMN gl_division TEXT"
-                    )
-                if "gl_department" not in ledger_columns:
-                    connection.execute(
-                        "ALTER TABLE ap_erp_open_ledger_cache "
-                        "ADD COLUMN gl_department TEXT"
-                    )
-                if "gl_account" not in ledger_columns:
-                    connection.execute(
-                        "ALTER TABLE ap_erp_open_ledger_cache "
-                        "ADD COLUMN gl_account TEXT"
-                    )
-                terms_cache_columns = {
-                    str(row[1])
-                    for row in connection.execute(
-                        "PRAGMA table_info(ap_erp_vendor_terms_cache)"
-                    ).fetchall()
-                }
-                if "vendor_name" not in terms_cache_columns:
-                    connection.execute(
-                        "ALTER TABLE ap_erp_vendor_terms_cache "
-                        "ADD COLUMN vendor_name TEXT"
-                    )
-                connection.commit()
-            finally:
-                connection.close()
+            metadata.create_all(
+                self._engine, checkfirst=True, tables=_ERP_LEDGER_TABLES
+            )
 
     def replace_open_ledger(self, rows: list[dict[str, Any]]) -> int:
         """Wholesale replace: DELETE + bulk INSERT in one transaction, same
@@ -230,86 +118,60 @@ class AccountsPayableErpLedgerRepository:
             ):
                 existing["due_date"] = due_date
 
-        prepared: list[tuple[Any, ...]] = [
-            (
-                vendor_number,
-                invoice_number,
-                values["invoice_date"].isoformat() if values["invoice_date"] else None,
-                values["due_date"].isoformat() if values["due_date"] else None,
-                values["amount_invoiced"],
-                values["amount_discount"],
-                1 if values["on_hold"] else 0,
-                refreshed_at,
-            )
+        prepared = [
+            {
+                "vendor_number": vendor_number,
+                "invoice_number": invoice_number,
+                "invoice_date": values["invoice_date"].isoformat()
+                if values["invoice_date"]
+                else None,
+                "due_date": values["due_date"].isoformat()
+                if values["due_date"]
+                else None,
+                "amount_invoiced": values["amount_invoiced"],
+                "amount_discount": values["amount_discount"],
+                "on_hold": 1 if values["on_hold"] else 0,
+                "refreshed_at": refreshed_at,
+            }
             for (vendor_number, invoice_number), values in aggregated.items()
         ]
 
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
-            connection.execute("DELETE FROM ap_erp_open_ledger_cache;")
-            connection.executemany(
-                """
-                INSERT INTO ap_erp_open_ledger_cache (
-                    vendor_number, invoice_number, invoice_date, due_date,
-                    amount_invoiced, amount_discount, on_hold, refreshed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                prepared,
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        with self._engine.begin() as connection:
+            connection.execute(ap_erp_open_ledger_cache_table.delete())
+            for row in prepared:
+                connection.execute(
+                    ap_erp_open_ledger_cache_table.insert().values(**row)
+                )
         return len(prepared)
 
     def replace_vendor_terms_cache(self, rows: list[dict[str, Any]]) -> int:
         self.initialize()
         refreshed_at = _now()
         prepared = [
-            (
-                str(row.get("PVNUMVEN") or "").strip(),
-                str(row.get("PVCODTREM") or "").strip() or None,
-                str(row.get("PVNAMVEN") or "").strip() or None,
-                refreshed_at,
-            )
+            {
+                "vendor_number": str(row.get("PVNUMVEN") or "").strip(),
+                "terms_code": str(row.get("PVCODTREM") or "").strip() or None,
+                "vendor_name": str(row.get("PVNAMVEN") or "").strip() or None,
+                "refreshed_at": refreshed_at,
+            }
             for row in rows
             if str(row.get("PVNUMVEN") or "").strip()
             and str(row.get("PVNUMVEN") or "").strip() != "0"
         ]
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
-            connection.execute("DELETE FROM ap_erp_vendor_terms_cache;")
-            connection.executemany(
-                """
-                INSERT INTO ap_erp_vendor_terms_cache (
-                    vendor_number, terms_code, vendor_name, refreshed_at
-                ) VALUES (?, ?, ?, ?);
-                """,
-                prepared,
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        with self._engine.begin() as connection:
+            connection.execute(ap_erp_vendor_terms_cache_table.delete())
+            for row in prepared:
+                connection.execute(
+                    ap_erp_vendor_terms_cache_table.insert().values(**row)
+                )
         return len(prepared)
 
     def open_ledger_refreshed_at(self) -> str | None:
         self.initialize()
-        connection = self._connection()
-        try:
-            row = connection.execute(
-                "SELECT MAX(refreshed_at) AS refreshed_at "
-                "FROM ap_erp_open_ledger_cache;"
-            ).fetchone()
-        finally:
-            connection.close()
-        return row["refreshed_at"] if row is not None else None
+        with self._engine.connect() as connection:
+            return connection.execute(
+                select(func.max(ap_erp_open_ledger_cache_table.c.refreshed_at))
+            ).scalar_one_or_none()
 
     def open_ledger_summary(self, as_of_date: date) -> dict[str, Any]:
         """Aggregates the cached invoice-level open ledger as of a given
@@ -318,43 +180,97 @@ class AccountsPayableErpLedgerRepository:
         cash_flow_forecasting's own disclosure precedent for hold status."""
 
         self.initialize()
+        l = ap_erp_open_ledger_cache_table
         as_of = as_of_date.isoformat()
         within_7_days = (as_of_date + timedelta(days=7)).isoformat()
-        connection = self._connection()
-        try:
+        balance = l.c.amount_invoiced - l.c.amount_discount
+        with self._engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT
-                    COUNT(*) AS total_count,
-                    COALESCE(SUM(amount_invoiced - amount_discount), 0) AS total_balance,
-                    COALESCE(SUM(CASE WHEN on_hold = 1 THEN 1 ELSE 0 END), 0) AS on_hold_count,
-                    COALESCE(SUM(CASE WHEN on_hold = 1 THEN amount_invoiced - amount_discount ELSE 0 END), 0) AS on_hold_amount,
-                    COALESCE(SUM(CASE WHEN on_hold = 0 AND due_date = ? THEN 1 ELSE 0 END), 0) AS due_today_count,
-                    COALESCE(SUM(CASE WHEN on_hold = 0 AND due_date = ? THEN amount_invoiced - amount_discount ELSE 0 END), 0) AS due_today_amount,
-                    COALESCE(SUM(CASE WHEN on_hold = 0 AND due_date IS NOT NULL AND due_date < ? THEN 1 ELSE 0 END), 0) AS past_due_count,
-                    COALESCE(SUM(CASE WHEN on_hold = 0 AND due_date IS NOT NULL AND due_date < ? THEN amount_invoiced - amount_discount ELSE 0 END), 0) AS past_due_amount,
-                    COALESCE(SUM(CASE WHEN on_hold = 0 AND due_date BETWEEN ? AND ? THEN amount_invoiced - amount_discount ELSE 0 END), 0) AS due_within_7_days_amount
-                FROM ap_erp_open_ledger_cache;
-                """,
-                (as_of, as_of, as_of, as_of, as_of, within_7_days),
-            ).fetchone()
+                select(
+                    func.count().label("total_count"),
+                    func.coalesce(func.sum(balance), 0).label("total_balance"),
+                    func.coalesce(
+                        func.sum(case((l.c.on_hold == 1, 1), else_=0)), 0
+                    ).label("on_hold_count"),
+                    func.coalesce(
+                        func.sum(case((l.c.on_hold == 1, balance), else_=0)), 0
+                    ).label("on_hold_amount"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                ((l.c.on_hold == 0) & (l.c.due_date == as_of), 1),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("due_today_count"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    (l.c.on_hold == 0) & (l.c.due_date == as_of),
+                                    balance,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("due_today_amount"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    (l.c.on_hold == 0)
+                                    & l.c.due_date.is_not(None)
+                                    & (l.c.due_date < as_of),
+                                    1,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("past_due_count"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    (l.c.on_hold == 0)
+                                    & l.c.due_date.is_not(None)
+                                    & (l.c.due_date < as_of),
+                                    balance,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("past_due_amount"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    (l.c.on_hold == 0)
+                                    & l.c.due_date.between(as_of, within_7_days),
+                                    balance,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("due_within_7_days_amount"),
+                ).select_from(l)
+            ).mappings().first()
             refreshed_at = connection.execute(
-                "SELECT MAX(refreshed_at) AS refreshed_at "
-                "FROM ap_erp_open_ledger_cache;"
-            ).fetchone()["refreshed_at"]
-        finally:
-            connection.close()
+                select(func.max(l.c.refreshed_at))
+            ).scalar_one_or_none()
         return {**dict(row), "refreshed_at": refreshed_at}
 
     def list_vendor_terms_reference(self) -> list[dict[str, Any]]:
         self.initialize()
-        connection = self._connection()
-        try:
+        t = ap_vendor_terms_reference_table
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM ap_vendor_terms_reference ORDER BY terms_code;"
-            ).fetchall()
-        finally:
-            connection.close()
+                select(t).order_by(t.c.terms_code)
+            ).mappings().all()
         return [dict(row) for row in rows]
 
     def upsert_vendor_terms_reference(
@@ -373,89 +289,88 @@ class AccountsPayableErpLedgerRepository:
         description: str,
     ) -> None:
         self.initialize()
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
-            connection.execute(
-                """
-                INSERT INTO ap_vendor_terms_reference (
-                    terms_code, discount_percent, num_periods, num_months,
-                    num_days, second_period, third_period, next_period,
-                    day_of_month, cutoff_day, description, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(terms_code) DO UPDATE SET
-                    discount_percent = excluded.discount_percent,
-                    num_periods = excluded.num_periods,
-                    num_months = excluded.num_months,
-                    num_days = excluded.num_days,
-                    second_period = excluded.second_period,
-                    third_period = excluded.third_period,
-                    next_period = excluded.next_period,
-                    day_of_month = excluded.day_of_month,
-                    cutoff_day = excluded.cutoff_day,
-                    description = excluded.description,
-                    updated_at = excluded.updated_at;
-                """,
-                (
-                    terms_code, discount_percent, num_periods, num_months,
-                    num_days, second_period, third_period, next_period,
-                    day_of_month, cutoff_day, description, _now(),
-                ),
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        t = ap_vendor_terms_reference_table
+        values = {
+            "discount_percent": discount_percent,
+            "num_periods": num_periods,
+            "num_months": num_months,
+            "num_days": num_days,
+            "second_period": second_period,
+            "third_period": third_period,
+            "next_period": next_period,
+            "day_of_month": day_of_month,
+            "cutoff_day": cutoff_day,
+            "description": description,
+            "updated_at": _now(),
+        }
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                select(t.c.terms_code).where(t.c.terms_code == terms_code)
+            ).first()
+            if existing is None:
+                connection.execute(
+                    t.insert().values(terms_code=terms_code, **values)
+                )
+            else:
+                connection.execute(
+                    t.update().where(t.c.terms_code == terms_code).values(**values)
+                )
 
     def discount_eligibility_summary(self, as_of_date: date) -> dict[str, Any]:
         """Only terms codes with a true flat 'N days from invoice date'
         discount rule (discount_percent > 0 and num_days > 0) are computed
         here. A discount-bearing code that instead relies on day_of_month/
         cutoff_day ("proximo") logic is deliberately excluded and listed
-        separately - not silently treated as zero."""
+        separately - not silently treated as zero.
+
+        The due-by-date filter (invoice_date + num_days >= as_of) is
+        computed in Python rather than SQL date arithmetic (SQLite's
+        date(x, '+N days') has no direct MySQL equivalent for an arbitrary
+        ISO-8601 text column)."""
 
         self.initialize()
-        as_of = as_of_date.isoformat()
-        connection = self._connection()
-        try:
+        l = ap_erp_open_ledger_cache_table
+        v = ap_erp_vendor_terms_cache_table
+        t = ap_vendor_terms_reference_table
+        with self._engine.connect() as connection:
             has_reference = connection.execute(
-                "SELECT COUNT(*) AS count FROM ap_vendor_terms_reference;"
-            ).fetchone()["count"]
-            eligible = connection.execute(
-                """
-                SELECT
-                    COUNT(*) AS eligible_count,
-                    COALESCE(SUM(l.amount_invoiced * t.discount_percent / 100.0), 0)
-                        AS eligible_amount
-                FROM ap_erp_open_ledger_cache l
-                JOIN ap_erp_vendor_terms_cache v
-                    ON v.vendor_number = l.vendor_number
-                JOIN ap_vendor_terms_reference t
-                    ON t.terms_code = v.terms_code
-                WHERE l.on_hold = 0
-                    AND t.discount_percent > 0
-                    AND t.num_days > 0
-                    AND l.invoice_date IS NOT NULL
-                    AND date(l.invoice_date, '+' || t.num_days || ' days') >= ?;
-                """,
-                (as_of,),
-            ).fetchone()
+                select(func.count()).select_from(t)
+            ).scalar_one()
+            candidates = connection.execute(
+                select(l.c.amount_invoiced, t.c.discount_percent, l.c.invoice_date, t.c.num_days)
+                .select_from(
+                    l.join(v, v.c.vendor_number == l.c.vendor_number).join(
+                        t, t.c.terms_code == v.c.terms_code
+                    )
+                )
+                .where(
+                    l.c.on_hold == 0,
+                    t.c.discount_percent > 0,
+                    t.c.num_days > 0,
+                    l.c.invoice_date.is_not(None),
+                )
+            ).all()
             excluded = connection.execute(
-                """
-                SELECT terms_code, description FROM ap_vendor_terms_reference
-                WHERE discount_percent > 0
-                    AND (num_days IS NULL OR num_days <= 0)
-                ORDER BY terms_code;
-                """
-            ).fetchall()
-        finally:
-            connection.close()
+                select(t.c.terms_code, t.c.description)
+                .where(
+                    t.c.discount_percent > 0,
+                    or_(t.c.num_days.is_(None), t.c.num_days <= 0),
+                )
+                .order_by(t.c.terms_code)
+            ).mappings().all()
+
+        eligible_count = 0
+        eligible_amount = 0.0
+        for row in candidates:
+            invoice_date = date.fromisoformat(row.invoice_date)
+            if invoice_date + timedelta(days=row.num_days) >= as_of_date:
+                eligible_count += 1
+                eligible_amount += row.amount_invoiced * row.discount_percent / 100.0
+
         return {
             "has_reference_data": bool(has_reference),
-            "eligible_count": eligible["eligible_count"],
-            "eligible_amount": eligible["eligible_amount"],
+            "eligible_count": eligible_count,
+            "eligible_amount": eligible_amount,
             "excluded_codes": [dict(row) for row in excluded],
         }
 
@@ -472,45 +387,40 @@ class AccountsPayableErpLedgerRepository:
         self.initialize()
         if not gl_fields:
             return 0
-        prepared = [
-            (division, account, department, vendor_number, invoice_number)
+        l = ap_erp_open_ledger_cache_table
+        updated = 0
+        with self._engine.begin() as connection:
             for (vendor_number, invoice_number), (
-                division, account, department,
-            ) in gl_fields.items()
-        ]
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
-            connection.executemany(
-                """
-                UPDATE ap_erp_open_ledger_cache
-                SET gl_division = ?, gl_account = ?, gl_department = ?
-                WHERE vendor_number = ? AND invoice_number = ?;
-                """,
-                prepared,
-            )
-            updated = connection.total_changes
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+                division,
+                account,
+                department,
+            ) in gl_fields.items():
+                result = connection.execute(
+                    l.update()
+                    .where(
+                        l.c.vendor_number == vendor_number,
+                        l.c.invoice_number == invoice_number,
+                    )
+                    .values(
+                        gl_division=division,
+                        gl_account=account,
+                        gl_department=department,
+                    )
+                )
+                updated += result.rowcount
         return updated
 
     def _latest_warehouse_status(
-        self, connection: sqlite3.Connection, vendor_number: str, invoice_number: str
+        self, connection, vendor_number: str, invoice_number: str
     ) -> str:
+        a = ap_warehouse_approval_actions_table
         row = connection.execute(
-            """
-            SELECT to_status FROM ap_warehouse_approval_actions
-            WHERE vendor_number = ? AND invoice_number = ?
-            ORDER BY created_at DESC, action_id DESC
-            LIMIT 1;
-            """,
-            (vendor_number, invoice_number),
-        ).fetchone()
-        return row["to_status"] if row is not None else "needs_approval"
+            select(a.c.to_status)
+            .where(a.c.vendor_number == vendor_number, a.c.invoice_number == invoice_number)
+            .order_by(a.c.created_at.desc(), a.c.action_id.desc())
+            .limit(1)
+        ).first()
+        return row.to_status if row is not None else "needs_approval"
 
     def record_warehouse_approval_action(
         self,
@@ -525,38 +435,24 @@ class AccountsPayableErpLedgerRepository:
         created_at: str,
     ) -> dict[str, Any]:
         self.initialize()
-        connection = self._connection()
-        try:
-            connection.execute("BEGIN IMMEDIATE;")
+        a = ap_warehouse_approval_actions_table
+        with self._engine.begin() as connection:
             from_status = self._latest_warehouse_status(
                 connection, vendor_number, invoice_number
             )
             connection.execute(
-                """
-                INSERT INTO ap_warehouse_approval_actions (
-                    action_id, vendor_number, invoice_number, from_status,
-                    to_status, actor_identity, actor_identity_source,
-                    notes, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
-                    action_id,
-                    vendor_number,
-                    invoice_number,
-                    from_status,
-                    to_status,
-                    actor_identity,
-                    actor_identity_source,
-                    notes,
-                    created_at,
-                ),
+                a.insert().values(
+                    action_id=action_id,
+                    vendor_number=vendor_number,
+                    invoice_number=invoice_number,
+                    from_status=from_status,
+                    to_status=to_status,
+                    actor_identity=actor_identity,
+                    actor_identity_source=actor_identity_source,
+                    notes=notes,
+                    created_at=created_at,
+                )
             )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
         return {
             "action_id": action_id,
             "vendor_number": vendor_number,
@@ -569,9 +465,7 @@ class AccountsPayableErpLedgerRepository:
             "created_at": created_at,
         }
 
-    def warehouse_approval_queue(
-        self, division: str | None
-    ) -> dict[str, Any]:
+    def warehouse_approval_queue(self, division: str | None) -> dict[str, Any]:
         """Every currently-open ERP invoice (from the same open-ledger cache
         the dashboard uses), bucketed by its latest warehouse-approval
         action status (or 'needs_approval' when none exists yet), optionally
@@ -585,72 +479,84 @@ class AccountsPayableErpLedgerRepository:
 
         self.initialize()
         # ap_invoices belongs to AccountsPayableRepository, which may not
-        # have run its own lazy CREATE TABLE IF NOT EXISTS yet if this is
-        # the first accounts_payable call this process makes - initialize
-        # it here (via the same connection_factory this instance uses) so
-        # the LEFT JOIN below never fails with "no such table".
-        AccountsPayableRepository(self._connection_factory).initialize()
-        where = "WHERE l.gl_division = ?" if division else ""
-        parameters: tuple[Any, ...] = (division,) if division else ()
-        connection = self._connection()
-        try:
+        # have run its own lazy create_all yet if this is the first
+        # accounts_payable call this process makes - initialize it here
+        # (via the same engine this instance uses) so the LEFT JOIN below
+        # never fails with "table doesn't exist".
+        AccountsPayableRepository(self._engine).initialize()
+
+        l = ap_erp_open_ledger_cache_table
+        v = ap_erp_vendor_terms_cache_table
+        a = ap_warehouse_approval_actions_table
+        i = ap_invoices_table
+
+        action_rank = (
+            func.row_number()
+            .over(
+                partition_by=(a.c.vendor_number, a.c.invoice_number),
+                order_by=(a.c.created_at.desc(), a.c.action_id.desc()),
+            )
+            .label("rn")
+        )
+        latest = (
+            select(
+                a.c.vendor_number,
+                a.c.invoice_number,
+                a.c.to_status,
+                a.c.actor_identity,
+                a.c.created_at,
+                action_rank,
+            )
+        ).subquery()
+
+        conditions = [latest.c.rn == 1]
+        query_conditions = [l.c.gl_division == division] if division else []
+
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                f"""
-                SELECT
-                    l.vendor_number,
-                    v.vendor_name,
-                    l.invoice_number,
-                    l.invoice_date,
-                    l.due_date,
-                    l.amount_invoiced,
-                    l.amount_discount,
-                    l.on_hold,
-                    l.gl_division,
-                    l.gl_account,
-                    l.gl_department,
-                    COALESCE(latest.to_status, 'needs_approval') AS status,
-                    latest.actor_identity AS last_actor_identity,
-                    latest.created_at AS last_action_at,
-                    i.ap_invoice_id AS linked_ap_invoice_id
-                FROM ap_erp_open_ledger_cache l
-                LEFT JOIN ap_erp_vendor_terms_cache v
-                    ON v.vendor_number = l.vendor_number
-                LEFT JOIN (
-                    SELECT
-                        vendor_number,
-                        invoice_number,
-                        to_status,
-                        actor_identity,
-                        created_at,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY vendor_number, invoice_number
-                            ORDER BY created_at DESC, action_id DESC
-                        ) AS rn
-                    FROM ap_warehouse_approval_actions
-                ) latest
-                    ON latest.vendor_number = l.vendor_number
-                    AND latest.invoice_number = l.invoice_number
-                    AND latest.rn = 1
-                LEFT JOIN ap_invoices i
-                    ON i.vendor_number = l.vendor_number
-                    AND i.normalized_invoice_number = UPPER(l.invoice_number)
-                {where}
-                ORDER BY l.due_date IS NULL, l.due_date, l.vendor_number, l.invoice_number;
-                """,
-                parameters,
-            ).fetchall()
+                select(
+                    l.c.vendor_number,
+                    v.c.vendor_name,
+                    l.c.invoice_number,
+                    l.c.invoice_date,
+                    l.c.due_date,
+                    l.c.amount_invoiced,
+                    l.c.amount_discount,
+                    l.c.on_hold,
+                    l.c.gl_division,
+                    l.c.gl_account,
+                    l.c.gl_department,
+                    func.coalesce(latest.c.to_status, "needs_approval").label("status"),
+                    latest.c.actor_identity.label("last_actor_identity"),
+                    latest.c.created_at.label("last_action_at"),
+                    i.c.ap_invoice_id.label("linked_ap_invoice_id"),
+                )
+                .select_from(
+                    l.outerjoin(v, v.c.vendor_number == l.c.vendor_number)
+                    .outerjoin(
+                        latest,
+                        (latest.c.vendor_number == l.c.vendor_number)
+                        & (latest.c.invoice_number == l.c.invoice_number)
+                        & (latest.c.rn == 1),
+                    )
+                    .outerjoin(
+                        i,
+                        (i.c.vendor_number == l.c.vendor_number)
+                        & (i.c.normalized_invoice_number == func.upper(l.c.invoice_number)),
+                    )
+                )
+                .where(*query_conditions)
+                .order_by(l.c.due_date.is_(None), l.c.due_date, l.c.vendor_number, l.c.invoice_number)
+            ).mappings().all()
             divisions = connection.execute(
-                """
-                SELECT DISTINCT gl_division FROM ap_erp_open_ledger_cache
-                WHERE gl_division IS NOT NULL
-                ORDER BY gl_division;
-                """
-            ).fetchall()
-        finally:
-            connection.close()
+                select(l.c.gl_division)
+                .distinct()
+                .where(l.c.gl_division.is_not(None))
+                .order_by(l.c.gl_division)
+            ).all()
         return {
             "items": [dict(row) for row in rows],
-            "available_divisions": [row["gl_division"] for row in divisions],
+            "available_divisions": [row.gl_division for row in divisions],
         }
 
 

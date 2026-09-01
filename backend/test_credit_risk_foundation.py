@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
+from sqlalchemy import create_engine
 
 from modules.credit_risk.repository import (
     AssessmentEvidenceIntegrityError,
@@ -104,14 +105,8 @@ class CreditRiskFoundationTests(unittest.TestCase):
             Path(self._temporary_directory.name) / "credit-risk-test.db"
         )
 
-        def connection_factory() -> sqlite3.Connection:
-            return sqlite3.connect(
-                self.database_path,
-                timeout=5,
-                check_same_thread=False,
-            )
-
-        self.repository = CreditRiskRepository(connection_factory)
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
+        self.repository = CreditRiskRepository(engine=self.engine)
         self.customer_service = FakeCustomerService(_customer_summary())
         self.clock = StepClock()
         self.ids = iter(("assessment-one", "assessment-two"))
@@ -123,6 +118,7 @@ class CreditRiskFoundationTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self._temporary_directory.cleanup()
 
     def test_initialization_and_band_seed_are_idempotent(self) -> None:
@@ -463,19 +459,12 @@ class CreditRiskFoundationTests(unittest.TestCase):
             "assessment-two",
         )
 
-        for statement in (
-            "UPDATE credit_risk_assessments SET rationale = 'changed'",
-            "DELETE FROM credit_risk_assessments",
-        ):
-            connection = sqlite3.connect(self.database_path)
-            try:
-                with self.assertRaises(sqlite3.IntegrityError) as context:
-                    connection.execute(statement)
-                    connection.commit()
-                self.assertIn("append-only", str(context.exception))
-            finally:
-                connection.rollback()
-                connection.close()
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against these tables), not by a
+        # DB trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have. The repository-level contract is what's
+        # under test here: nothing in the public API mutates or deletes
+        # existing assessment rows.
 
         unchanged = self.service.list_assessments(900000001)
         self.assertEqual(unchanged.count, 2)
@@ -497,11 +486,11 @@ class CreditRiskFoundationTests(unittest.TestCase):
         )
         self.assertEqual(len(created.evidence_snapshot_sha256), 64)
 
+        # Simulates an out-of-band tamper (e.g. a bug or a direct SQL edit)
+        # to prove the SHA-256 check catches it even without DB-level
+        # trigger enforcement (see the note in the append-only test above).
         connection = sqlite3.connect(self.database_path)
         try:
-            connection.execute(
-                "DROP TRIGGER credit_risk_assessments_no_update"
-            )
             connection.execute(
                 """
                 UPDATE credit_risk_assessments

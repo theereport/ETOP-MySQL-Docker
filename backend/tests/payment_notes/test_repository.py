@@ -5,12 +5,14 @@ import threading
 import unittest
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 from modules.payment_notes.repository import PaymentNotesIntegrityError, PaymentNotesRepository
 
 
 def repo(tmp_path):
     path = tmp_path / "payment-notes.db"
-    repository = PaymentNotesRepository(lambda: sqlite3.connect(path))
+    repository = PaymentNotesRepository(engine=create_engine(f"sqlite:///{path}"))
     repository.initialize()
     return repository, path
 
@@ -35,19 +37,26 @@ class RepositoryTests(unittest.TestCase):
             repository.activate_route_reference(activation_id="a1", reference_id="r1", actor="u",
                 occurred_at="2026-08-22T00:02:00+00:00", idempotency_key="activate-1")
             self.assertEqual(repository.get_active_route_reference()["reference_id"], "r1")
+            # Append-only is enforced by convention in the repository layer
+            # (it never issues UPDATE/DELETE against these tables), not by a
+            # DB trigger - MySQL trigger creation needs a privilege the etop
+            # account doesn't have.
             connection = sqlite3.connect(path)
-            connection.execute("DROP TRIGGER pn_route_references_no_update")
             connection.execute("UPDATE pn_route_references SET payload_json = ? WHERE reference_id = 'r1'",
                                (json.dumps({"tampered": True}),))
             connection.commit(); connection.close()
             with self.assertRaises(PaymentNotesIntegrityError):
                 repository.get_route_reference("r1")
+            repository.engine.dispose()
 
     def test_two_route_activation_writers_form_one_valid_serial_chain(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "concurrent.db"
             repository = PaymentNotesRepository(
-                lambda: sqlite3.connect(path, timeout=10, check_same_thread=False)
+                engine=create_engine(
+                    f"sqlite:///{path}",
+                    connect_args={"timeout": 10, "check_same_thread": False},
+                )
             )
             repository.initialize()
             for reference_id, version in (("r1", "v1"), ("r2", "v2")):
@@ -90,3 +99,4 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0][0], "0" * 64)
             self.assertEqual(rows[1][0], rows[0][1])
+            repository.engine.dispose()
