@@ -1,0 +1,17 @@
+# Override used only by backend/scripts/refresh_erp_ledger_native.sh.
+#
+# Publishes etop-db's port to localhost so a native (non-Docker) Python
+# process can reach it directly. This exists because Docker Desktop's
+# Hyper-V backend on this machine doesn't reliably route container traffic
+# through the Barracuda VPN client's split-tunnel route to the MaddenCo ERP
+# server (10.73.x.x) - a native connection reaches it in ~4 seconds, the
+# same query from inside a container can take 1-4+ minutes and sometimes
+# gets killed outright. See DEPLOYMENT.md's "AP ERP ledger refresh" section.
+#
+# Not meant to be left running - the script applies this, runs the refresh
+# natively against the now-reachable database, then reverts to the plain
+# `docker-compose.yml` (no published port) automatically.
+services:
+  etop-db:
+    ports:
+      - "127.0.0.1:3307:3306"

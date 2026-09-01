@@ -204,6 +204,30 @@ docker compose --env-file backend/.env.compose exec backend python -m alembic up
 Check the current/pending state at any time with `alembic current` /
 `alembic history`.
 
+## AP ERP ledger refresh - native workaround (this dev machine only)
+
+On this machine, triggering the AP open-ledger refresh (Report Builder /
+Accounts Payable's "Refresh") from inside Docker is unreliable - it either
+takes several minutes or gets killed outright ("Interrupted by backend
+restart"). Confirmed 2026-09-01: Docker Desktop's Hyper-V backend here
+doesn't reliably route container traffic through the Barracuda VPN
+client's split-tunnel route to the MaddenCo ERP server, while a native
+(non-Docker) connection reaches the same server in a few seconds. This is
+specific to this machine's Docker backend, not a code issue, and is not
+expected on the real Linux deployment target.
+
+Until that's addressed (switching Docker Desktop to the WSL2 backend is
+the likely fix, but is a bigger system change - deferred for now), run the
+refresh natively instead:
+```bash
+bash backend/scripts/refresh_erp_ledger_native.sh
+```
+This temporarily publishes `etop-db`'s port to `127.0.0.1:3307` (via
+`docker-compose.native-refresh.yml`), runs the refresh from
+`backend/.venv` directly against the live Dockerized database, and reverts
+the port automatically when done - including on failure (it's wrapped in a
+cleanup trap). Requires `backend/.venv` to already be set up.
+
 ## Known limitation: PowerShell/Outlook automations won't run in this container
 
 `modules/automations/service.py` supports a `source_type == "powershell"`
