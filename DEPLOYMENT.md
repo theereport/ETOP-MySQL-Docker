@@ -101,6 +101,29 @@ Verify Ollama can see the GPU:
 docker compose exec ollama nvidia-smi
 ```
 
+## TLS
+
+The `reverse-proxy` service (nginx) terminates TLS on 443 and redirects 80 ->
+443; the `backend` service's own port is bound to `127.0.0.1:8000` only
+(local debugging), not published to the network - the proxy is the real
+public entry point.
+
+On first start with no certificate present, the proxy generates a
+**self-signed placeholder** certificate into `./nginx/certs/` (gitignored -
+never commit it) and logs that it did so. This is fine for local/no-domain
+use, but a browser will show a certificate warning, and it is not suitable
+for real external use.
+
+Once a domain is assigned on the real deployment server, replace the
+placeholder with a real certificate:
+1. Get a certificate for your domain (Let's Encrypt via certbot, or an
+   org-issued cert + key).
+2. Overwrite `./nginx/certs/server.crt` and `./nginx/certs/server.key` with
+   the real certificate and key (same filenames).
+3. `docker compose --env-file backend/.env.compose restart reverse-proxy`
+   (the entrypoint only generates a cert when the files are missing, so it
+   won't overwrite what you just placed there).
+
 ## Day-to-day
 
 ```bash
@@ -126,6 +149,60 @@ Regenerate `backend/.env.compose` (step 3 above) any time you change
 
 Everything else in the container is stateless and rebuilt from source on
 every `docker compose build`.
+
+## Backups and restore
+
+The `backup` service in `docker-compose.yml` runs `backend/scripts/backup_mysql.sh`
+once at startup and then every 24 hours, writing a gzipped `mysqldump` of the
+`etop` schema to `./backups/etop-<UTC timestamp>.sql.gz` and deleting dumps
+older than `BACKUP_RETENTION_DAYS` (default 14). `./backups/` is a plain host
+directory (gitignored - never commit a real dump) - copy it somewhere off-host
+periodically (it's just files, so any normal method works).
+
+Run a backup on demand:
+```bash
+docker compose --env-file backend/.env.compose exec backup sh /scripts/backup_mysql.sh
+```
+
+Restore a dump into the running `etop-db` container:
+```bash
+gunzip < backups/etop-<timestamp>.sql.gz | \
+  docker compose --env-file backend/.env.compose exec -T etop-db \
+  mysql -u "$ETOP_DB_USER" -p"$ETOP_DB_PASSWORD" "$ETOP_DB_NAME"
+```
+(Use the real `ETOP_DB_USER`/`ETOP_DB_PASSWORD`/`ETOP_DB_NAME` values from
+`backend/.env`.) This restores into whatever database already exists -
+tables are re-created via `CREATE TABLE` in the dump, so restore into an
+empty schema if you're recovering from data loss rather than just testing
+the dump.
+
+## Schema migrations (Alembic)
+
+Every table was originally created by each module's own
+`metadata.create_all(checkfirst=True)` call (see `backend/data/mysql.py`) -
+that call can add a brand-new table but can never `ALTER` an existing one.
+Alembic is now layered on top for anything beyond a new table, and the live
+database is already stamped at a baseline revision representing "everything
+before this point was created outside Alembic's control" - `create_all`
+still runs the same as before and remains how new tables get created.
+
+For a schema change from here on:
+```bash
+docker compose --env-file backend/.env.compose exec backend python -m alembic revision --autogenerate -m "describe the change"
+```
+Then **review the generated file** before applying it -
+`backend/alembic/versions/<rev>_baseline_schema_as_created_by_metadata_.py`'s
+docstring explains why: many `CheckConstraint`s were declared without an
+explicit name, so MySQL auto-assigned names like `sometable_chk_3`, and
+Alembic can't correlate those back to the unnamed Python-side constraint. It
+will re-propose dropping and recreating every one of them as noise on every
+autogenerate diff - discard those `chk_N` drop/create pairs and keep only
+the change you actually intended. Then apply it:
+```bash
+docker compose --env-file backend/.env.compose exec backend python -m alembic upgrade head
+```
+Check the current/pending state at any time with `alembic current` /
+`alembic history`.
 
 ## Known limitation: PowerShell/Outlook automations won't run in this container
 
