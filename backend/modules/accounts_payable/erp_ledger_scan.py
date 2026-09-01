@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 import mysql.connector
@@ -34,7 +35,27 @@ from core.database import madden_database
 # (PMHNBVND/PMHNBINV) and invoice date (PMHDTEINV), which the cash-flow
 # cache discards - the AP module needs per-invoice rows, not weekly-bucketed
 # totals.
-ERP_LEDGER_SCAN_TIMEOUT_SECONDS = 240
+#
+# Confirmed live (2026-09): PMHD's only index is the primary key
+# (PMHNBVND, PMHNBINV, PMHNBPMT) - neither PMHNBCHK nor PMHCODSEL (the two
+# WHERE-clause columns) are covered by it, so this is a genuine full scan of
+# the whole table (6.26M rows and growing) every run; MySQL cannot skip rows
+# via this or any other index for this filter. The 2-year invoice-date floor
+# below does NOT reduce that scan cost (PMHDTEINV isn't indexed either, so
+# MySQL still reads every row to evaluate it) - it exists to shrink the
+# *result set* handed to replace_open_ledger() and, more importantly, the
+# vendor/year scope passed into scan_gl_divisions_for_open_invoices()
+# afterward (see _refresh_open_ledger_divisions in service.py), which scales
+# with how many distinct vendor/year pairs come out of this scan. Rows with
+# a missing/malformed invoice date are kept rather than dropped, since we
+# can't judge those as "old" and this cache must never silently omit a
+# genuinely open invoice.
+#
+# Confirmed live: the MaddenCo server's own `max_execution_time` GLOBAL
+# variable is 0 (unlimited) - the timeout below is entirely self-imposed by
+# this app, not a server-side ceiling we're up against.
+ERP_LEDGER_SCAN_TIMEOUT_SECONDS = 600
+OPEN_LEDGER_MIN_INVOICE_AGE_DAYS = 365 * 2
 
 
 class ErpLedgerScanFailed(RuntimeError):
@@ -67,6 +88,9 @@ def scan_open_ap_ledger() -> list[dict[str, Any]]:
         except mysql.connector.Error:
             pass
         try:
+            cutoff = (
+                date.today() - timedelta(days=OPEN_LEDGER_MIN_INVOICE_AGE_DAYS)
+            ).strftime("%Y%m%d")
             cursor.execute(
                 """
                 SELECT PMHNBVND,
@@ -76,7 +100,13 @@ def scan_open_ap_ledger() -> list[dict[str, Any]]:
                 FROM PMHD
                 WHERE (PMHNBCHK = 0 OR PMHNBCHK IS NULL)
                   AND (PMHCODSEL IS NULL OR TRIM(PMHCODSEL) != 'V')
-                """
+                  AND (
+                    PMHDTEINV >= %s
+                    OR PMHDTEINV IS NULL
+                    OR PMHDTEINV = '00000000'
+                  )
+                """,
+                (cutoff,),
             )
             rows = cursor.fetchall()
         except mysql.connector.Error as exc:
