@@ -1960,6 +1960,15 @@
   background: #e6e8eb;
 }
 
+.lockbox-review-pdf-loading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  color: #8796ad;
+  font-size: 13px;
+}
+
 .lockbox-review-pane-heading {
   display: flex;
   align-items: center;

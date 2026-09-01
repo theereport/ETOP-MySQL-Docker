@@ -19,7 +19,7 @@ import type {
 import {
   appendLockboxCustomerNote,
   getLockboxCustomerNotes,
-  getDocumentFileUrl,
+  getDocumentFile,
   getLinkedCustomerAccounts,
   linkCustomerAsEnterprise,
   saveLockboxTransactionReview,
@@ -373,6 +373,7 @@ export default function LockboxReviewWorkspace({
   const [selectedId, setSelectedId] = useState(
     initialTransactionId || review.transactions[0]?.transaction_id || '',
   )
+  const [pdfObjectUrl, setPdfObjectUrl] = useState<string | null>(null)
   const [allocations, setAllocations] = useState<ReviewedLockboxAllocation[]>([])
   const [, setAllocationDraftDirty] = useState(false)
   const allocationDraftDirtyRef = useRef(false)
@@ -467,6 +468,34 @@ export default function LockboxReviewWorkspace({
   useEffect(() => {
     onCloseRef.current = onClose
   }, [onClose])
+
+  useEffect(() => {
+    // Fetched as an authenticated blob (same Bearer-token fetch every other
+    // API call uses) rather than pointed at directly with a raw <iframe
+    // src>/<a href> - a plain iframe/anchor load can't carry an
+    // Authorization header, and this app's session cookie fallback is
+    // SameSite=Strict, so it only works when the frontend and backend are
+    // accessed via the exact same host (e.g. both 127.0.0.1, never one of
+    // them as `localhost`). Fetching the blob here works regardless of
+    // which host the frontend is loaded from.
+    const controller = new AbortController()
+    let objectUrl: string | null = null
+
+    getDocumentFile(jobId, controller.signal)
+      .then((blob) => {
+        if (controller.signal.aborted) return
+        objectUrl = URL.createObjectURL(blob)
+        setPdfObjectUrl(objectUrl)
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setPdfObjectUrl(null)
+      })
+
+    return () => {
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [jobId])
 
   useEffect(() => {
     previouslyFocusedElementRef.current = (
@@ -2491,13 +2520,19 @@ export default function LockboxReviewWorkspace({
           <section className="lockbox-review-pdf">
             <div className="lockbox-review-pane-heading">
               <div><strong>Source PDF</strong><span>Page {activePage}</span></div>
-              <a href={`${getDocumentFileUrl(jobId)}#page=${activePage}`} target="_blank" rel="noreferrer">Open PDF</a>
+              {pdfObjectUrl && (
+                <a href={`${pdfObjectUrl}#page=${activePage}`} target="_blank" rel="noreferrer">Open PDF</a>
+              )}
             </div>
-            <iframe
-              key={`${selectedId}-${activePage}`}
-              title={`PNC PDF page ${activePage}`}
-              src={`${getDocumentFileUrl(jobId)}#page=${activePage}&zoom=page-width`}
-            />
+            {pdfObjectUrl ? (
+              <iframe
+                key={`${selectedId}-${activePage}`}
+                title={`PNC PDF page ${activePage}`}
+                src={`${pdfObjectUrl}#page=${activePage}&zoom=page-width`}
+              />
+            ) : (
+              <div className="lockbox-review-pdf-loading">Loading source PDF…</div>
+            )}
           </section>
 
           <section className="lockbox-review-editor">
