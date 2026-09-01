@@ -36,6 +36,31 @@ SQLITE_PATH = resolve_test_path_override(
 DEFAULT_LIMIT = int(os.getenv("SQL_DEFAULT_LIMIT", "500"))
 MAX_LIMIT = int(os.getenv("SQL_MAX_LIMIT", "5000"))
 
+
+def _connect() -> sqlite3.Connection:
+    """Open a connection to sql_workspace.db with a concurrency mitigation.
+
+    This is the one feature intentionally left on SQLite rather than MySQL
+    (see docs/migration notes). busy_timeout makes a writer that contends
+    with another connection wait briefly instead of immediately raising
+    "database is locked".
+
+    Deliberately NOT using PRAGMA journal_mode=WAL here: docker-compose.yml
+    bind-mounts sql_workspace.db as a single file
+    (./backend/sql_workspace.db:/app/backend/sql_workspace.db), not a
+    directory. WAL mode writes recent commits to a separate `-wal` sidecar
+    file that would land outside that mount, in the container's ephemeral
+    layer - a container recreation before SQLite auto-checkpoints could
+    silently lose those writes. The default rollback-journal mode's
+    `-journal` file doesn't have that problem (it's cleaned up immediately
+    after each commit), so it's the safer choice given how this file is
+    mounted today.
+    """
+
+    connection = sqlite3.connect(SQLITE_PATH)
+    connection.execute("PRAGMA busy_timeout=5000")
+    return connection
+
 class ExecuteSqlRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=250_000)
     row_limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
@@ -56,7 +81,7 @@ class SavedQueryUpdate(BaseModel):
 
 
 def initialize_sql_workspace_database() -> None:
-    with sqlite3.connect(SQLITE_PATH) as connection:
+    with _connect() as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS saved_queries (
@@ -119,7 +144,7 @@ def record_history(
     execution_ms: float,
     error_message: str | None,
 ) -> None:
-    with sqlite3.connect(SQLITE_PATH) as connection:
+    with _connect() as connection:
         connection.execute(
             """
             INSERT INTO query_history (
@@ -328,7 +353,7 @@ def get_saved_queries(
         else ""
     )
 
-    with sqlite3.connect(SQLITE_PATH) as connection:
+    with _connect() as connection:
         connection.row_factory = sqlite3.Row
 
         rows = connection.execute(
@@ -360,7 +385,7 @@ def create_saved_query(
 ) -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
 
-    with sqlite3.connect(SQLITE_PATH) as connection:
+    with _connect() as connection:
         cursor = connection.execute(
             """
             INSERT INTO saved_queries (
@@ -400,7 +425,7 @@ def update_saved_query(
 ) -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
 
-    with sqlite3.connect(SQLITE_PATH) as connection:
+    with _connect() as connection:
         cursor = connection.execute(
             """
             UPDATE saved_queries
@@ -438,7 +463,7 @@ def update_saved_query(
 
 @router.delete("/saved/{saved_query_id}")
 def delete_saved_query(saved_query_id: int) -> dict[str, Any]:
-    with sqlite3.connect(SQLITE_PATH) as connection:
+    with _connect() as connection:
         cursor = connection.execute(
             "DELETE FROM saved_queries WHERE id = ?",
             (saved_query_id,),
@@ -460,7 +485,7 @@ def delete_saved_query(saved_query_id: int) -> dict[str, Any]:
 
 @router.get("/categories")
 def get_saved_query_categories() -> dict[str, Any]:
-    with sqlite3.connect(SQLITE_PATH) as connection:
+    with _connect() as connection:
         rows = connection.execute(
             """
             SELECT DISTINCT category
@@ -479,7 +504,7 @@ def get_saved_query_categories() -> dict[str, Any]:
 def get_query_history(
     limit: int = Query(default=50, ge=1, le=250),
 ) -> dict[str, Any]:
-    with sqlite3.connect(SQLITE_PATH) as connection:
+    with _connect() as connection:
         connection.row_factory = sqlite3.Row
 
         rows = connection.execute(
@@ -514,7 +539,7 @@ def get_query_history(
 
 @router.delete("/history")
 def clear_query_history() -> dict[str, Any]:
-    with sqlite3.connect(SQLITE_PATH) as connection:
+    with _connect() as connection:
         connection.execute("DELETE FROM query_history")
         connection.commit()
 
