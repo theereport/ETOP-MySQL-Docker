@@ -6,7 +6,9 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
-from modules.document_intelligence.lockbox_review import database
+from sqlalchemy import create_engine
+
+from data.mysql import _reset_engine_override, _set_engine_override
 from modules.document_intelligence.lockbox_review import service as review_service
 from modules.document_intelligence.lockbox_review.schemas import (
     SaveTransactionReviewRequest,
@@ -35,15 +37,14 @@ class SaveTransactionReviewPayerMappingTest(unittest.TestCase):
     def setUp(self) -> None:
         FakePayerMappingRepository.calls = []
         self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.engine = create_engine(
+            f"sqlite:///{Path(self._tmpdir.name) / 'review.db'}"
+        )
+        _set_engine_override(self.engine)
+        self.addCleanup(_reset_engine_override)
+        self.addCleanup(self.engine.dispose)
         self._patches = [
-            patch.object(
-                database, "DATABASE_PATH", Path(self._tmpdir.name) / "review.db"
-            ),
-            patch.object(
-                database,
-                "LEGACY_DATABASE_PATH",
-                Path(self._tmpdir.name) / "legacy.db",
-            ),
             patch.object(
                 review_service,
                 "PayerCustomerMappingRepository",
@@ -60,7 +61,6 @@ class SaveTransactionReviewPayerMappingTest(unittest.TestCase):
         for patcher in self._patches:
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.addCleanup(self._tmpdir.cleanup)
 
     def _transaction(self, **overrides) -> dict:
         base = {

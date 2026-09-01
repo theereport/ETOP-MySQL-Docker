@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import importlib
-import sqlite3
 import sys
 import tempfile
 import types
@@ -10,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from pydantic import ValidationError
+from sqlalchemy import create_engine, select
 
 BACKEND_ROOT = Path(__file__).resolve().parent
 MODULES_ROOT = BACKEND_ROOT / "modules"
@@ -34,18 +34,20 @@ review_store = importlib.import_module(
 DocumentReviewSaveRequest = importlib.import_module(
     "modules.document_intelligence.review_schemas"
 ).DocumentReviewSaveRequest
+data_mysql = importlib.import_module("data.mysql")
 
 
 class DocumentReviewUnavailableTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
-        self.original_database_path = review_store.DATABASE_PATH
-        review_store.DATABASE_PATH = (
-            Path(self.temporary_directory.name) / "document-reviews.db"
+        self.engine = create_engine(
+            f"sqlite:///{Path(self.temporary_directory.name) / 'document-reviews.db'}"
         )
+        data_mysql._set_engine_override(self.engine)
 
     def tearDown(self) -> None:
-        review_store.DATABASE_PATH = self.original_database_path
+        data_mysql._reset_engine_override()
+        self.engine.dispose()
         self.temporary_directory.cleanup()
 
     def test_unknown_or_conflicting_unavailable_field_is_rejected(self) -> None:
@@ -100,18 +102,14 @@ class DocumentReviewUnavailableTests(unittest.TestCase):
 
         reloaded = review_store.get_review("synthetic-job-review")
         self.assertEqual(reloaded, saved)
-        with sqlite3.connect(review_store.DATABASE_PATH) as connection:
-            columns = {
-                row[1]
-                for row in connection.execute(
-                    "PRAGMA table_info(document_reviews)"
-                ).fetchall()
-            }
+        table = data_mysql.document_reviews_table
+        with self.engine.connect() as connection:
+            columns = set(table.columns.keys())
             raw_payload = connection.execute(
-                "SELECT corrected_fields_json FROM document_reviews "
-                "WHERE job_id = ?",
-                ("synthetic-job-review",),
-            ).fetchone()[0]
+                select(table.c.corrected_fields_json).where(
+                    table.c.job_id == "synthetic-job-review"
+                )
+            ).scalar()
         self.assertNotIn("unavailable_fields", columns)
         self.assertEqual(
             json.loads(raw_payload)[

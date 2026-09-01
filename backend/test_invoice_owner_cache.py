@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 from modules.document_intelligence.integrations.invoice_owner_cache import (
     InvoiceOwnerCacheRepository,
 )
@@ -16,9 +18,11 @@ class InvoiceOwnerCacheRepositoryTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
-        self.cache = InvoiceOwnerCacheRepository(
-            Path(self._tmpdir.name) / "invoice_owner_cache.db"
+        self.engine = create_engine(
+            f"sqlite:///{Path(self._tmpdir.name) / 'invoice_owner_cache.db'}"
         )
+        self.addCleanup(self.engine.dispose)
+        self.cache = InvoiceOwnerCacheRepository(engine=self.engine)
 
     def test_never_refreshed_returns_none(self) -> None:
         self.assertIsNone(self.cache.get_owners(["43000001"]))
@@ -84,9 +88,11 @@ class ReceivablesRepositoryCacheIntegrationTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
-        self.cache = InvoiceOwnerCacheRepository(
-            Path(self._tmpdir.name) / "invoice_owner_cache.db"
+        self.engine = create_engine(
+            f"sqlite:///{Path(self._tmpdir.name) / 'invoice_owner_cache.db'}"
         )
+        self.addCleanup(self.engine.dispose)
+        self.cache = InvoiceOwnerCacheRepository(engine=self.engine)
 
     class _FailingDatabase:
         def fetch_all(self, query, parameters):

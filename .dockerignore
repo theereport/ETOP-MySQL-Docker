@@ -1,0 +1,34 @@
+# Never let real credentials into an image layer.
+backend/.env
+backend/.env.compose
+
+# Archived pre-migration SQLite files (~1.2GB, dead weight for the image).
+archive/
+
+# Python
+**/__pycache__/
+**/*.pyc
+backend/.venv/
+backend/.pytest_cache/
+
+# Frontend (built/deployed separately from the backend image)
+node_modules/
+dist/
+src/
+public/
+index.html
+package.json
+package-lock.json
+vite.config.ts
+tsconfig*.json
+eslint.config.js
+
+# VCS / editor / misc project scaffolding not needed at runtime
+.git/
+.claude/
+docs/
+tests/
+verification/
+Executive Discussion Log/
+ETOP-Launcher/
+*.log

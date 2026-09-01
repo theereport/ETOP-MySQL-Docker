@@ -2197,6 +2197,377 @@ fc_cycle_template_snapshots_table = Table(
 )
 
 
+# --- document_intelligence module (phase 2) -------------------------------
+#
+# document_intelligence.db was actually split across two physical SQLite
+# files by a path-resolution bug (see the migration script for the full
+# explanation) - doc_jobs/doc_results/doc_processing_runs lived in one file,
+# payer_customer_mapping/manual_enterprise_groups/manual_enterprise_group_
+# members in the other. Consolidating into one shared MySQL schema resolves
+# that split as a side effect. extraction_json/parsed_json/comparison_json
+# measured up to ~640KB in real data - well past MySQL's 64KB TEXT cap - so
+# they use _LARGE_JSON_TYPE (LONGTEXT) like payment_notes/financial_close.
+
+doc_jobs_table = Table(
+    "doc_jobs",
+    metadata,
+    Column("job_id", String(64), primary_key=True),
+    Column("original_file_name", String(255), nullable=False),
+    Column("stored_file_name", String(255), nullable=False),
+    Column("stored_path", String(1024), nullable=False),
+    Column("content_type", String(64), nullable=False),
+    Column("file_size_bytes", BigInteger, nullable=False),
+    Column("document_type", String(64), nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("message", Text, nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Column("source_sha256", String(64), nullable=True),
+    Column("intake_document_type", String(64), nullable=True),
+    Column("intake_source", String(64), nullable=True),
+    Column("duplicate_of_job_id", String(64), nullable=True),
+    Index("idx_doc_jobs_type_status", "document_type", "status", "created_at"),
+    Index("idx_doc_jobs_source_hash", "source_sha256", "created_at"),
+)
+
+doc_results_table = Table(
+    "doc_results",
+    metadata,
+    Column("job_id", String(64), ForeignKey("doc_jobs.job_id"), primary_key=True),
+    Column("classifier", String(64), nullable=False),
+    Column("classification_evidence", Text, nullable=False),
+    Column("extraction_json", _LARGE_JSON_TYPE, nullable=False),
+    Column("parsed_json", _LARGE_JSON_TYPE, nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Column("processing_run_id", String(64), nullable=True),
+    Column("processing_run_number", Integer, nullable=True),
+    Column("processor_version", String(64), nullable=True),
+    Column("source_sha256", String(64), nullable=True),
+)
+
+doc_processing_runs_table = Table(
+    "doc_processing_runs",
+    metadata,
+    Column("processing_run_id", String(64), primary_key=True),
+    Column("job_id", String(64), ForeignKey("doc_jobs.job_id"), nullable=False),
+    Column("run_number", Integer, nullable=False),
+    Column("processor_version", String(64), nullable=False),
+    Column("source_sha256", String(64), nullable=True),
+    Column("status", String(16), nullable=False),
+    Column("classifier", String(64), nullable=True),
+    Column("classification_evidence", Text, nullable=False),
+    Column("extraction_json", _LARGE_JSON_TYPE, nullable=False),
+    Column("parsed_json", _LARGE_JSON_TYPE, nullable=False),
+    Column("message", Text, nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("completed_at", String(64), nullable=False),
+    CheckConstraint("run_number > 0"),
+    CheckConstraint("status IN ('completed', 'failed')"),
+    UniqueConstraint("job_id", "run_number"),
+    Index("idx_doc_runs_job", "job_id", "run_number"),
+)
+
+payer_customer_mapping_table = Table(
+    "payer_customer_mapping",
+    metadata,
+    Column("mapping_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("routing_number", String(64), nullable=False, server_default=""),
+    Column("bank_account_last4", String(16), nullable=False, server_default=""),
+    Column("normalized_payer_name", String(255), nullable=False, server_default=""),
+    Column("customer_number", String(64), nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("confirmed_by_user", Integer, nullable=False, server_default="0"),
+    Column("first_seen_at", String(64), nullable=False),
+    Column("last_seen_at", String(64), nullable=False),
+    UniqueConstraint(
+        "routing_number", "bank_account_last4", "normalized_payer_name"
+    ),
+)
+
+manual_enterprise_groups_table = Table(
+    "manual_enterprise_groups",
+    metadata,
+    Column("group_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("created_by", String(255), nullable=False, server_default=""),
+    Column("created_at", String(64), nullable=False),
+)
+
+manual_enterprise_group_members_table = Table(
+    "manual_enterprise_group_members",
+    metadata,
+    Column(
+        "group_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("manual_enterprise_groups.group_id"),
+        nullable=False,
+    ),
+    Column("customer_number", String(64), nullable=False, unique=True),
+    Column("added_by", String(255), nullable=False, server_default=""),
+    Column("added_at", String(64), nullable=False),
+)
+
+customer_payment_behavior_table = Table(
+    "customer_payment_behavior",
+    metadata,
+    Column("behavior_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("customer_number", String(64), nullable=False),
+    Column("pattern_type", String(64), nullable=False),
+    Column("pattern_key", String(255), nullable=False),
+    Column("observation_count", Integer, nullable=False, server_default="0"),
+    Column("success_count", Integer, nullable=False, server_default="0"),
+    Column("first_observed_at", String(64), nullable=False),
+    Column("last_observed_at", String(64), nullable=False),
+    UniqueConstraint("customer_number", "pattern_type", "pattern_key"),
+)
+
+document_training_sessions_table = Table(
+    "document_training_sessions",
+    metadata,
+    Column("session_id", String(64), primary_key=True),
+    Column("job_id", String(64), nullable=False),
+    Column("dataset_type", String(64), nullable=False),
+    Column("source_pdf_name", String(255), nullable=False),
+    Column("ground_truth_file_name", String(255), nullable=False),
+    Column("ground_truth_path", String(1024), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("metrics_json", Text, nullable=False),
+    Column("comparison_json", _LARGE_JSON_TYPE, nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Index("idx_training_job_id", "job_id"),
+)
+
+document_learning_examples_table = Table(
+    "document_learning_examples",
+    metadata,
+    Column("id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("job_id", String(64), nullable=False),
+    Column("document_type", String(64), nullable=False),
+    Column("field_name", String(64), nullable=False),
+    Column("original_value_json", Text, nullable=False),
+    Column("corrected_value_json", Text, nullable=False),
+    Column("reviewer", String(255), nullable=False, server_default=""),
+    Column("source_status", String(64), nullable=False),
+    Column("fingerprint", String(64), nullable=False, unique=True),
+    Column("created_at", String(64), nullable=False),
+    Index("idx_learning_job", "job_id"),
+    Index("idx_learning_field", "field_name"),
+)
+
+document_reviews_table = Table(
+    "document_reviews",
+    metadata,
+    Column("job_id", String(64), ForeignKey("doc_jobs.job_id"), primary_key=True),
+    Column("status", String(32), nullable=False, server_default="pending"),
+    Column("reviewer", String(255), nullable=False, server_default=""),
+    Column("notes", Text, nullable=False),
+    Column("corrected_fields_json", Text, nullable=False),
+    Column("processing_run_id", String(64), nullable=True),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+)
+
+document_review_history_table = Table(
+    "document_review_history",
+    metadata,
+    Column("id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("job_id", String(64), ForeignKey("doc_jobs.job_id"), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("reviewer", String(255), nullable=False, server_default=""),
+    Column("notes", Text, nullable=False),
+    Column("corrected_fields_json", Text, nullable=False),
+    Column("processing_run_id", String(64), nullable=True),
+    Column("created_at", String(64), nullable=False),
+    Index("idx_review_history_job_id", "job_id", "created_at"),
+)
+
+# --- legacy lockbox_learning.db (lockbox_service.py) ----------------------
+
+lockbox_reviews_table = Table(
+    "lockbox_reviews",
+    metadata,
+    Column("job_id", String(64), primary_key=True),
+    Column("transaction_id", String(64), primary_key=True),
+    Column("review_json", Text, nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+)
+
+lockbox_customer_profiles_table = Table(
+    "lockbox_customer_profiles",
+    metadata,
+    Column("profile_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("customer_name", String(255), nullable=False),
+    Column("customer_phone", String(64), nullable=False, server_default=""),
+    Column("customer_address_line_1", String(255), nullable=False, server_default=""),
+    Column("customer_address_line_2", String(255), nullable=False, server_default=""),
+    Column("customer_city", String(255), nullable=False, server_default=""),
+    Column("customer_state", String(64), nullable=False, server_default=""),
+    Column("customer_postal_code", String(32), nullable=False, server_default=""),
+    Column("aba_routing", String(64), nullable=False, server_default=""),
+    Column("account_number", String(64), nullable=False, server_default=""),
+    Column("times_confirmed", Integer, nullable=False, server_default="1"),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Index("idx_lockbox_customer_profiles_bank", "aba_routing", "account_number"),
+)
+
+# --- lockbox_review.db (lockbox_review/database.py) -----------------------
+#
+# original_allocations_json measured up to 64,187 bytes in real data - right
+# at MySQL's 65,535-byte plain-TEXT edge - so both allocation JSON columns
+# use _LARGE_JSON_TYPE for headroom.
+
+lockbox_transaction_reviews_table = Table(
+    "lockbox_transaction_reviews",
+    metadata,
+    Column("job_id", String(64), primary_key=True),
+    Column("transaction_id", String(64), primary_key=True),
+    Column("original_allocations_json", _LARGE_JSON_TYPE, nullable=False),
+    Column("allocations_json", _LARGE_JSON_TYPE, nullable=False),
+    Column("customer_json", Text, nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("reviewer", String(255), nullable=False, server_default=""),
+    Column("notes", Text, nullable=False),
+    Column("override_reason", Text, nullable=False),
+    Column("misc_gl_json", Text, nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Index("idx_lockbox_transaction_reviews_job", "job_id"),
+)
+
+lockbox_customer_notes_table = Table(
+    "lockbox_customer_notes",
+    metadata,
+    Column("note_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("customer_number", String(64), nullable=False),
+    Column("customer_name", String(255), nullable=False, server_default=""),
+    Column("body", Text, nullable=False),
+    Column("author", String(255), nullable=False),
+    Column("source_job_id", String(64), nullable=False),
+    Column("source_transaction_id", String(64), nullable=False),
+    Column("source_check_number", String(64), nullable=False, server_default=""),
+    Column("created_at", String(64), nullable=False),
+    Index(
+        "idx_lockbox_customer_notes_customer_created",
+        "customer_number",
+        "created_at",
+        "note_id",
+    ),
+)
+
+# --- invoice_owner_cache.db (integrations/invoice_owner_cache.py) --------
+#
+# A plain wholesale-replaceable cache (~257k rows), not an append-only
+# ledger - each refresh discards the prior snapshot entirely and bulk-
+# inserts the new one, so the migration/refresh code uses batched
+# executemany-style inserts rather than the row-by-row check-then-insert
+# pattern used elsewhere in this schema.
+
+invoice_owner_cache_table = Table(
+    "invoice_owner_cache",
+    metadata,
+    Column("invoice_number", String(32), primary_key=True),
+    Column("customer_numbers", String(255), nullable=False),
+    Column("refreshed_at", String(64), nullable=False),
+)
+
+invoice_owner_cache_metadata_table = Table(
+    "invoice_owner_cache_metadata",
+    metadata,
+    Column("meta_key", String(64), primary_key=True),
+    Column("meta_value", Text, nullable=False),
+)
+
+# --- lockbox_preparation.db (lockbox_preparation/repository.py) -----------
+#
+# preparation_schema (a singleton row tracking an in-place SQLite schema
+# version, used only to drive the old ALTER-TABLE-based v2->v3 migration)
+# is omitted entirely - MySQL always gets the current schema directly, the
+# same "moot" treatment as every other in-place SQLite migration in this
+# project. result_json/payload_json measured up to ~7.25MB in real data,
+# so those (and source_json, which measured up to ~263KB) use
+# _LARGE_JSON_TYPE (LONGTEXT). preparation_events.event_id is a genuine
+# ordering dependency (events are always read `ORDER BY event_id`), so it
+# gets the usual auto-increment `sequence`-style treatment already used
+# elsewhere for the same reason - just named event_id here directly since
+# nothing else needs the raw TEXT id this table never had in the first
+# place.
+
+lockbox_preparation_jobs_table = Table(
+    "lockbox_preparation_jobs",
+    metadata,
+    Column("job_id", String(64), primary_key=True),
+    Column("source_job_id", String(64), nullable=False),
+    Column("source_file_hash", String(64), nullable=False),
+    Column("source_reference", String(255), nullable=False, server_default=""),
+    Column("correlation_id", String(64), nullable=False),
+    Column("idempotency_key", String(255), nullable=False, unique=True),
+    Column("request_fingerprint", String(64), nullable=False, server_default=""),
+    Column("preparation_generation", Integer, nullable=False, server_default="1"),
+    Column("state", String(32), nullable=False),
+    Column("expected_count", Integer, nullable=False),
+    Column("terminal_count", Integer, nullable=False, server_default="0"),
+    Column("balanced_count", Integer, nullable=False, server_default="0"),
+    Column("exception_count", Integer, nullable=False, server_default="0"),
+    Column("preserved_count", Integer, nullable=False, server_default="0"),
+    Column("rule_version", String(128), nullable=False),
+    Column("service_version", String(128), nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Column("started_at", String(64), nullable=True),
+    Column("completed_at", String(64), nullable=True),
+    UniqueConstraint("source_job_id", "source_file_hash", "rule_version"),
+)
+
+lockbox_preparation_transactions_table = Table(
+    "lockbox_preparation_transactions",
+    metadata,
+    Column(
+        "job_id",
+        String(64),
+        ForeignKey("lockbox_preparation_jobs.job_id"),
+        primary_key=True,
+    ),
+    Column("transaction_id", String(64), primary_key=True),
+    Column("ordinal", Integer, nullable=False),
+    Column("state", String(32), nullable=False),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("retry_eligible", Integer, nullable=False, server_default="0"),
+    Column("source_json", _LARGE_JSON_TYPE, nullable=False),
+    Column("source_hash", String(64), nullable=False, server_default=""),
+    Column(
+        "extraction_version", String(64), nullable=False, server_default="unknown"
+    ),
+    Column("result_json", _LARGE_JSON_TYPE, nullable=True),
+    Column("error_json", Text, nullable=True),
+    Column("created_at", String(64), nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Column("started_at", String(64), nullable=True),
+    Column("completed_at", String(64), nullable=True),
+    UniqueConstraint("job_id", "ordinal"),
+    Index("idx_lockbox_preparation_transactions_state", "job_id", "state", "ordinal"),
+)
+
+lockbox_preparation_events_table = Table(
+    "lockbox_preparation_events",
+    metadata,
+    Column("event_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column(
+        "job_id", String(64), ForeignKey("lockbox_preparation_jobs.job_id"), nullable=False
+    ),
+    Column("transaction_id", String(64), nullable=True),
+    Column("event_type", String(64), nullable=False),
+    Column("from_state", String(32), nullable=True),
+    Column("to_state", String(32), nullable=True),
+    Column("payload_json", _LARGE_JSON_TYPE, nullable=False),
+    Column("occurred_at", String(64), nullable=False),
+    Index("idx_lockbox_preparation_events_job", "job_id", "event_id"),
+)
+
+
 _engine: Engine | None = None
 _engine_override: Engine | None = None
 

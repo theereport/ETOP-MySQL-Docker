@@ -1,97 +1,24 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from contextlib import closing
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from core.test_path_override import resolve_test_path_override
+from sqlalchemy import select
 
-MODULE_DIR = Path(__file__).resolve().parent
-DATABASE_PATH = resolve_test_path_override(
-    "ETOP_TEST_LOCKBOX_REVIEW_DB", MODULE_DIR / "lockbox_review.db"
+from data.mysql import (
+    get_engine,
+    lockbox_customer_notes_table,
+    lockbox_reviews_table,
+    lockbox_transaction_reviews_table,
+    metadata,
 )
-LEGACY_DATABASE_PATH = resolve_test_path_override(
-    "ETOP_TEST_LOCKBOX_REVIEW_LEGACY_DB",
-    MODULE_DIR.parent / "lockbox_learning.db",
-)
 
-
-def _connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(DATABASE_PATH)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA foreign_keys=ON")
-    return connection
+_TABLES = [lockbox_transaction_reviews_table, lockbox_customer_notes_table]
 
 
 def initialize_database() -> None:
-    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with closing(_connect()) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS transaction_reviews (
-                job_id TEXT NOT NULL,
-                transaction_id TEXT NOT NULL,
-                original_allocations_json TEXT NOT NULL,
-                allocations_json TEXT NOT NULL,
-                customer_json TEXT NOT NULL DEFAULT '{}',
-                status TEXT NOT NULL,
-                reviewer TEXT NOT NULL DEFAULT '',
-                notes TEXT NOT NULL DEFAULT '',
-                override_reason TEXT NOT NULL DEFAULT '',
-                misc_gl_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (job_id, transaction_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_transaction_reviews_job
-                ON transaction_reviews(job_id);
-
-            CREATE TABLE IF NOT EXISTS customer_notes (
-                note_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                customer_number TEXT NOT NULL,
-                customer_name TEXT NOT NULL DEFAULT '',
-                body TEXT NOT NULL,
-                author TEXT NOT NULL,
-                source_job_id TEXT NOT NULL,
-                source_transaction_id TEXT NOT NULL,
-                source_check_number TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_customer_notes_customer_created
-                ON customer_notes(customer_number, created_at, note_id);
-            CREATE TRIGGER IF NOT EXISTS customer_notes_append_only_update
-            BEFORE UPDATE ON customer_notes
-            BEGIN
-                SELECT RAISE(ABORT, 'customer notes are append-only');
-            END;
-            CREATE TRIGGER IF NOT EXISTS customer_notes_append_only_delete
-            BEFORE DELETE ON customer_notes
-            BEGIN
-                SELECT RAISE(ABORT, 'customer notes are append-only');
-            END;
-            """
-        )
-        columns = {
-            str(row["name"])
-            for row in connection.execute(
-                "PRAGMA table_info(transaction_reviews)"
-            ).fetchall()
-        }
-        if "customer_json" not in columns:
-            connection.execute(
-                "ALTER TABLE transaction_reviews "
-                "ADD COLUMN customer_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        if "misc_gl_json" not in columns:
-            connection.execute(
-                "ALTER TABLE transaction_reviews "
-                "ADD COLUMN misc_gl_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        connection.commit()
+    metadata.create_all(get_engine(), checkfirst=True, tables=_TABLES)
 
 
 def migrate_legacy_reviews(
@@ -101,24 +28,27 @@ def migrate_legacy_reviews(
     """Copy legacy human reviews once without deleting their source store."""
 
     initialize_database()
-    if not LEGACY_DATABASE_PATH.exists():
-        return 0
-    with closing(sqlite3.connect(LEGACY_DATABASE_PATH)) as legacy:
-        legacy.row_factory = sqlite3.Row
-        table = legacy.execute(
-            "SELECT 1 FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'lockbox_reviews'"
-        ).fetchone()
-        if not table:
-            return 0
-        rows = legacy.execute(
-            "SELECT * FROM lockbox_reviews WHERE job_id = ?",
-            (job_id,),
-        ).fetchall()
+    # lockbox_reviews belongs to the legacy lockbox_service module, but a
+    # fresh test engine may not have created it yet - ensure it exists here
+    # too (idempotent) so this read never hits a missing-table error.
+    metadata.create_all(get_engine(), checkfirst=True, tables=[lockbox_reviews_table])
+    legacy = lockbox_reviews_table
+    target = lockbox_transaction_reviews_table
+    with get_engine().begin() as connection:
+        rows = connection.execute(
+            select(legacy).where(legacy.c.job_id == job_id)
+        ).mappings().all()
 
-    migrated = 0
-    with closing(_connect()) as connection:
+        migrated = 0
         for row in rows:
+            existing = connection.execute(
+                select(target.c.job_id).where(
+                    target.c.job_id == job_id,
+                    target.c.transaction_id == row["transaction_id"],
+                )
+            ).first()
+            if existing is not None:
+                continue
             payload = json.loads(row["review_json"] or "{}")
             customer = {
                 key: str(payload.get(key) or "").strip()
@@ -133,43 +63,38 @@ def migrate_legacy_reviews(
                     "customer_postal_code",
                 )
             }
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO transaction_reviews (
-                    job_id, transaction_id, original_allocations_json,
-                    allocations_json, customer_json, status, reviewer,
-                    notes, override_reason, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    job_id,
-                    row["transaction_id"],
-                    json.dumps(
+            connection.execute(
+                target.insert().values(
+                    job_id=job_id,
+                    transaction_id=row["transaction_id"],
+                    original_allocations_json=json.dumps(
                         original_allocations.get(row["transaction_id"], []),
                         ensure_ascii=False,
                     ),
-                    json.dumps(payload.get("allocations", []), ensure_ascii=False),
-                    json.dumps(customer, ensure_ascii=False),
-                    str(payload.get("status") or "corrected"),
-                    str(payload.get("reviewer") or ""),
-                    str(payload.get("notes") or ""),
-                    str(payload.get("override_reason") or ""),
-                    row["created_at"],
-                    row["updated_at"],
-                ),
+                    allocations_json=json.dumps(
+                        payload.get("allocations", []), ensure_ascii=False
+                    ),
+                    customer_json=json.dumps(customer, ensure_ascii=False),
+                    status=str(payload.get("status") or "corrected"),
+                    reviewer=str(payload.get("reviewer") or ""),
+                    notes=str(payload.get("notes") or ""),
+                    override_reason=str(payload.get("override_reason") or ""),
+                    misc_gl_json="{}",
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
             )
-            migrated += int(cursor.rowcount > 0)
-        connection.commit()
+            migrated += 1
     return migrated
 
 
 def get_reviews(job_id: str) -> dict[str, dict[str, Any]]:
     initialize_database()
-    with closing(_connect()) as connection:
+    table = lockbox_transaction_reviews_table
+    with get_engine().connect() as connection:
         rows = connection.execute(
-            "SELECT * FROM transaction_reviews WHERE job_id = ?",
-            (job_id,),
-        ).fetchall()
+            select(table).where(table.c.job_id == job_id)
+        ).mappings().all()
     return {
         row["transaction_id"]: {
             "original_allocations": json.loads(row["original_allocations_json"]),
@@ -201,40 +126,43 @@ def save_review(
 ) -> None:
     initialize_database()
     now = datetime.now(timezone.utc).isoformat()
-    with closing(_connect()) as connection:
-        connection.execute(
-            """
-            INSERT INTO transaction_reviews (
-                job_id, transaction_id, original_allocations_json,
-                allocations_json, customer_json, status, reviewer, notes,
-                override_reason, misc_gl_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(job_id, transaction_id) DO UPDATE SET
-                allocations_json = excluded.allocations_json,
-                customer_json = excluded.customer_json,
-                status = excluded.status,
-                reviewer = excluded.reviewer,
-                notes = excluded.notes,
-                override_reason = excluded.override_reason,
-                misc_gl_json = excluded.misc_gl_json,
-                updated_at = excluded.updated_at
-            """,
-            (
-                job_id,
-                transaction_id,
-                json.dumps(original_allocations, ensure_ascii=False),
-                json.dumps(allocations, ensure_ascii=False),
-                json.dumps(customer, ensure_ascii=False),
-                status,
-                reviewer,
-                notes,
-                override_reason,
-                json.dumps(misc_gl or {}, ensure_ascii=False),
-                now,
-                now,
-            ),
-        )
-        connection.commit()
+    table = lockbox_transaction_reviews_table
+    values = dict(
+        allocations_json=json.dumps(allocations, ensure_ascii=False),
+        customer_json=json.dumps(customer, ensure_ascii=False),
+        status=status,
+        reviewer=reviewer,
+        notes=notes,
+        override_reason=override_reason,
+        misc_gl_json=json.dumps(misc_gl or {}, ensure_ascii=False),
+        updated_at=now,
+    )
+    with get_engine().begin() as connection:
+        existing = connection.execute(
+            select(table.c.job_id).where(
+                table.c.job_id == job_id, table.c.transaction_id == transaction_id
+            )
+        ).first()
+        if existing is None:
+            connection.execute(
+                table.insert().values(
+                    job_id=job_id,
+                    transaction_id=transaction_id,
+                    original_allocations_json=json.dumps(
+                        original_allocations, ensure_ascii=False
+                    ),
+                    created_at=now,
+                    **values,
+                )
+            )
+        else:
+            connection.execute(
+                table.update()
+                .where(
+                    table.c.job_id == job_id, table.c.transaction_id == transaction_id
+                )
+                .values(**values)
+            )
 
 
 def get_customer_notes(
@@ -245,24 +173,19 @@ def get_customer_notes(
     """Return durable notes for one exact ERP customer identity."""
 
     initialize_database()
+    table = lockbox_customer_notes_table
     safe_limit = max(1, min(int(limit), 1000))
-    with closing(_connect()) as connection:
+    recent = (
+        select(table)
+        .where(table.c.customer_number == customer_number)
+        .order_by(table.c.created_at.desc(), table.c.note_id.desc())
+        .limit(safe_limit)
+        .subquery()
+    )
+    with get_engine().connect() as connection:
         rows = connection.execute(
-            """
-            SELECT *
-            FROM (
-                SELECT note_id, customer_number, customer_name, body, author,
-                       source_job_id, source_transaction_id,
-                       source_check_number, created_at
-                FROM customer_notes
-                WHERE customer_number = ?
-                ORDER BY created_at DESC, note_id DESC
-                LIMIT ?
-            ) AS recent_customer_notes
-            ORDER BY created_at ASC, note_id ASC
-            """,
-            (customer_number, safe_limit),
-        ).fetchall()
+            select(recent).order_by(recent.c.created_at, recent.c.note_id)
+        ).mappings().all()
     return [dict(row) for row in rows]
 
 
@@ -280,38 +203,24 @@ def append_customer_note(
 
     initialize_database()
     now = datetime.now(timezone.utc).isoformat()
-    with closing(_connect()) as connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO customer_notes (
-                customer_number, customer_name, body, author,
-                source_job_id, source_transaction_id,
-                source_check_number, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                customer_number,
-                customer_name,
-                body,
-                author,
-                source_job_id,
-                source_transaction_id,
-                source_check_number,
-                now,
-            ),
+    table = lockbox_customer_notes_table
+    with get_engine().begin() as connection:
+        result = connection.execute(
+            table.insert().values(
+                customer_number=customer_number,
+                customer_name=customer_name,
+                body=body,
+                author=author,
+                source_job_id=source_job_id,
+                source_transaction_id=source_transaction_id,
+                source_check_number=source_check_number,
+                created_at=now,
+            )
         )
-        note_id = int(cursor.lastrowid)
-        connection.commit()
+        note_id = result.inserted_primary_key[0]
         row = connection.execute(
-            """
-            SELECT note_id, customer_number, customer_name, body, author,
-                   source_job_id, source_transaction_id,
-                   source_check_number, created_at
-            FROM customer_notes
-            WHERE note_id = ?
-            """,
-            (note_id,),
-        ).fetchone()
-    if row is None:  # pragma: no cover - SQLite returned the inserted id.
+            select(table).where(table.c.note_id == note_id)
+        ).mappings().first()
+    if row is None:  # pragma: no cover - the database returned the inserted id.
         raise RuntimeError("The customer note could not be reloaded.")
     return dict(row)

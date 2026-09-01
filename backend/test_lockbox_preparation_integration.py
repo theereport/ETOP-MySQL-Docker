@@ -9,6 +9,8 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+from sqlalchemy import create_engine
+
 
 BACKEND_ROOT = Path(__file__).resolve().parent
 if str(BACKEND_ROOT) not in sys.path:
@@ -1765,7 +1767,8 @@ class SourceLoaderIntegrationTest(unittest.TestCase):
                 records=[customer],
                 invoices=invoices,
             )
-            repository = LockboxPreparationRepository(root / "preparation.db")
+            preparation_engine = create_engine(f"sqlite:///{root / 'preparation.db'}")
+            repository = LockboxPreparationRepository(engine=preparation_engine)
             coordinator = DurableLockboxPreparationCoordinator(
                 repository,
                 provider,
@@ -1810,6 +1813,7 @@ class SourceLoaderIntegrationTest(unittest.TestCase):
                 29263.23,
                 places=2,
             )
+            preparation_engine.dispose()
 
     def test_reparsed_check_payer_resolves_and_balances_without_refresh(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1877,7 +1881,8 @@ class SourceLoaderIntegrationTest(unittest.TestCase):
                 records=[customer],
                 invoices=[invoice],
             )
-            repository = LockboxPreparationRepository(root / "preparation.db")
+            preparation_engine = create_engine(f"sqlite:///{root / 'preparation.db'}")
+            repository = LockboxPreparationRepository(engine=preparation_engine)
             coordinator = DurableLockboxPreparationCoordinator(
                 repository,
                 provider,
@@ -1920,6 +1925,7 @@ class SourceLoaderIntegrationTest(unittest.TestCase):
                 250.00,
                 places=2,
             )
+            preparation_engine.dispose()
 
     def test_service_rejects_wrong_client_hash(self):
         coordinator = SimpleNamespace()
@@ -2006,8 +2012,9 @@ class SourceLoaderIntegrationTest(unittest.TestCase):
                 records=[customer_record()],
                 invoices=[invoice],
             )
+            preparation_engine = create_engine(f"sqlite:///{root / 'preparation.db'}")
             repository = LockboxPreparationRepository(
-                root / "preparation.db"
+                engine=preparation_engine
             )
             coordinator = DurableLockboxPreparationCoordinator(
                 repository,
@@ -2043,6 +2050,7 @@ class SourceLoaderIntegrationTest(unittest.TestCase):
                 ],
                 0,
             )
+            preparation_engine.dispose()
 
 
 class RuntimeRegistrationTest(unittest.TestCase):
@@ -2121,7 +2129,8 @@ class RuntimeRegistrationTest(unittest.TestCase):
     def test_restart_recovery_runs_with_bound_provider(self):
         with tempfile.TemporaryDirectory() as temporary:
             database_path = Path(temporary) / "preparation.db"
-            first_repository = LockboxPreparationRepository(database_path)
+            engine = create_engine(f"sqlite:///{database_path}")
+            first_repository = LockboxPreparationRepository(engine=engine)
             request_source = {
                 "source_file_hash": "c" * 64,
                 "source_file_name": "sample.pdf",
@@ -2165,7 +2174,7 @@ class RuntimeRegistrationTest(unittest.TestCase):
                 records=[customer_record()],
                 invoices=[invoice],
             )
-            recovered_repository = LockboxPreparationRepository(database_path)
+            recovered_repository = LockboxPreparationRepository(engine=engine)
             coordinator = DurableLockboxPreparationCoordinator(
                 recovered_repository,
                 provider,
@@ -2182,6 +2191,7 @@ class RuntimeRegistrationTest(unittest.TestCase):
             self.assertTrue(result["prepared_not_approved"])
             self.assertFalse(result["can_auto_approve"])
             self.assertFalse(result["erp_write_performed"])
+            engine.dispose()
 
 
 if __name__ == "__main__":

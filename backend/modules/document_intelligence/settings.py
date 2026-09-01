@@ -23,10 +23,6 @@ class DocumentIntelligenceSettings:
         return platform_settings.data_root / "modules" / self.module_key
 
     @property
-    def database_path(self) -> Path:
-        return self.data_root / "document_intelligence.db"
-
-    @property
     def upload_root(self) -> Path:
         return platform_settings.data_root / "uploads" / self.module_key
 

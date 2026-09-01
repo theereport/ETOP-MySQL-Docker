@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+
 from .pnc_lockbox_export import export_pnc_workbook
 from .pnc_lockbox_parser import parse_pnc_lockbox, save_result
 from core.test_path_override import resolve_test_path_override
+from data.mysql import (
+    get_engine,
+    lockbox_customer_profiles_table,
+    lockbox_reviews_table,
+    metadata,
+)
 
 MODULE_DIR = Path(__file__).resolve().parent
 LOCKBOX_RESULT_DIR = resolve_test_path_override(
@@ -22,12 +29,11 @@ LOCKBOX_EXPORT_DIR = resolve_test_path_override(
     MODULE_DIR / "lockbox_exports",
     kind="directory",
 )
-LOCKBOX_DATABASE_PATH = resolve_test_path_override(
-    "ETOP_TEST_LOCKBOX_DATABASE", MODULE_DIR / "lockbox_learning.db"
-)
 
 LOCKBOX_RESULT_DIR.mkdir(parents=True, exist_ok=True)
 LOCKBOX_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+_TABLES = [lockbox_reviews_table, lockbox_customer_profiles_table]
 
 
 def _utc_now() -> str:
@@ -44,45 +50,7 @@ def _normalize_phone(value: str | None) -> str:
 
 
 def _initialize_database() -> None:
-    with sqlite3.connect(LOCKBOX_DATABASE_PATH) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS lockbox_reviews (
-                job_id TEXT NOT NULL,
-                transaction_id TEXT NOT NULL,
-                review_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (job_id, transaction_id)
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS customer_profiles (
-                profile_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                customer_name TEXT NOT NULL,
-                customer_phone TEXT NOT NULL DEFAULT '',
-                customer_address_line_1 TEXT NOT NULL DEFAULT '',
-                customer_address_line_2 TEXT NOT NULL DEFAULT '',
-                customer_city TEXT NOT NULL DEFAULT '',
-                customer_state TEXT NOT NULL DEFAULT '',
-                customer_postal_code TEXT NOT NULL DEFAULT '',
-                aba_routing TEXT NOT NULL DEFAULT '',
-                account_number TEXT NOT NULL DEFAULT '',
-                times_confirmed INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_customer_profiles_bank
-            ON customer_profiles(aba_routing, account_number)
-            """
-        )
-        connection.commit()
+    metadata.create_all(get_engine(), checkfirst=True, tables=_TABLES)
 
 
 def result_path(job_id: str) -> Path:
@@ -181,18 +149,15 @@ def _recalculate_result(result: dict[str, Any]) -> None:
 
 def _load_review(job_id: str, transaction_id: str) -> dict[str, Any] | None:
     _initialize_database()
-    with sqlite3.connect(LOCKBOX_DATABASE_PATH) as connection:
-        connection.row_factory = sqlite3.Row
-        row = connection.execute(
-            """
-            SELECT review_json
-            FROM lockbox_reviews
-            WHERE job_id = ? AND transaction_id = ?
-            """,
-            (job_id, transaction_id),
-        ).fetchone()
+    table = lockbox_reviews_table
+    with get_engine().connect() as connection:
+        review_json = connection.execute(
+            select(table.c.review_json).where(
+                table.c.job_id == job_id, table.c.transaction_id == transaction_id
+            )
+        ).scalar()
 
-    return json.loads(row["review_json"]) if row else None
+    return json.loads(review_json) if review_json else None
 
 
 def _apply_saved_reviews(result: dict[str, Any]) -> dict[str, Any]:
@@ -267,26 +232,31 @@ def save_lockbox_transaction_review(
 
     now = _utc_now()
     _initialize_database()
-    with sqlite3.connect(LOCKBOX_DATABASE_PATH) as connection:
-        connection.execute(
-            """
-            INSERT INTO lockbox_reviews (
-                job_id, transaction_id, review_json, created_at, updated_at
+    table = lockbox_reviews_table
+    with get_engine().begin() as connection:
+        existing = connection.execute(
+            select(table.c.job_id).where(
+                table.c.job_id == job_id, table.c.transaction_id == transaction_id
             )
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(job_id, transaction_id) DO UPDATE SET
-                review_json = excluded.review_json,
-                updated_at = excluded.updated_at
-            """,
-            (
-                job_id,
-                transaction_id,
-                json.dumps(review),
-                now,
-                now,
-            ),
-        )
-        connection.commit()
+        ).first()
+        if existing is None:
+            connection.execute(
+                table.insert().values(
+                    job_id=job_id,
+                    transaction_id=transaction_id,
+                    review_json=json.dumps(review),
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        else:
+            connection.execute(
+                table.update()
+                .where(
+                    table.c.job_id == job_id, table.c.transaction_id == transaction_id
+                )
+                .values(review_json=json.dumps(review), updated_at=now)
+            )
 
     transaction.update(review)
     _recalculate_transaction(transaction)
@@ -315,11 +285,9 @@ def _upsert_customer_profile(transaction: dict[str, Any]) -> None:
     account = str(transaction.get("account_number", "")).strip()
     now = _utc_now()
 
-    with sqlite3.connect(LOCKBOX_DATABASE_PATH) as connection:
-        connection.row_factory = sqlite3.Row
-        candidates = connection.execute(
-            "SELECT * FROM customer_profiles"
-        ).fetchall()
+    table = lockbox_customer_profiles_table
+    with get_engine().begin() as connection:
+        candidates = connection.execute(select(table)).mappings().all()
 
         existing = None
         for row in candidates:
@@ -342,62 +310,39 @@ def _upsert_customer_profile(transaction: dict[str, Any]) -> None:
 
         if existing:
             connection.execute(
-                """
-                UPDATE customer_profiles
-                SET customer_name = ?,
-                    customer_phone = ?,
-                    customer_address_line_1 = ?,
-                    customer_address_line_2 = ?,
-                    customer_city = ?,
-                    customer_state = ?,
-                    customer_postal_code = ?,
-                    aba_routing = ?,
-                    account_number = ?,
-                    times_confirmed = times_confirmed + 1,
-                    updated_at = ?
-                WHERE profile_id = ?
-                """,
-                (
-                    name,
-                    phone or existing["customer_phone"],
-                    address1 or existing["customer_address_line_1"],
-                    address2 or existing["customer_address_line_2"],
-                    city or existing["customer_city"],
-                    state or existing["customer_state"],
-                    postal or existing["customer_postal_code"],
-                    routing or existing["aba_routing"],
-                    account or existing["account_number"],
-                    now,
-                    existing["profile_id"],
-                ),
+                table.update()
+                .where(table.c.profile_id == existing["profile_id"])
+                .values(
+                    customer_name=name,
+                    customer_phone=phone or existing["customer_phone"],
+                    customer_address_line_1=address1 or existing["customer_address_line_1"],
+                    customer_address_line_2=address2 or existing["customer_address_line_2"],
+                    customer_city=city or existing["customer_city"],
+                    customer_state=state or existing["customer_state"],
+                    customer_postal_code=postal or existing["customer_postal_code"],
+                    aba_routing=routing or existing["aba_routing"],
+                    account_number=account or existing["account_number"],
+                    times_confirmed=table.c.times_confirmed + 1,
+                    updated_at=now,
+                )
             )
         else:
             connection.execute(
-                """
-                INSERT INTO customer_profiles (
-                    customer_name, customer_phone,
-                    customer_address_line_1, customer_address_line_2,
-                    customer_city, customer_state, customer_postal_code,
-                    aba_routing, account_number, times_confirmed,
-                    created_at, updated_at
+                table.insert().values(
+                    customer_name=name,
+                    customer_phone=phone,
+                    customer_address_line_1=address1,
+                    customer_address_line_2=address2,
+                    customer_city=city,
+                    customer_state=state,
+                    customer_postal_code=postal,
+                    aba_routing=routing,
+                    account_number=account,
+                    times_confirmed=1,
+                    created_at=now,
+                    updated_at=now,
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-                """,
-                (
-                    name,
-                    phone,
-                    address1,
-                    address2,
-                    city,
-                    state,
-                    postal,
-                    routing,
-                    account,
-                    now,
-                    now,
-                ),
             )
-        connection.commit()
 
 
 def get_customer_suggestions(
@@ -418,11 +363,9 @@ def get_customer_suggestions(
         raise KeyError(f"Transaction {transaction_id} was not found.")
 
     _initialize_database()
-    with sqlite3.connect(LOCKBOX_DATABASE_PATH) as connection:
-        connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            "SELECT * FROM customer_profiles"
-        ).fetchall()
+    table = lockbox_customer_profiles_table
+    with get_engine().connect() as connection:
+        rows = connection.execute(select(table)).mappings().all()
 
     suggestions: list[dict[str, Any]] = []
     for row in rows:

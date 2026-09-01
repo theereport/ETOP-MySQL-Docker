@@ -18,15 +18,20 @@ cached locally in SQLite, where the primary key gives O(1) lookups.
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import closing
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import mysql.connector
+from sqlalchemy import select
+from sqlalchemy.engine import Engine
 
 from core.database import madden_database
+from data.mysql import (
+    get_engine,
+    invoice_owner_cache_metadata_table,
+    invoice_owner_cache_table,
+    metadata,
+)
 from invoice_number_rules import normalize_erp_invoice
 
 
@@ -85,55 +90,26 @@ def scan_all_open_invoice_owners() -> list[dict[str, Any]]:
         connection.close()
 
 
-def default_database_path() -> Path:
-    project_root = Path(__file__).resolve().parents[4]
-    return project_root / "data" / "etop_state" / "invoice_owner_cache.db"
+_TABLES = [invoice_owner_cache_table, invoice_owner_cache_metadata_table]
+_INSERT_CHUNK_SIZE = 5_000
 
 
 class InvoiceOwnerCacheRepository:
-    """SQLite-backed cache of current TMAROP invoice ownership.
+    """MySQL-backed cache of current TMAROP invoice ownership.
 
     This is a plain, wholesale-replaceable cache, not an append-only
     ledger - each refresh discards the prior snapshot entirely, matching
     the AP due-date cache pattern in cash_flow_forecasting.
     """
 
-    def __init__(self, database_path: str | Path | None = None) -> None:
-        self.database_path = Path(
-            database_path
-            if database_path is not None
-            else default_database_path()
-        )
+    def __init__(self, engine: Engine | None = None) -> None:
+        self._engine = engine or get_engine()
         self._initialized = False
-
-    def _connection(self) -> sqlite3.Connection:
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
 
     def initialize(self) -> None:
         if self._initialized:
             return
-        with closing(self._connection()) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS current_invoice_owners (
-                    invoice_number TEXT PRIMARY KEY,
-                    customer_numbers TEXT NOT NULL,
-                    refreshed_at TEXT NOT NULL
-                );
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS invoice_owner_cache_metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                """
-            )
-            connection.commit()
+        metadata.create_all(self._engine, checkfirst=True, tables=_TABLES)
         self._initialized = True
 
     def replace_all(
@@ -155,47 +131,47 @@ class InvoiceOwnerCacheRepository:
                 continue
             owners.setdefault(invoice, set()).add(customer)
 
-        with closing(self._connection()) as connection:
-            connection.execute("BEGIN IMMEDIATE;")
-            try:
-                connection.execute("DELETE FROM current_invoice_owners;")
-                connection.executemany(
-                    """
-                    INSERT INTO current_invoice_owners (
-                        invoice_number, customer_numbers, refreshed_at
-                    ) VALUES (?, ?, ?);
-                    """,
-                    [
-                        (
-                            invoice,
-                            ",".join(sorted(customers)),
-                            refreshed_at,
-                        )
-                        for invoice, customers in owners.items()
-                    ],
-                )
+        table = invoice_owner_cache_table
+        meta = invoice_owner_cache_metadata_table
+        insert_rows = [
+            {
+                "invoice_number": invoice,
+                "customer_numbers": ",".join(sorted(customers)),
+                "refreshed_at": refreshed_at,
+            }
+            for invoice, customers in owners.items()
+        ]
+        with self._engine.begin() as connection:
+            connection.execute(table.delete())
+            for start in range(0, len(insert_rows), _INSERT_CHUNK_SIZE):
+                chunk = insert_rows[start : start + _INSERT_CHUNK_SIZE]
+                if chunk:
+                    connection.execute(table.insert(), chunk)
+            existing = connection.execute(
+                select(meta.c.meta_key).where(meta.c.meta_key == "refreshed_at")
+            ).first()
+            if existing is None:
                 connection.execute(
-                    """
-                    INSERT INTO invoice_owner_cache_metadata (key, value)
-                    VALUES ('refreshed_at', ?)
-                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                    """,
-                    (refreshed_at,),
+                    meta.insert().values(
+                        meta_key="refreshed_at", meta_value=refreshed_at
+                    )
                 )
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
+            else:
+                connection.execute(
+                    meta.update()
+                    .where(meta.c.meta_key == "refreshed_at")
+                    .values(meta_value=refreshed_at)
+                )
         return len(owners)
 
     def refreshed_at(self) -> str | None:
         self.initialize()
-        with closing(self._connection()) as connection:
-            row = connection.execute(
-                "SELECT value FROM invoice_owner_cache_metadata "
-                "WHERE key = 'refreshed_at';"
-            ).fetchone()
-        return row["value"] if row is not None else None
+        meta = invoice_owner_cache_metadata_table
+        with self._engine.connect() as connection:
+            value = connection.execute(
+                select(meta.c.meta_value).where(meta.c.meta_key == "refreshed_at")
+            ).scalar()
+        return value
 
     def get_owners(
         self,
@@ -215,26 +191,21 @@ class InvoiceOwnerCacheRepository:
         if not normalized:
             return result
 
+        table = invoice_owner_cache_table
         chunk_size = 500
-        with closing(self._connection()) as connection:
+        with self._engine.connect() as connection:
             for start in range(0, len(normalized), chunk_size):
                 chunk = normalized[start : start + chunk_size]
-                placeholders = ", ".join(["?"] * len(chunk))
                 rows = connection.execute(
-                    f"""
-                    SELECT invoice_number, customer_numbers
-                    FROM current_invoice_owners
-                    WHERE invoice_number IN ({placeholders});
-                    """,
-                    chunk,
-                ).fetchall()
-                for row in rows:
+                    select(table.c.invoice_number, table.c.customer_numbers).where(
+                        table.c.invoice_number.in_(chunk)
+                    )
+                ).all()
+                for invoice_number, customer_numbers in rows:
                     customers = {
-                        value
-                        for value in row["customer_numbers"].split(",")
-                        if value
+                        value for value in customer_numbers.split(",") if value
                     }
-                    result[row["invoice_number"]] = customers
+                    result[invoice_number] = customers
         return result
 
 

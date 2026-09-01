@@ -1,0 +1,97 @@
+name: etop
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      # backend/.env.compose, NOT backend/.env directly - Compose applies
+      # $VAR interpolation to every value it reads from an env file (project
+      # --env-file AND per-service env_file: alike), so a literal "$" in a
+      # real secret gets silently treated as the start of a variable
+      # reference and truncated. backend/.env.compose is a $$-escaped copy
+      # of backend/.env, generated on demand (see DEPLOYMENT.md) - never
+      # hand-edit it or commit it.
+      - backend/.env.compose
+    environment:
+      # These two point at compose-internal service names and must win over
+      # whatever backend/.env has for local (non-Docker) development.
+      # MYSQL_* (the separate, read-only external MaddenCo ERP connection)
+      # is NOT overridden here - it keeps pointing at the real ERP server
+      # via backend/.env, same as it does outside Docker.
+      ETOP_DB_HOST: etop-db
+      ETOP_DB_PORT: "3306"
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      etop-db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    volumes:
+      # Repo-root data/ - documents, vector store, uploads, training data.
+      # See core/config.py's PlatformSettings.data_root: it resolves as a
+      # SIBLING of backend/, which is why this is a separate top-level mount
+      # rather than living under the backend/data mount below.
+      - ./data:/app/data
+      # backend/data/ - automation run outputs.
+      - ./backend/data:/app/backend/data
+      - ./backend/modules/document_intelligence/lockbox_results:/app/backend/modules/document_intelligence/lockbox_results
+      - ./backend/modules/document_intelligence/lockbox_exports:/app/backend/modules/document_intelligence/lockbox_exports
+      # SQL Workspace (saved queries/history) - the one feature explicitly
+      # left on SQLite rather than migrated to MySQL.
+      - ./backend/sql_workspace.db:/app/backend/sql_workspace.db
+    restart: unless-stopped
+
+  etop-db:
+    # This is the app's OWN database (the `etop` schema) - not the external,
+    # read-only MaddenCo ERP MySQL server, which this compose file does not
+    # and should not try to replace.
+    #
+    # ${ETOP_DB_*} below are resolved by Compose itself at parse time, from
+    # whichever env file Compose was told to use for variable substitution -
+    # NOT from an env_file: directive (a different mechanism, and backend/
+    # .env also defines unrelated MYSQL_DATABASE/MYSQL_USER/MYSQL_PASSWORD
+    # for the external ERP connection, which would collide with this
+    # service's identically-named init variables if passed via env_file:
+    # here). Always run compose with `--env-file backend/.env.compose` (see
+    # DEPLOYMENT.md - it's a $$-escaped copy of backend/.env, needed so a
+    # literal "$" in a real secret survives Compose's interpolation) so
+    # these resolve correctly.
+    image: mysql:8.0
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: ${ETOP_DB_NAME:-etop}
+      MYSQL_USER: ${ETOP_DB_USER:?ETOP_DB_USER must be set (see backend/.env)}
+      MYSQL_PASSWORD: ${ETOP_DB_PASSWORD:?ETOP_DB_PASSWORD must be set (see backend/.env)}
+    volumes:
+      - etop-db-data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "root",
+          "--silent",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  etop-db-data:
+  ollama-data:

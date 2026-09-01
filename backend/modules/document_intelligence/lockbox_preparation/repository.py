@@ -1,18 +1,25 @@
-"""SQLite persistence for restart-safe Lockbox preparation."""
+"""SQLAlchemy Core persistence for restart-safe Lockbox preparation."""
 
 from __future__ import annotations
 
 import json
 import hashlib
-import os
-import sqlite3
 import threading
 import uuid
-from contextlib import closing
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 from typing import Any, Iterable
+
+from sqlalchemy import case, func, select
+from sqlalchemy.engine import Engine
+
+from data.mysql import (
+    get_engine,
+    lockbox_preparation_events_table,
+    lockbox_preparation_jobs_table,
+    lockbox_preparation_transactions_table,
+    metadata,
+)
 
 from .contracts import SourceTransaction, StartPreparationRequest, dataclass_payload
 from .errors import FullCoverageError, IdempotencyConflictError
@@ -29,8 +36,13 @@ from .states import (
 )
 
 
-SCHEMA_VERSION = 3
 SERVICE_VERSION = "lockbox-preparation@0.7.0-wave2-increment4a"
+
+_TABLES = [
+    lockbox_preparation_jobs_table,
+    lockbox_preparation_transactions_table,
+    lockbox_preparation_events_table,
+]
 
 
 def _utc_now() -> str:
@@ -52,27 +64,17 @@ def _loads(value: str | None, fallback: Any) -> Any:
     return json.loads(value)
 
 
-def default_database_path() -> Path:
-    configured = os.getenv("ETOP_LOCKBOX_PREPARATION_DB", "").strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
-    project_root = Path(__file__).resolve().parents[4]
-    return project_root / "data" / "etop_state" / "lockbox_preparation.db"
-
-
 class LockboxPreparationRepository:
     """Own durable preparation state without owning operational approval."""
 
     def __init__(
         self,
-        database_path: str | Path | None = None,
+        engine: Engine | None = None,
         *,
         rule_version: str = RULE_VERSION,
         service_version: str = SERVICE_VERSION,
     ) -> None:
-        self.database_path = Path(
-            database_path or default_database_path()
-        ).resolve()
+        self._engine = engine or get_engine()
         self.rule_version = rule_version.strip()
         self.service_version = service_version.strip()
         if not self.rule_version:
@@ -82,251 +84,9 @@ class LockboxPreparationRepository:
         self._write_lock = threading.RLock()
         self.initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(
-            self.database_path,
-            timeout=30,
-            isolation_level=None,
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
-        return connection
-
     def initialize(self) -> None:
-        with self._write_lock, closing(self._connect()) as connection:
-            # Journal mode is persistent database configuration. Reapplying it
-            # on every short-lived connection is unnecessary and can acquire a
-            # file lock, which is especially costly on Windows.
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.executescript(
-                """
-                BEGIN IMMEDIATE;
-                CREATE TABLE IF NOT EXISTS preparation_schema (
-                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                    schema_version INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS preparation_jobs (
-                    job_id TEXT PRIMARY KEY,
-                    source_job_id TEXT NOT NULL,
-                    source_file_hash TEXT NOT NULL,
-                    source_reference TEXT NOT NULL DEFAULT '',
-                    correlation_id TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    request_fingerprint TEXT NOT NULL DEFAULT '',
-                    preparation_generation INTEGER NOT NULL DEFAULT 1,
-                    state TEXT NOT NULL,
-                    expected_count INTEGER NOT NULL,
-                    terminal_count INTEGER NOT NULL DEFAULT 0,
-                    balanced_count INTEGER NOT NULL DEFAULT 0,
-                    exception_count INTEGER NOT NULL DEFAULT 0,
-                    preserved_count INTEGER NOT NULL DEFAULT 0,
-                    rule_version TEXT NOT NULL,
-                    service_version TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    started_at TEXT,
-                    completed_at TEXT,
-                    UNIQUE(source_job_id, source_file_hash, rule_version)
-                );
-                CREATE TABLE IF NOT EXISTS preparation_transactions (
-                    job_id TEXT NOT NULL,
-                    transaction_id TEXT NOT NULL,
-                    ordinal INTEGER NOT NULL,
-                    state TEXT NOT NULL,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    retry_eligible INTEGER NOT NULL DEFAULT 0,
-                    source_json TEXT NOT NULL,
-                    source_hash TEXT NOT NULL DEFAULT '',
-                    extraction_version TEXT NOT NULL DEFAULT 'unknown',
-                    result_json TEXT,
-                    error_json TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    started_at TEXT,
-                    completed_at TEXT,
-                    PRIMARY KEY(job_id, transaction_id),
-                    UNIQUE(job_id, ordinal),
-                    FOREIGN KEY(job_id) REFERENCES preparation_jobs(job_id)
-                        ON DELETE RESTRICT
-                );
-                CREATE TABLE IF NOT EXISTS preparation_events (
-                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    job_id TEXT NOT NULL,
-                    transaction_id TEXT,
-                    event_type TEXT NOT NULL,
-                    from_state TEXT,
-                    to_state TEXT,
-                    payload_json TEXT NOT NULL,
-                    occurred_at TEXT NOT NULL,
-                    FOREIGN KEY(job_id) REFERENCES preparation_jobs(job_id)
-                        ON DELETE RESTRICT
-                );
-                CREATE INDEX IF NOT EXISTS idx_preparation_transactions_state
-                    ON preparation_transactions(job_id, state, ordinal);
-                CREATE INDEX IF NOT EXISTS idx_preparation_events_job
-                    ON preparation_events(job_id, event_id);
-                INSERT OR IGNORE INTO preparation_schema (
-                    singleton, schema_version, updated_at
-                ) VALUES (1, 3, CURRENT_TIMESTAMP);
-                COMMIT;
-                """
-            )
-            columns = {
-                str(row["name"])
-                for row in connection.execute(
-                    "PRAGMA table_info(preparation_jobs)"
-                ).fetchall()
-            }
-            if "request_fingerprint" not in columns:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    """
-                    ALTER TABLE preparation_jobs
-                    ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''
-                    """
-                )
-                connection.execute(
-                    """
-                    UPDATE preparation_schema
-                    SET schema_version = ?, updated_at = ?
-                    WHERE singleton = 1
-                    """,
-                    (SCHEMA_VERSION, _utc_now()),
-                )
-                connection.commit()
-
-            job_columns = {
-                str(row["name"])
-                for row in connection.execute(
-                    "PRAGMA table_info(preparation_jobs)"
-                ).fetchall()
-            }
-            legacy_source_identity = self._has_unique_index(
-                connection,
-                "preparation_jobs",
-                ("source_job_id", "source_file_hash"),
-            )
-            if (
-                "preparation_generation" not in job_columns
-                or legacy_source_identity
-            ):
-                self._migrate_preparation_jobs_v3(connection)
-
-            connection.execute(
-                """
-                UPDATE preparation_schema
-                SET schema_version = ?, updated_at = ?
-                WHERE singleton = 1
-                """,
-                (SCHEMA_VERSION, _utc_now()),
-            )
-
-    @staticmethod
-    def _has_unique_index(
-        connection: sqlite3.Connection,
-        table_name: str,
-        columns: tuple[str, ...],
-    ) -> bool:
-        for index in connection.execute(
-            f"PRAGMA index_list({table_name})"
-        ).fetchall():
-            if not int(index["unique"]):
-                continue
-            index_columns = tuple(
-                str(row["name"])
-                for row in connection.execute(
-                    f"PRAGMA index_info({index['name']})"
-                ).fetchall()
-            )
-            if index_columns == columns:
-                return True
-        return False
-
-    def _migrate_preparation_jobs_v3(
-        self,
-        connection: sqlite3.Connection,
-    ) -> None:
-        """Permit a new governed rule generation without rewriting history."""
-
-        connection.execute("PRAGMA foreign_keys=OFF")
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """
-                CREATE TABLE preparation_jobs_v3 (
-                    job_id TEXT PRIMARY KEY,
-                    source_job_id TEXT NOT NULL,
-                    source_file_hash TEXT NOT NULL,
-                    source_reference TEXT NOT NULL DEFAULT '',
-                    correlation_id TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    request_fingerprint TEXT NOT NULL DEFAULT '',
-                    preparation_generation INTEGER NOT NULL DEFAULT 1,
-                    state TEXT NOT NULL,
-                    expected_count INTEGER NOT NULL,
-                    terminal_count INTEGER NOT NULL DEFAULT 0,
-                    balanced_count INTEGER NOT NULL DEFAULT 0,
-                    exception_count INTEGER NOT NULL DEFAULT 0,
-                    preserved_count INTEGER NOT NULL DEFAULT 0,
-                    rule_version TEXT NOT NULL,
-                    service_version TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    started_at TEXT,
-                    completed_at TEXT,
-                    UNIQUE(source_job_id, source_file_hash, rule_version)
-                )
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO preparation_jobs_v3 (
-                    job_id, source_job_id, source_file_hash,
-                    source_reference, correlation_id, idempotency_key,
-                    request_fingerprint, preparation_generation, state,
-                    expected_count, terminal_count, balanced_count,
-                    exception_count, preserved_count, rule_version,
-                    service_version, created_at, updated_at, started_at,
-                    completed_at
-                )
-                SELECT
-                    job_id, source_job_id, source_file_hash,
-                    source_reference, correlation_id, idempotency_key,
-                    request_fingerprint, 1, state, expected_count,
-                    terminal_count, balanced_count, exception_count,
-                    preserved_count, rule_version, service_version,
-                    created_at, updated_at, started_at, completed_at
-                FROM preparation_jobs
-                """
-            )
-            connection.execute("DROP TABLE preparation_jobs")
-            connection.execute(
-                "ALTER TABLE preparation_jobs_v3 RENAME TO preparation_jobs"
-            )
-            connection.execute(
-                """
-                UPDATE preparation_schema
-                SET schema_version = ?, updated_at = ?
-                WHERE singleton = 1
-                """,
-                (SCHEMA_VERSION, _utc_now()),
-            )
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.execute("PRAGMA foreign_keys=ON")
-
-        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
-        if violations:
-            raise RuntimeError(
-                "Lockbox preparation schema migration failed foreign-key "
-                "integrity validation."
-            )
+        with self._write_lock:
+            metadata.create_all(self._engine, checkfirst=True, tables=_TABLES)
 
     def _identity(self, request: StartPreparationRequest) -> tuple[str, str, str]:
         identity_material = (
@@ -359,24 +119,18 @@ class LockboxPreparationRepository:
 
     def _stored_request_fingerprint(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         job_id: str,
     ) -> str:
+        table = lockbox_preparation_transactions_table
         rows = connection.execute(
-            """
-            SELECT source_json
-            FROM preparation_transactions
-            WHERE job_id = ?
-            ORDER BY ordinal, transaction_id
-            """,
-            (job_id,),
-        ).fetchall()
+            select(table.c.source_json)
+            .where(table.c.job_id == job_id)
+            .order_by(table.c.ordinal, table.c.transaction_id)
+        ).all()
         return hashlib.sha256(
             _json(
-                [
-                    _loads(row["source_json"], {})
-                    for row in rows
-                ]
+                [_loads(row[0], {}) for row in rows]
             ).encode("utf-8")
         ).hexdigest()
 
@@ -402,27 +156,19 @@ class LockboxPreparationRepository:
             request.transactions
         )
         now = _utc_now()
-        with self._write_lock, closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        jobs = lockbox_preparation_jobs_table
+        with self._write_lock, self._engine.begin() as connection:
             existing = connection.execute(
-                """
-                SELECT * FROM preparation_jobs
-                WHERE idempotency_key = ?
-                   OR job_id = ?
-                   OR (
-                        source_job_id = ?
-                    AND source_file_hash = ?
-                    AND rule_version = ?
-                   )
-                """,
-                (
-                    idempotency_key,
-                    job_id,
-                    request.source_job_id,
-                    request.source_file_hash,
-                    self.rule_version,
-                ),
-            ).fetchone()
+                select(jobs).where(
+                    (jobs.c.idempotency_key == idempotency_key)
+                    | (jobs.c.job_id == job_id)
+                    | (
+                        (jobs.c.source_job_id == request.source_job_id)
+                        & (jobs.c.source_file_hash == request.source_file_hash)
+                        & (jobs.c.rule_version == self.rule_version)
+                    )
+                )
+            ).mappings().first()
             if existing:
                 if (
                     existing["source_job_id"] != request.source_job_id
@@ -430,7 +176,6 @@ class LockboxPreparationRepository:
                     or existing["rule_version"] != self.rule_version
                     or int(existing["expected_count"]) != len(request.transactions)
                 ):
-                    connection.rollback()
                     raise IdempotencyConflictError(
                         "The idempotency identity is already bound to "
                         "different source work."
@@ -444,35 +189,29 @@ class LockboxPreparationRepository:
                         str(existing["job_id"]),
                     )
                     connection.execute(
-                        """
-                        UPDATE preparation_jobs
-                        SET request_fingerprint = ?, updated_at = ?
-                        WHERE job_id = ?
-                        """,
-                        (
-                            existing_fingerprint,
-                            now,
-                            existing["job_id"],
-                        ),
+                        jobs.update()
+                        .where(jobs.c.job_id == existing["job_id"])
+                        .values(request_fingerprint=existing_fingerprint, updated_at=now)
                     )
                 if existing_fingerprint != request_fingerprint:
-                    connection.rollback()
                     raise IdempotencyConflictError(
                         "The source identity is already bound to a different "
                         "transaction/source fingerprint."
                     )
-                connection.commit()
-                return self.get_job(str(existing["job_id"]))
+                return self._get_job(connection, str(existing["job_id"]))
 
             prior_jobs = connection.execute(
-                """
-                SELECT job_id, preparation_generation, rule_version
-                FROM preparation_jobs
-                WHERE source_job_id = ? AND source_file_hash = ?
-                ORDER BY preparation_generation, created_at, job_id
-                """,
-                (request.source_job_id, request.source_file_hash),
-            ).fetchall()
+                select(
+                    jobs.c.job_id, jobs.c.preparation_generation, jobs.c.rule_version
+                )
+                .where(
+                    jobs.c.source_job_id == request.source_job_id,
+                    jobs.c.source_file_hash == request.source_file_hash,
+                )
+                .order_by(
+                    jobs.c.preparation_generation, jobs.c.created_at, jobs.c.job_id
+                )
+            ).mappings().all()
             preparation_generation = (
                 max(
                     (
@@ -485,30 +224,22 @@ class LockboxPreparationRepository:
             )
 
             connection.execute(
-                """
-                INSERT INTO preparation_jobs (
-                    job_id, source_job_id, source_file_hash, source_reference,
-                    correlation_id, idempotency_key, state, expected_count,
-                    request_fingerprint, preparation_generation, rule_version,
-                    service_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    job_id,
-                    request.source_job_id,
-                    request.source_file_hash,
-                    request.source_reference,
-                    correlation_id,
-                    idempotency_key,
-                    FileState.REGISTERED.value,
-                    len(request.transactions),
-                    request_fingerprint,
-                    preparation_generation,
-                    self.rule_version,
-                    self.service_version,
-                    now,
-                    now,
-                ),
+                jobs.insert().values(
+                    job_id=job_id,
+                    source_job_id=request.source_job_id,
+                    source_file_hash=request.source_file_hash,
+                    source_reference=request.source_reference,
+                    correlation_id=correlation_id,
+                    idempotency_key=idempotency_key,
+                    state=FileState.REGISTERED.value,
+                    expected_count=len(request.transactions),
+                    request_fingerprint=request_fingerprint,
+                    preparation_generation=preparation_generation,
+                    rule_version=self.rule_version,
+                    service_version=self.service_version,
+                    created_at=now,
+                    updated_at=now,
+                )
             )
             self._insert_event(
                 connection,
@@ -534,23 +265,17 @@ class LockboxPreparationRepository:
             ):
                 initial_state = TransactionState.IDENTIFIED
                 connection.execute(
-                    """
-                    INSERT INTO preparation_transactions (
-                        job_id, transaction_id, ordinal, state, source_json,
-                        source_hash, extraction_version, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        job_id,
-                        transaction.transaction_id,
-                        transaction.ordinal,
-                        initial_state.value,
-                        _json(transaction),
-                        transaction.source_hash,
-                        transaction.extraction_version,
-                        now,
-                        now,
-                    ),
+                    lockbox_preparation_transactions_table.insert().values(
+                        job_id=job_id,
+                        transaction_id=transaction.transaction_id,
+                        ordinal=transaction.ordinal,
+                        state=initial_state.value,
+                        source_json=_json(transaction),
+                        source_hash=transaction.source_hash,
+                        extraction_version=transaction.extraction_version,
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
                 self._insert_event(
                     connection,
@@ -589,12 +314,11 @@ class LockboxPreparationRepository:
                         event_type="transaction_queued",
                     )
             self._refresh_counts(connection, job_id)
-            connection.commit()
-        return self.get_job(job_id)
+            return self._get_job(connection, job_id)
 
     def _insert_event(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         *,
         job_id: str,
         event_type: str,
@@ -605,21 +329,15 @@ class LockboxPreparationRepository:
         to_state: str | None = None,
     ) -> None:
         connection.execute(
-            """
-            INSERT INTO preparation_events (
-                job_id, transaction_id, event_type, from_state, to_state,
-                payload_json, occurred_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                job_id,
-                transaction_id,
-                event_type,
-                from_state,
-                to_state,
-                _json(payload),
-                occurred_at,
-            ),
+            lockbox_preparation_events_table.insert().values(
+                job_id=job_id,
+                transaction_id=transaction_id,
+                event_type=event_type,
+                from_state=from_state,
+                to_state=to_state,
+                payload_json=_json(payload),
+                occurred_at=occurred_at,
+            )
         )
 
     def append_event(
@@ -629,8 +347,7 @@ class LockboxPreparationRepository:
         payload: Any,
         transaction_id: str | None = None,
     ) -> None:
-        with self._write_lock, closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._write_lock, self._engine.begin() as connection:
             self._insert_event(
                 connection,
                 job_id=job_id,
@@ -639,7 +356,6 @@ class LockboxPreparationRepository:
                 payload=payload,
                 occurred_at=_utc_now(),
             )
-            connection.commit()
 
     def transition_file(
         self,
@@ -650,43 +366,24 @@ class LockboxPreparationRepository:
         payload: Any = None,
     ) -> bool:
         target_state = FileState(target)
-        with self._write_lock, closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        jobs = lockbox_preparation_jobs_table
+        with self._write_lock, self._engine.begin() as connection:
             row = connection.execute(
-                "SELECT state FROM preparation_jobs WHERE job_id = ?",
-                (job_id,),
-            ).fetchone()
+                select(jobs.c.state, jobs.c.started_at).where(jobs.c.job_id == job_id)
+            ).mappings().first()
             if not row:
-                connection.rollback()
                 raise KeyError(f"Preparation job {job_id} was not found.")
             current = FileState(row["state"])
             if not validate_file_transition(current, target_state):
-                connection.commit()
                 return False
             now = _utc_now()
+            values: dict[str, Any] = {"state": target_state.value, "updated_at": now}
+            if target_state is FileState.RUNNING and row["started_at"] is None:
+                values["started_at"] = now
+            if target_state is FileState.COMPLETE:
+                values["completed_at"] = now
             connection.execute(
-                """
-                UPDATE preparation_jobs
-                SET state = ?, updated_at = ?,
-                    started_at = CASE
-                        WHEN ? = 'running' THEN COALESCE(started_at, ?)
-                        ELSE started_at
-                    END,
-                    completed_at = CASE
-                        WHEN ? = 'complete' THEN ?
-                        ELSE completed_at
-                    END
-                WHERE job_id = ?
-                """,
-                (
-                    target_state.value,
-                    now,
-                    target_state.value,
-                    now,
-                    target_state.value,
-                    now,
-                    job_id,
-                ),
+                jobs.update().where(jobs.c.job_id == job_id).values(**values)
             )
             self._insert_event(
                 connection,
@@ -697,12 +394,11 @@ class LockboxPreparationRepository:
                 payload=payload or {},
                 occurred_at=now,
             )
-            connection.commit()
             return True
 
     def _transition_transaction_in_connection(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         job_id: str,
         transaction_id: str,
         target: TransactionState | str,
@@ -713,14 +409,12 @@ class LockboxPreparationRepository:
         event_type: str = "transaction_state_changed",
     ) -> bool:
         target_state = TransactionState(target)
+        table = lockbox_preparation_transactions_table
         row = connection.execute(
-            """
-            SELECT state, attempt_count, retry_eligible
-            FROM preparation_transactions
-            WHERE job_id = ? AND transaction_id = ?
-            """,
-            (job_id, transaction_id),
-        ).fetchone()
+            select(table.c.state, table.c.attempt_count, table.c.retry_eligible).where(
+                table.c.job_id == job_id, table.c.transaction_id == transaction_id
+            )
+        ).mappings().first()
         if not row:
             raise KeyError(
                 f"Transaction {transaction_id} was not found in {job_id}."
@@ -735,39 +429,26 @@ class LockboxPreparationRepository:
         completed_at = (
             now if target_state in TERMINAL_TRANSACTION_STATES else None
         )
-        connection.execute(
-            """
-            UPDATE preparation_transactions
-            SET state = ?,
-                attempt_count = attempt_count + ?,
-                retry_eligible = ?,
-                result_json = COALESCE(?, result_json),
-                error_json = ?,
-                updated_at = ?,
-                started_at = CASE
-                    WHEN ? = 1 THEN ?
-                    ELSE started_at
-                END,
-                completed_at = ?
-            WHERE job_id = ? AND transaction_id = ?
-            """,
-            (
-                target_state.value,
-                1 if entering_attempt else 0,
-                (
-                    int(retry_eligible)
-                    if retry_eligible is not None
-                    else int(row["retry_eligible"])
-                ),
-                _json(result) if result is not None else None,
-                _json(error) if error is not None else None,
-                now,
-                1 if entering_attempt else 0,
-                now,
-                completed_at,
-                job_id,
-                transaction_id,
+        values: dict[str, Any] = {
+            "state": target_state.value,
+            "retry_eligible": (
+                int(retry_eligible)
+                if retry_eligible is not None
+                else int(row["retry_eligible"])
             ),
+            "error_json": _json(error) if error is not None else None,
+            "updated_at": now,
+            "completed_at": completed_at,
+        }
+        if entering_attempt:
+            values["attempt_count"] = table.c.attempt_count + 1
+            values["started_at"] = now
+        if result is not None:
+            values["result_json"] = _json(result)
+        connection.execute(
+            table.update()
+            .where(table.c.job_id == job_id, table.c.transaction_id == transaction_id)
+            .values(**values)
         )
         self._insert_event(
             connection,
@@ -800,8 +481,7 @@ class LockboxPreparationRepository:
         retry_eligible: bool | None = None,
         event_type: str = "transaction_state_changed",
     ) -> bool:
-        with self._write_lock, closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._write_lock, self._engine.begin() as connection:
             changed = self._transition_transaction_in_connection(
                 connection,
                 job_id,
@@ -813,7 +493,6 @@ class LockboxPreparationRepository:
                 event_type=event_type,
             )
             self._refresh_counts(connection, job_id)
-            connection.commit()
             return changed
 
     def complete_preparation_transaction(
@@ -827,14 +506,13 @@ class LockboxPreparationRepository:
         retry_eligible: bool = False,
         terminal_event_type: str,
     ) -> None:
-        """Persist one completed preparation with one durable SQLite commit.
+        """Persist one completed preparation with one durable commit.
 
         ERP/customer/open-AR reads happen before this call. The preparation
         worker has already been atomically claimed in RESOLVING_CUSTOMER by
         begin_run(). Recording the remaining analytical states and terminal
         checkpoint together preserves the append-only state/event history
-        while avoiding three connection/transaction cycles per check on
-        Windows.
+        while avoiding three connection/transaction cycles per check.
         """
 
         target_state = TransactionState(terminal_state)
@@ -846,84 +524,92 @@ class LockboxPreparationRepository:
                 "A completed preparation must end in a prepared terminal state."
             )
 
-        with self._write_lock, closing(self._connect()) as connection:
-            try:
-                connection.execute("BEGIN IMMEDIATE")
-                self._transition_transaction_in_connection(
-                    connection,
-                    job_id,
-                    transaction_id,
-                    TransactionState.LOADING_OPEN_AR,
-                    event_type="open_ar_load_completed",
-                )
-                self._transition_transaction_in_connection(
-                    connection,
-                    job_id,
-                    transaction_id,
-                    TransactionState.EVALUATING_ALLOCATION,
-                    event_type="allocation_evaluation_completed",
-                )
-                self._transition_transaction_in_connection(
-                    connection,
-                    job_id,
-                    transaction_id,
-                    target_state,
-                    result=result,
-                    error=error,
-                    retry_eligible=retry_eligible,
-                    event_type=terminal_event_type,
-                )
-                self._refresh_counts(connection, job_id)
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
+        with self._write_lock, self._engine.begin() as connection:
+            self._transition_transaction_in_connection(
+                connection,
+                job_id,
+                transaction_id,
+                TransactionState.LOADING_OPEN_AR,
+                event_type="open_ar_load_completed",
+            )
+            self._transition_transaction_in_connection(
+                connection,
+                job_id,
+                transaction_id,
+                TransactionState.EVALUATING_ALLOCATION,
+                event_type="allocation_evaluation_completed",
+            )
+            self._transition_transaction_in_connection(
+                connection,
+                job_id,
+                transaction_id,
+                target_state,
+                result=result,
+                error=error,
+                retry_eligible=retry_eligible,
+                event_type=terminal_event_type,
+            )
+            self._refresh_counts(connection, job_id)
 
     def _refresh_counts(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         job_id: str,
     ) -> None:
+        table = lockbox_preparation_transactions_table
         counts = connection.execute(
-            """
-            SELECT
-                COUNT(*) AS expected_count,
-                SUM(CASE WHEN state IN (?, ?, ?) THEN 1 ELSE 0 END)
-                    AS terminal_count,
-                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END)
-                    AS balanced_count,
-                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END)
-                    AS exception_count,
-                SUM(CASE WHEN state = ? THEN 1 ELSE 0 END)
-                    AS preserved_count
-            FROM preparation_transactions
-            WHERE job_id = ?
-            """,
-            (
-                TransactionState.PREPARED_BALANCED.value,
-                TransactionState.PREPARED_EXCEPTION.value,
-                TransactionState.PREEXISTING_HUMAN_DISPOSITION.value,
-                TransactionState.PREPARED_BALANCED.value,
-                TransactionState.PREPARED_EXCEPTION.value,
-                TransactionState.PREEXISTING_HUMAN_DISPOSITION.value,
-                job_id,
-            ),
-        ).fetchone()
+            select(
+                func.count().label("expected_count"),
+                func.sum(
+                    case(
+                        (
+                            table.c.state.in_(
+                                (
+                                    TransactionState.PREPARED_BALANCED.value,
+                                    TransactionState.PREPARED_EXCEPTION.value,
+                                    TransactionState.PREEXISTING_HUMAN_DISPOSITION.value,
+                                )
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("terminal_count"),
+                func.sum(
+                    case(
+                        (table.c.state == TransactionState.PREPARED_BALANCED.value, 1),
+                        else_=0,
+                    )
+                ).label("balanced_count"),
+                func.sum(
+                    case(
+                        (table.c.state == TransactionState.PREPARED_EXCEPTION.value, 1),
+                        else_=0,
+                    )
+                ).label("exception_count"),
+                func.sum(
+                    case(
+                        (
+                            table.c.state
+                            == TransactionState.PREEXISTING_HUMAN_DISPOSITION.value,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("preserved_count"),
+            ).where(table.c.job_id == job_id)
+        ).mappings().first()
+        jobs = lockbox_preparation_jobs_table
         connection.execute(
-            """
-            UPDATE preparation_jobs
-            SET terminal_count = ?, balanced_count = ?,
-                exception_count = ?, preserved_count = ?, updated_at = ?
-            WHERE job_id = ?
-            """,
-            (
-                int(counts["terminal_count"] or 0),
-                int(counts["balanced_count"] or 0),
-                int(counts["exception_count"] or 0),
-                int(counts["preserved_count"] or 0),
-                _utc_now(),
-                job_id,
-            ),
+            jobs.update()
+            .where(jobs.c.job_id == job_id)
+            .values(
+                terminal_count=int(counts["terminal_count"] or 0),
+                balanced_count=int(counts["balanced_count"] or 0),
+                exception_count=int(counts["exception_count"] or 0),
+                preserved_count=int(counts["preserved_count"] or 0),
+                updated_at=_utc_now(),
+            )
         )
 
     def begin_run(
@@ -932,70 +618,65 @@ class LockboxPreparationRepository:
         *,
         retry_exceptions: bool = False,
     ) -> list[SourceTransaction]:
-        with self._write_lock, closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        jobs = lockbox_preparation_jobs_table
+        transactions = lockbox_preparation_transactions_table
+        with self._write_lock, self._engine.begin() as connection:
             job = connection.execute(
-                "SELECT state FROM preparation_jobs WHERE job_id = ?",
-                (job_id,),
-            ).fetchone()
+                select(jobs.c.state).where(jobs.c.job_id == job_id)
+            ).mappings().first()
             if not job:
-                connection.rollback()
                 raise KeyError(f"Preparation job {job_id} was not found.")
 
             file_state = FileState(job["state"])
             if file_state is FileState.REGISTERED:
                 validate_file_transition(file_state, FileState.QUEUED)
                 connection.execute(
-                    "UPDATE preparation_jobs SET state = ? WHERE job_id = ?",
-                    (FileState.QUEUED.value, job_id),
+                    jobs.update()
+                    .where(jobs.c.job_id == job_id)
+                    .values(state=FileState.QUEUED.value)
                 )
                 file_state = FileState.QUEUED
             elif file_state is FileState.COMPLETE and retry_exceptions:
                 validate_file_transition(file_state, FileState.QUEUED)
                 connection.execute(
-                    """
-                    UPDATE preparation_jobs
-                    SET state = ?, completed_at = NULL
-                    WHERE job_id = ?
-                    """,
-                    (FileState.QUEUED.value, job_id),
+                    jobs.update()
+                    .where(jobs.c.job_id == job_id)
+                    .values(state=FileState.QUEUED.value, completed_at=None)
                 )
                 file_state = FileState.QUEUED
 
             if retry_exceptions:
                 rows = connection.execute(
-                    """
-                    SELECT transaction_id FROM preparation_transactions
-                    WHERE job_id = ? AND state = ? AND retry_eligible = 1
-                    ORDER BY ordinal
-                    """,
-                    (
-                        job_id,
-                        TransactionState.PREPARED_EXCEPTION.value,
-                    ),
-                ).fetchall()
-                for row in rows:
+                    select(transactions.c.transaction_id)
+                    .where(
+                        transactions.c.job_id == job_id,
+                        transactions.c.state == TransactionState.PREPARED_EXCEPTION.value,
+                        transactions.c.retry_eligible == 1,
+                    )
+                    .order_by(transactions.c.ordinal)
+                ).all()
+                for (transaction_id,) in rows:
                     self._transition_transaction_in_connection(
                         connection,
                         job_id,
-                        row["transaction_id"],
+                        transaction_id,
                         TransactionState.RETRY_PENDING,
                         event_type="exception_retry_requested",
                     )
 
             retry_rows = connection.execute(
-                """
-                SELECT transaction_id FROM preparation_transactions
-                WHERE job_id = ? AND state = ?
-                ORDER BY ordinal
-                """,
-                (job_id, TransactionState.RETRY_PENDING.value),
-            ).fetchall()
-            for row in retry_rows:
+                select(transactions.c.transaction_id)
+                .where(
+                    transactions.c.job_id == job_id,
+                    transactions.c.state == TransactionState.RETRY_PENDING.value,
+                )
+                .order_by(transactions.c.ordinal)
+            ).all()
+            for (transaction_id,) in retry_rows:
                 self._transition_transaction_in_connection(
                     connection,
                     job_id,
-                    row["transaction_id"],
+                    transaction_id,
                     TransactionState.QUEUED,
                     event_type="retry_queued",
                 )
@@ -1003,14 +684,17 @@ class LockboxPreparationRepository:
             if file_state in {FileState.QUEUED, FileState.RECOVERING}:
                 validate_file_transition(file_state, FileState.RUNNING)
                 now = _utc_now()
+                current_started_at = connection.execute(
+                    select(jobs.c.started_at).where(jobs.c.job_id == job_id)
+                ).scalar()
                 connection.execute(
-                    """
-                    UPDATE preparation_jobs
-                    SET state = ?, started_at = COALESCE(started_at, ?),
-                        updated_at = ?
-                    WHERE job_id = ?
-                    """,
-                    (FileState.RUNNING.value, now, now, job_id),
+                    jobs.update()
+                    .where(jobs.c.job_id == job_id)
+                    .values(
+                        state=FileState.RUNNING.value,
+                        started_at=current_started_at or now,
+                        updated_at=now,
+                    )
                 )
                 self._insert_event(
                     connection,
@@ -1023,41 +707,36 @@ class LockboxPreparationRepository:
                 )
 
             rows = connection.execute(
-                """
-                SELECT transaction_id, source_json
-                FROM preparation_transactions
-                WHERE job_id = ? AND state = ?
-                ORDER BY ordinal
-                """,
-                (job_id, TransactionState.QUEUED.value),
-            ).fetchall()
-            for row in rows:
+                select(transactions.c.transaction_id, transactions.c.source_json)
+                .where(
+                    transactions.c.job_id == job_id,
+                    transactions.c.state == TransactionState.QUEUED.value,
+                )
+                .order_by(transactions.c.ordinal)
+            ).all()
+            for transaction_id, _source_json in rows:
                 self._transition_transaction_in_connection(
                     connection,
                     job_id,
-                    row["transaction_id"],
+                    transaction_id,
                     TransactionState.RESOLVING_CUSTOMER,
                     event_type="transaction_claimed",
                 )
-            connection.commit()
         return [
-            self._source_transaction(_loads(row["source_json"], {}))
-            for row in rows
+            self._source_transaction(_loads(source_json, {}))
+            for _transaction_id, source_json in rows
         ]
 
     def finalize(self, job_id: str) -> dict[str, Any]:
-        with self._write_lock, closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        jobs = lockbox_preparation_jobs_table
+        with self._write_lock, self._engine.begin() as connection:
             self._refresh_counts(connection, job_id)
             job = connection.execute(
-                "SELECT * FROM preparation_jobs WHERE job_id = ?",
-                (job_id,),
-            ).fetchone()
+                select(jobs).where(jobs.c.job_id == job_id)
+            ).mappings().first()
             if not job:
-                connection.rollback()
                 raise KeyError(f"Preparation job {job_id} was not found.")
             if int(job["terminal_count"]) != int(job["expected_count"]):
-                connection.rollback()
                 raise FullCoverageError(
                     "A Lockbox preparation job cannot complete before every "
                     "source transaction has a terminal state."
@@ -1067,12 +746,9 @@ class LockboxPreparationRepository:
                 validate_file_transition(current, FileState.COMPLETE)
                 now = _utc_now()
                 connection.execute(
-                    """
-                    UPDATE preparation_jobs
-                    SET state = ?, completed_at = ?, updated_at = ?
-                    WHERE job_id = ?
-                    """,
-                    (FileState.COMPLETE.value, now, now, job_id),
+                    jobs.update()
+                    .where(jobs.c.job_id == job_id)
+                    .values(state=FileState.COMPLETE.value, completed_at=now, updated_at=now)
                 )
                 self._insert_event(
                     connection,
@@ -1088,38 +764,35 @@ class LockboxPreparationRepository:
                     },
                     occurred_at=now,
                 )
-            connection.commit()
-        return self.get_job(job_id)
+            return self._get_job(connection, job_id)
 
     def recover_incomplete(self) -> list[str]:
         recovered: list[str] = []
-        with self._write_lock, closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            jobs = connection.execute(
-                """
-                SELECT job_id, state FROM preparation_jobs
-                WHERE state IN (?, ?, ?, ?)
-                """,
-                (
-                    FileState.REGISTERED.value,
-                    FileState.QUEUED.value,
-                    FileState.RUNNING.value,
-                    FileState.RECOVERING.value,
-                ),
-            ).fetchall()
+        jobs = lockbox_preparation_jobs_table
+        transactions = lockbox_preparation_transactions_table
+        with self._write_lock, self._engine.begin() as connection:
+            job_rows = connection.execute(
+                select(jobs.c.job_id, jobs.c.state).where(
+                    jobs.c.state.in_(
+                        (
+                            FileState.REGISTERED.value,
+                            FileState.QUEUED.value,
+                            FileState.RUNNING.value,
+                            FileState.RECOVERING.value,
+                        )
+                    )
+                )
+            ).mappings().all()
             now = _utc_now()
-            for job in jobs:
+            for job in job_rows:
                 job_id = str(job["job_id"])
                 current = FileState(job["state"])
                 if current is FileState.REGISTERED:
                     validate_file_transition(current, FileState.QUEUED)
                     connection.execute(
-                        """
-                        UPDATE preparation_jobs
-                        SET state = ?, updated_at = ?
-                        WHERE job_id = ?
-                        """,
-                        (FileState.QUEUED.value, now, job_id),
+                        jobs.update()
+                        .where(jobs.c.job_id == job_id)
+                        .values(state=FileState.QUEUED.value, updated_at=now)
                     )
                     self._insert_event(
                         connection,
@@ -1134,12 +807,9 @@ class LockboxPreparationRepository:
                 if current in {FileState.QUEUED, FileState.RUNNING}:
                     validate_file_transition(current, FileState.RECOVERING)
                     connection.execute(
-                        """
-                        UPDATE preparation_jobs
-                        SET state = ?, updated_at = ?
-                        WHERE job_id = ?
-                        """,
-                        (FileState.RECOVERING.value, now, job_id),
+                        jobs.update()
+                        .where(jobs.c.job_id == job_id)
+                        .values(state=FileState.RECOVERING.value, updated_at=now)
                     )
                     self._insert_event(
                         connection,
@@ -1151,21 +821,17 @@ class LockboxPreparationRepository:
                         occurred_at=now,
                     )
                 rows = connection.execute(
-                    """
-                    SELECT transaction_id, state
-                    FROM preparation_transactions
-                    WHERE job_id = ?
-                    ORDER BY ordinal
-                    """,
-                    (job_id,),
-                ).fetchall()
-                for row in rows:
-                    state = TransactionState(row["state"])
+                    select(transactions.c.transaction_id, transactions.c.state)
+                    .where(transactions.c.job_id == job_id)
+                    .order_by(transactions.c.ordinal)
+                ).all()
+                for transaction_id, state_value in rows:
+                    state = TransactionState(state_value)
                     if state in ACTIVE_TRANSACTION_STATES:
                         self._transition_transaction_in_connection(
                             connection,
                             job_id,
-                            row["transaction_id"],
+                            transaction_id,
                             TransactionState.RETRY_PENDING,
                             error={
                                 "type": "process_restart",
@@ -1179,24 +845,21 @@ class LockboxPreparationRepository:
                         )
                 self._refresh_counts(connection, job_id)
                 recovered.append(job_id)
-            connection.commit()
         return recovered
 
-    def get_job(self, job_id: str) -> dict[str, Any]:
-        with closing(self._connect()) as connection:
-            job = connection.execute(
-                "SELECT * FROM preparation_jobs WHERE job_id = ?",
-                (job_id,),
-            ).fetchone()
-            if not job:
-                raise KeyError(f"Preparation job {job_id} was not found.")
-            transactions = connection.execute(
-                """
-                SELECT * FROM preparation_transactions
-                WHERE job_id = ? ORDER BY ordinal
-                """,
-                (job_id,),
-            ).fetchall()
+    def _get_job(self, connection: Any, job_id: str) -> dict[str, Any]:
+        jobs = lockbox_preparation_jobs_table
+        transactions = lockbox_preparation_transactions_table
+        job = connection.execute(
+            select(jobs).where(jobs.c.job_id == job_id)
+        ).mappings().first()
+        if not job:
+            raise KeyError(f"Preparation job {job_id} was not found.")
+        transaction_rows = connection.execute(
+            select(transactions)
+            .where(transactions.c.job_id == job_id)
+            .order_by(transactions.c.ordinal)
+        ).mappings().all()
         complete = (
             job["state"] == FileState.COMPLETE.value
             and int(job["terminal_count"]) == int(job["expected_count"])
@@ -1210,7 +873,7 @@ class LockboxPreparationRepository:
                     "error": _loads(row["error_json"], None),
                 }
             )
-            for row in transactions
+            for row in transaction_rows
         ]
         return {
             **dict(job),
@@ -1225,6 +888,10 @@ class LockboxPreparationRepository:
             "transactions": transaction_payloads,
         }
 
+    def get_job(self, job_id: str) -> dict[str, Any]:
+        with self._engine.connect() as connection:
+            return self._get_job(connection, job_id)
+
     def get_current_job(
         self,
         source_job_id: str,
@@ -1232,28 +899,24 @@ class LockboxPreparationRepository:
     ) -> dict[str, Any]:
         """Return the current-rule generation without creating work."""
 
-        with closing(self._connect()) as connection:
+        jobs = lockbox_preparation_jobs_table
+        with self._engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT job_id FROM preparation_jobs
-                WHERE source_job_id = ?
-                  AND source_file_hash = ?
-                  AND rule_version = ?
-                ORDER BY preparation_generation DESC, created_at DESC
-                LIMIT 1
-                """,
-                (
-                    source_job_id,
-                    source_file_hash.strip().lower(),
-                    self.rule_version,
-                ),
-            ).fetchone()
-        if not row:
-            raise KeyError(
-                "No governed preparation exists for the current source "
-                "hash and rule version."
-            )
-        return self.get_job(str(row["job_id"]))
+                select(jobs.c.job_id)
+                .where(
+                    jobs.c.source_job_id == source_job_id,
+                    jobs.c.source_file_hash == source_file_hash.strip().lower(),
+                    jobs.c.rule_version == self.rule_version,
+                )
+                .order_by(jobs.c.preparation_generation.desc(), jobs.c.created_at.desc())
+                .limit(1)
+            ).first()
+            if not row:
+                raise KeyError(
+                    "No governed preparation exists for the current source "
+                    "hash and rule version."
+                )
+            return self._get_job(connection, str(row[0]))
 
     def get_job_for_rule(
         self,
@@ -1270,48 +933,38 @@ class LockboxPreparationRepository:
         never updates, retries, or relabels the historical row.
         """
 
-        parameters: list[Any] = [
-            source_job_id,
-            source_file_hash.strip().lower(),
-            rule_version.strip(),
-        ]
-        service_clause = ""
+        jobs = lockbox_preparation_jobs_table
+        query = select(jobs.c.job_id).where(
+            jobs.c.source_job_id == source_job_id,
+            jobs.c.source_file_hash == source_file_hash.strip().lower(),
+            jobs.c.rule_version == rule_version.strip(),
+        )
         if service_version is not None:
-            service_clause = " AND service_version = ?"
-            parameters.append(service_version.strip())
-        with closing(self._connect()) as connection:
-            row = connection.execute(
-                f"""
-                SELECT job_id FROM preparation_jobs
-                WHERE source_job_id = ?
-                  AND source_file_hash = ?
-                  AND rule_version = ?
-                  {service_clause}
-                ORDER BY preparation_generation DESC, created_at DESC
-                LIMIT 1
-                """,
-                parameters,
-            ).fetchone()
-        if not row:
-            raise KeyError(
-                "No preparation exists for the exact source, rule, and "
-                "service identity."
-            )
-        return self.get_job(str(row["job_id"]))
+            query = query.where(jobs.c.service_version == service_version.strip())
+        query = query.order_by(
+            jobs.c.preparation_generation.desc(), jobs.c.created_at.desc()
+        ).limit(1)
+        with self._engine.connect() as connection:
+            row = connection.execute(query).first()
+            if not row:
+                raise KeyError(
+                    "No preparation exists for the exact source, rule, and "
+                    "service identity."
+                )
+            return self._get_job(connection, str(row[0]))
 
     def get_transaction(
         self,
         job_id: str,
         transaction_id: str,
     ) -> dict[str, Any]:
-        with closing(self._connect()) as connection:
+        table = lockbox_preparation_transactions_table
+        with self._engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT * FROM preparation_transactions
-                WHERE job_id = ? AND transaction_id = ?
-                """,
-                (job_id, transaction_id),
-            ).fetchone()
+                select(table).where(
+                    table.c.job_id == job_id, table.c.transaction_id == transaction_id
+                )
+            ).mappings().first()
         if not row:
             raise KeyError(
                 f"Transaction {transaction_id} was not found in {job_id}."
@@ -1326,20 +979,19 @@ class LockboxPreparationRepository:
         )
 
     def list_events(self, job_id: str) -> list[dict[str, Any]]:
-        with closing(self._connect()) as connection:
+        jobs = lockbox_preparation_jobs_table
+        events = lockbox_preparation_events_table
+        with self._engine.connect() as connection:
             exists = connection.execute(
-                "SELECT 1 FROM preparation_jobs WHERE job_id = ?",
-                (job_id,),
-            ).fetchone()
+                select(jobs.c.job_id).where(jobs.c.job_id == job_id)
+            ).first()
             if not exists:
                 raise KeyError(f"Preparation job {job_id} was not found.")
             rows = connection.execute(
-                """
-                SELECT * FROM preparation_events
-                WHERE job_id = ? ORDER BY event_id
-                """,
-                (job_id,),
-            ).fetchall()
+                select(events)
+                .where(events.c.job_id == job_id)
+                .order_by(events.c.event_id)
+            ).mappings().all()
         return [
             {
                 **dict(row),
@@ -1349,15 +1001,14 @@ class LockboxPreparationRepository:
         ]
 
     def list_incomplete_jobs(self) -> list[str]:
-        with closing(self._connect()) as connection:
+        jobs = lockbox_preparation_jobs_table
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT job_id FROM preparation_jobs
-                WHERE state <> ? ORDER BY created_at
-                """,
-                (FileState.COMPLETE.value,),
-            ).fetchall()
-        return [str(row["job_id"]) for row in rows]
+                select(jobs.c.job_id)
+                .where(jobs.c.state != FileState.COMPLETE.value)
+                .order_by(jobs.c.created_at)
+            ).all()
+        return [str(row[0]) for row in rows]
 
     @staticmethod
     def _source_transaction(payload: dict[str, Any]) -> SourceTransaction:
@@ -1403,17 +1054,14 @@ class LockboxPreparationRepository:
             )
 
     def count_states(self, job_id: str) -> dict[str, int]:
-        with closing(self._connect()) as connection:
+        table = lockbox_preparation_transactions_table
+        with self._engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT state, COUNT(*) AS count
-                FROM preparation_transactions
-                WHERE job_id = ?
-                GROUP BY state
-                """,
-                (job_id,),
-            ).fetchall()
-        return {str(row["state"]): int(row["count"]) for row in rows}
+                select(table.c.state, func.count().label("count"))
+                .where(table.c.job_id == job_id)
+                .group_by(table.c.state)
+            ).all()
+        return {str(state): int(count) for state, count in rows}
 
     def mark_transactions_for_test(
         self,

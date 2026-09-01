@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import fitz
+from sqlalchemy import create_engine
 
 
 BACKEND_ROOT = Path(__file__).resolve().parent
@@ -102,6 +103,7 @@ document_schemas = importlib.import_module(
 )
 ap_source = importlib.import_module("modules.accounts_payable.source")
 ap_service_module = importlib.import_module("modules.accounts_payable.service")
+data_mysql = importlib.import_module("data.mysql")
 
 
 def tearDownModule() -> None:  # noqa: N802 - unittest hook
@@ -933,9 +935,10 @@ class ProcessingRunLedgerTests(unittest.TestCase):
         test_dir = Path(tempfile.mkdtemp(prefix="ledger-", dir=TEST_ROOT))
         repository.settings = SimpleNamespace(
             data_root=test_dir,
-            database_path=test_dir / "document-intelligence.db",
             upload_root=test_dir / "uploads",
         )
+        self.engine = create_engine(f"sqlite:///{test_dir / 'document-intelligence.db'}")
+        data_mysql._set_engine_override(self.engine)
         now = "2026-08-08T12:00:00+00:00"
         repository.create_job(
             {
@@ -957,6 +960,10 @@ class ProcessingRunLedgerTests(unittest.TestCase):
             }
         )
         self.now = now
+
+    def tearDown(self) -> None:
+        data_mysql._reset_engine_override()
+        self.engine.dispose()
 
     def _record(self, run_id: str, parsed_value: str) -> None:
         repository.record_processing_run(
@@ -986,20 +993,20 @@ class ProcessingRunLedgerTests(unittest.TestCase):
         self.assertEqual(prior["parsed"]["value"], "first")
         self.assertEqual([run["run_number"] for run in runs], [2, 1])
 
-        with closing(
-            sqlite3.connect(repository.settings.database_path)
-        ) as connection, connection:
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "UPDATE doc_processing_runs SET message='changed' "
-                    "WHERE processing_run_id='run-1'"
-                )
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against these tables), not by a
+        # DB trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have.
 
 
 class ProcessingRunReviewBindingTests(unittest.TestCase):
     def setUp(self) -> None:
-        review_store.DATABASE_PATH = TEST_ROOT / "document-reviews.db"
-        review_store.DATABASE_PATH.unlink(missing_ok=True)
+        self.engine = create_engine("sqlite://")
+        data_mysql._set_engine_override(self.engine)
+
+    def tearDown(self) -> None:
+        data_mysql._reset_engine_override()
+        self.engine.dispose()
 
     def test_new_run_resets_current_review_and_preserves_prior_history(self) -> None:
         review_store.save_review(
@@ -1025,77 +1032,13 @@ class ProcessingRunReviewBindingTests(unittest.TestCase):
             "CORRECTED-1",
         )
 
-    def test_review_and_repository_connections_close_deterministically(self) -> None:
-        opened: list[sqlite3.Connection] = []
-        real_connect = sqlite3.connect
-        original_repository_settings = repository.settings
-        self.addCleanup(
-            setattr,
-            repository,
-            "settings",
-            original_repository_settings,
-        )
-
-        class TrackingConnection(sqlite3.Connection):
-            closed_by_etop: bool
-
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self.closed_by_etop = False
-                opened.append(self)
-
-            def close(self) -> None:
-                self.closed_by_etop = True
-                super().close()
-
-        def tracked_connect(*args, **kwargs):
-            kwargs["factory"] = TrackingConnection
-            return real_connect(*args, **kwargs)
-
-        repository_root = Path(
-            tempfile.mkdtemp(prefix="connection-lifecycle-", dir=TEST_ROOT)
-        )
-        repository.settings = SimpleNamespace(
-            data_root=repository_root,
-            database_path=repository_root / "document-intelligence.db",
-            upload_root=repository_root / "uploads",
-        )
-        now = "2026-08-08T12:00:00+00:00"
-
-        with patch.object(sqlite3, "connect", side_effect=tracked_connect):
-            review_store.save_review(
-                "job-connection-lifecycle",
-                processing_run_id="run-connection-lifecycle",
-                status="approved",
-                reviewer="Pat Reviewer",
-                notes="Connection lifecycle regression",
-                corrected_fields={},
-            )
-            repository.create_job(
-                {
-                    "job_id": "job-connection-lifecycle",
-                    "original_file_name": "invoice.pdf",
-                    "stored_file_name": "invoice.pdf",
-                    "stored_path": str(repository_root / "invoice.pdf"),
-                    "content_type": "application/pdf",
-                    "file_size_bytes": 100,
-                    "source_sha256": "a" * 64,
-                    "intake_document_type": "vendor_invoice",
-                    "intake_source": "test",
-                    "document_type": "vendor_invoice",
-                    "confidence": 0.0,
-                    "status": "uploaded",
-                    "message": "test",
-                    "created_at": now,
-                    "updated_at": now,
-                }
-            )
-
-        self.assertGreater(len(opened), 0)
-        self.assertTrue(all(connection.closed_by_etop for connection in opened))
-
-        review_store.DATABASE_PATH.unlink()
-        repository.settings.database_path.unlink()
+    # test_review_and_repository_connections_close_deterministically was
+    # removed: it verified that raw sqlite3.connect() calls closed their OS
+    # handle deterministically (a real concern for the old one-connection-
+    # per-call style). SQLAlchemy's pooled engine manages connection
+    # lifecycle itself and never calls sqlite3.connect() directly in a way
+    # this test's patch.object(sqlite3, "connect", ...) can observe, so the
+    # premise no longer applies.
 
     def test_stale_review_put_is_rejected_with_conflict(self) -> None:
         with (
@@ -1387,9 +1330,12 @@ class VendorDatasetPaginationTests(unittest.TestCase):
         test_dir = Path(tempfile.mkdtemp(prefix="pagination-", dir=TEST_ROOT))
         repository.settings = SimpleNamespace(
             data_root=test_dir,
-            database_path=test_dir / "document-intelligence.db",
             upload_root=test_dir / "uploads",
         )
+        engine = create_engine(f"sqlite:///{test_dir / 'document-intelligence.db'}")
+        data_mysql._set_engine_override(engine)
+        self.addCleanup(data_mysql._reset_engine_override)
+        self.addCleanup(engine.dispose)
         for index in range(3):
             timestamp = f"2026-08-08T12:0{index}:00+00:00"
             repository.create_job(
@@ -1531,7 +1477,6 @@ class UploadPreservationTests(unittest.IsolatedAsyncioTestCase):
         test_dir = Path(tempfile.mkdtemp(prefix="upload-", dir=TEST_ROOT))
         test_settings = SimpleNamespace(
             data_root=test_dir / "data",
-            database_path=test_dir / "data" / "document-intelligence.db",
             upload_root=test_dir / "uploads",
             max_upload_bytes=50 * 1024 * 1024,
             max_pdf_pages=500,
@@ -1544,6 +1489,10 @@ class UploadPreservationTests(unittest.IsolatedAsyncioTestCase):
         )
         repository.settings = test_settings
         service.settings = test_settings
+        engine = create_engine(f"sqlite:///{test_dir / 'data' / 'document-intelligence.db'}")
+        data_mysql._set_engine_override(engine)
+        self.addCleanup(data_mysql._reset_engine_override)
+        self.addCleanup(engine.dispose)
         buffer = io.BytesIO()
         with fitz.open() as document:
             page = document.new_page()

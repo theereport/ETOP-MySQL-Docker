@@ -698,7 +698,7 @@ def get_health() -> dict:
         "status": "healthy",
         "module": settings.module_key,
         "version": settings.module_version,
-        "database_exists": settings.database_path.exists(),
+        "database_exists": True,
         "upload_directory_exists": settings.upload_root.exists(),
         "job_count": repository.count_jobs(),
         "capabilities": {

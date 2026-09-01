@@ -1,75 +1,63 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
 from typing import Any
+
+from sqlalchemy import select
+
+from data.mysql import document_training_sessions_table, get_engine, metadata
 
 from ..settings import settings
 
 TRAINING_ROOT = settings.data_root / "training"
-DATABASE_PATH = TRAINING_ROOT / "document_training.db"
 GROUND_TRUTH_ROOT = TRAINING_ROOT / "ground_truth"
+
+_TABLE = document_training_sessions_table
 
 
 def initialize_database() -> None:
     TRAINING_ROOT.mkdir(parents=True, exist_ok=True)
     GROUND_TRUTH_ROOT.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS training_sessions (
-                session_id TEXT PRIMARY KEY,
-                job_id TEXT NOT NULL,
-                dataset_type TEXT NOT NULL,
-                source_pdf_name TEXT NOT NULL,
-                ground_truth_file_name TEXT NOT NULL,
-                ground_truth_path TEXT NOT NULL,
-                status TEXT NOT NULL,
-                metrics_json TEXT NOT NULL,
-                comparison_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_training_job_id ON training_sessions(job_id)"
-        )
-        connection.commit()
+    metadata.create_all(get_engine(), checkfirst=True, tables=[_TABLE])
 
 
 def save_session(record: dict[str, Any]) -> dict[str, Any]:
     initialize_database()
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        connection.execute(
-            """
-            INSERT INTO training_sessions (
-                session_id, job_id, dataset_type, source_pdf_name,
-                ground_truth_file_name, ground_truth_path, status,
-                metrics_json, comparison_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                ground_truth_file_name=excluded.ground_truth_file_name,
-                ground_truth_path=excluded.ground_truth_path,
-                status=excluded.status,
-                metrics_json=excluded.metrics_json,
-                comparison_json=excluded.comparison_json,
-                updated_at=excluded.updated_at
-            """,
-            (
-                record["session_id"], record["job_id"], record["dataset_type"],
-                record["source_pdf_name"], record["ground_truth_file_name"],
-                record["ground_truth_path"], record["status"],
-                json.dumps(record["metrics"]), json.dumps(record["transactions"]),
-                record["created_at"], record["updated_at"],
-            ),
-        )
-        connection.commit()
+    values = dict(
+        job_id=record["job_id"],
+        dataset_type=record["dataset_type"],
+        source_pdf_name=record["source_pdf_name"],
+        ground_truth_file_name=record["ground_truth_file_name"],
+        ground_truth_path=record["ground_truth_path"],
+        status=record["status"],
+        metrics_json=json.dumps(record["metrics"]),
+        comparison_json=json.dumps(record["transactions"]),
+        updated_at=record["updated_at"],
+    )
+    with get_engine().begin() as connection:
+        existing = connection.execute(
+            select(_TABLE.c.session_id).where(
+                _TABLE.c.session_id == record["session_id"]
+            )
+        ).first()
+        if existing is None:
+            connection.execute(
+                _TABLE.insert().values(
+                    session_id=record["session_id"],
+                    created_at=record["created_at"],
+                    **values,
+                )
+            )
+        else:
+            connection.execute(
+                _TABLE.update()
+                .where(_TABLE.c.session_id == record["session_id"])
+                .values(**values)
+            )
     return get_session(record["session_id"])
 
 
-def _deserialize(row: sqlite3.Row) -> dict[str, Any]:
+def _deserialize(row) -> dict[str, Any]:
     item = dict(row)
     metrics = json.loads(item.pop("metrics_json"))
     item["transactions"] = json.loads(item.pop("comparison_json"))
@@ -80,19 +68,17 @@ def _deserialize(row: sqlite3.Row) -> dict[str, Any]:
 
 def get_session(session_id: str) -> dict[str, Any] | None:
     initialize_database()
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        connection.row_factory = sqlite3.Row
+    with get_engine().connect() as connection:
         row = connection.execute(
-            "SELECT * FROM training_sessions WHERE session_id = ?", (session_id,)
-        ).fetchone()
+            select(_TABLE).where(_TABLE.c.session_id == session_id)
+        ).mappings().first()
     return _deserialize(row) if row else None
 
 
 def list_sessions(limit: int = 100) -> list[dict[str, Any]]:
     initialize_database()
-    with sqlite3.connect(DATABASE_PATH) as connection:
-        connection.row_factory = sqlite3.Row
+    with get_engine().connect() as connection:
         rows = connection.execute(
-            "SELECT * FROM training_sessions ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+            select(_TABLE).order_by(_TABLE.c.created_at.desc()).limit(limit)
+        ).mappings().all()
     return [_deserialize(row) for row in rows]

@@ -83,7 +83,7 @@ from sql_ai import router as sql_ai_router
 # Local-only configuration
 # ---------------------------------------------------------
 
-OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
 OLLAMA_EMBED_URL = f"{OLLAMA_BASE_URL}/api/embed"
 

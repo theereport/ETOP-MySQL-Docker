@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 from modules.document_intelligence.resolution.manual_enterprise_group_repository import (
     ManualEnterpriseGroupRepository,
 )
@@ -10,12 +12,14 @@ from modules.document_intelligence.resolution.manual_enterprise_group_repository
 class ManualEnterpriseGroupRepositoryTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
-        self.repo = ManualEnterpriseGroupRepository(
-            db_path=Path(self._tmpdir.name) / "groups.db"
+        self.engine = create_engine(
+            f"sqlite:///{Path(self._tmpdir.name) / 'groups.db'}"
         )
+        self.repo = ManualEnterpriseGroupRepository(engine=self.engine)
         self.repo.initialize()
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self._tmpdir.cleanup()
 
     def test_linking_two_new_customers_creates_a_group(self) -> None:

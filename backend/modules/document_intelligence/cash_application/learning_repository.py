@@ -1,50 +1,23 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.engine import Engine
+
+from data.mysql import customer_payment_behavior_table, get_engine, metadata
 
 from .models import HistoricalPaymentPattern
-from core.test_path_override import resolve_test_path_override
 
 
 class PaymentBehaviorRepository:
-    def __init__(
-        self,
-        db_path: str | Path | None = None,
-    ):
-        self.db_path = Path(
-            db_path
-            if db_path is not None
-            else resolve_test_path_override(
-                "ETOP_TEST_CASH_PAYER_LEARNING_DB",
-                "data/modules/document_intelligence/document_intelligence.db",
-            )
-        )
+    def __init__(self, engine: Engine | None = None) -> None:
+        self._engine = engine or get_engine()
 
     def initialize(self) -> None:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with sqlite3.connect(self.db_path) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS customer_payment_behavior (
-                    behavior_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    customer_number TEXT NOT NULL,
-                    pattern_type TEXT NOT NULL,
-                    pattern_key TEXT NOT NULL,
-                    observation_count INTEGER NOT NULL DEFAULT 0,
-                    success_count INTEGER NOT NULL DEFAULT 0,
-                    first_observed_at TEXT NOT NULL,
-                    last_observed_at TEXT NOT NULL,
-                    UNIQUE (
-                        customer_number,
-                        pattern_type,
-                        pattern_key
-                    )
-                )
-                """
-            )
+        metadata.create_all(
+            self._engine, checkfirst=True, tables=[customer_payment_behavior_table]
+        )
 
     def record_observation(
         self,
@@ -54,79 +27,80 @@ class PaymentBehaviorRepository:
         was_successful: bool,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
-
-        with sqlite3.connect(self.db_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO customer_payment_behavior (
-                    customer_number,
-                    pattern_type,
-                    pattern_key,
-                    observation_count,
-                    success_count,
-                    first_observed_at,
-                    last_observed_at
+        self.initialize()
+        table = customer_payment_behavior_table
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                select(table.c.behavior_id).where(
+                    table.c.customer_number == customer_number,
+                    table.c.pattern_type == pattern_type,
+                    table.c.pattern_key == pattern_key,
                 )
-                VALUES (?, ?, ?, 1, ?, ?, ?)
-                ON CONFLICT (
-                    customer_number,
-                    pattern_type,
-                    pattern_key
+            ).first()
+            if existing is None:
+                connection.execute(
+                    table.insert().values(
+                        customer_number=customer_number,
+                        pattern_type=pattern_type,
+                        pattern_key=pattern_key,
+                        observation_count=1,
+                        success_count=1 if was_successful else 0,
+                        first_observed_at=now,
+                        last_observed_at=now,
+                    )
                 )
-                DO UPDATE SET
-                    observation_count = observation_count + 1,
-                    success_count = success_count + excluded.success_count,
-                    last_observed_at = excluded.last_observed_at
-                """,
-                (
-                    customer_number,
-                    pattern_type,
-                    pattern_key,
-                    1 if was_successful else 0,
-                    now,
-                    now,
-                ),
-            )
+            else:
+                connection.execute(
+                    table.update()
+                    .where(table.c.behavior_id == existing[0])
+                    .values(
+                        observation_count=table.c.observation_count + 1,
+                        success_count=table.c.success_count
+                        + (1 if was_successful else 0),
+                        last_observed_at=now,
+                    )
+                )
 
     def get_best_pattern(
         self,
         customer_number: str,
         minimum_observations: int = 3,
     ) -> HistoricalPaymentPattern | None:
-        with sqlite3.connect(self.db_path) as connection:
-            connection.row_factory = sqlite3.Row
-            row = connection.execute(
-                """
-                SELECT
-                    customer_number,
-                    pattern_type,
-                    pattern_key,
-                    observation_count,
-                    success_count,
-                    CAST(success_count AS REAL)
-                        / NULLIF(observation_count, 0) AS confidence,
-                    last_observed_at
-                FROM customer_payment_behavior
-                WHERE customer_number = ?
-                  AND observation_count >= ?
-                ORDER BY
-                    confidence DESC,
-                    observation_count DESC,
-                    last_observed_at DESC
-                LIMIT 1
-                """,
-                (customer_number, minimum_observations),
-            ).fetchone()
+        self.initialize()
+        table = customer_payment_behavior_table
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(table).where(
+                    table.c.customer_number == customer_number,
+                    table.c.observation_count >= minimum_observations,
+                )
+            ).mappings().all()
 
-        if not row:
+        if not rows:
             return None
 
+        def confidence(row) -> float:
+            return (
+                row["success_count"] / row["observation_count"]
+                if row["observation_count"]
+                else 0.0
+            )
+
+        best = max(
+            rows,
+            key=lambda row: (
+                confidence(row),
+                row["observation_count"],
+                row["last_observed_at"],
+            ),
+        )
+
         return HistoricalPaymentPattern(
-            customer_number=row["customer_number"],
-            pattern_type=row["pattern_type"],
-            pattern_key=row["pattern_key"],
-            observation_count=int(row["observation_count"]),
-            success_count=int(row["success_count"]),
-            confidence=float(row["confidence"] or 0.0),
-            last_observed_at=row["last_observed_at"],
+            customer_number=best["customer_number"],
+            pattern_type=best["pattern_type"],
+            pattern_key=best["pattern_key"],
+            observation_count=int(best["observation_count"]),
+            success_count=int(best["success_count"]),
+            confidence=confidence(best),
+            last_observed_at=best["last_observed_at"],
         )

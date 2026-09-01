@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from sqlalchemy import create_engine
+
 
 BACKEND_ROOT = Path(__file__).resolve().parent
 if str(BACKEND_ROOT) not in sys.path:
@@ -127,6 +129,12 @@ from modules.document_intelligence.lockbox_preparation.repository import (
     LockboxPreparationRepository,
 )
 from modules.document_intelligence.lockbox_review import database
+from data.mysql import (
+    _reset_engine_override,
+    _set_engine_override,
+    lockbox_reviews_table,
+    metadata as shared_metadata,
+)
 from modules.document_intelligence.lockbox_review.schemas import (
     AppendCustomerNoteRequest,
     LockboxReviewResponse,
@@ -355,7 +363,8 @@ class GovernedProjectionContractTest(unittest.TestCase):
         self.assertIn("increment4a", RULE_VERSION)
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "preparation.db"
-            repository = LockboxPreparationRepository(database_path)
+            engine = create_engine(f"sqlite:///{database_path}")
+            repository = LockboxPreparationRepository(engine=engine)
             registered = repository.register(
                 StartPreparationRequest(
                     source_job_id="source-test",
@@ -381,9 +390,10 @@ class GovernedProjectionContractTest(unittest.TestCase):
             self.assertEqual(after, before)
             with closing(sqlite3.connect(database_path)) as connection:
                 count = connection.execute(
-                    "SELECT COUNT(*) FROM preparation_jobs"
+                    "SELECT COUNT(*) FROM lockbox_preparation_jobs"
                 ).fetchone()[0]
             self.assertEqual(count, 1)
+            engine.dispose()
 
     def test_new_source_can_register_before_any_historical_control(self):
         class SourceLoader:
@@ -811,7 +821,8 @@ class ReviewContractTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "lockbox-review.db"
-            missing_legacy_path = Path(directory) / "missing-legacy.db"
+            engine = create_engine(f"sqlite:///{database_path}")
+            _set_engine_override(engine)
 
             def unexpected_current_open_ar(*_args, **_kwargs):
                 raise AssertionError(
@@ -819,12 +830,6 @@ class ReviewContractTest(unittest.TestCase):
                 )
 
             with (
-                patch.object(database, "DATABASE_PATH", database_path),
-                patch.object(
-                    database,
-                    "LEGACY_DATABASE_PATH",
-                    missing_legacy_path,
-                ),
                 patch.object(
                     review_service,
                     "get_lockbox_result",
@@ -884,11 +889,13 @@ class ReviewContractTest(unittest.TestCase):
             self.assertEqual(preparation, preparation_before)
             with closing(sqlite3.connect(database_path)) as connection:
                 stored_status = connection.execute(
-                    "SELECT status FROM transaction_reviews "
+                    "SELECT status FROM lockbox_transaction_reviews "
                     "WHERE job_id = ? AND transaction_id = ?",
                     ("job-held", "T-HELD"),
                 ).fetchone()[0]
             self.assertEqual(stored_status, "held")
+            _reset_engine_override()
+            engine.dispose()
 
     def test_non_held_save_still_rejects_incomplete_invoice_identifier(self):
         review = {
@@ -1358,49 +1365,37 @@ class ReviewContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / "review.db"
-            legacy = root / "legacy.db"
-            with closing(sqlite3.connect(legacy)) as connection, connection:
-                connection.execute(
-                    """
-                    CREATE TABLE lockbox_reviews (
-                        job_id TEXT NOT NULL,
-                        transaction_id TEXT NOT NULL,
-                        review_json TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (job_id, transaction_id)
+            engine = create_engine(f"sqlite:///{target}")
+            _set_engine_override(engine)
+            try:
+                with engine.begin() as connection:
+                    shared_metadata.create_all(
+                        engine, checkfirst=True, tables=[lockbox_reviews_table]
                     )
-                    """
-                )
-                connection.execute(
-                    "INSERT INTO lockbox_reviews VALUES (?, ?, ?, ?, ?)",
-                    (
-                        "job-test",
-                        "T001",
-                        json.dumps(
-                            {
-                                "allocations": [
-                                    {
-                                        "invoice_number": "12345678",
-                                        "net_invoice_amount": 10,
-                                        "invoice_page": "2;1",
-                                        "confidence": 1,
-                                    }
-                                ],
-                                "status": "corrected",
-                                "reviewer": "reviewer-test",
-                                "customer_number": "customer-test",
-                                "customer_name": "Example Customer",
-                            }
-                        ),
-                        "2026-08-01T00:00:00+00:00",
-                        "2026-08-01T00:00:00+00:00",
-                    ),
-                )
-            with (
-                patch.object(database, "DATABASE_PATH", target),
-                patch.object(database, "LEGACY_DATABASE_PATH", legacy),
-            ):
+                    connection.execute(
+                        lockbox_reviews_table.insert().values(
+                            job_id="job-test",
+                            transaction_id="T001",
+                            review_json=json.dumps(
+                                {
+                                    "allocations": [
+                                        {
+                                            "invoice_number": "12345678",
+                                            "net_invoice_amount": 10,
+                                            "invoice_page": "2;1",
+                                            "confidence": 1,
+                                        }
+                                    ],
+                                    "status": "corrected",
+                                    "reviewer": "reviewer-test",
+                                    "customer_number": "customer-test",
+                                    "customer_name": "Example Customer",
+                                }
+                            ),
+                            created_at="2026-08-01T00:00:00+00:00",
+                            updated_at="2026-08-01T00:00:00+00:00",
+                        )
+                    )
                 originals = {
                     "T001": [
                         {
@@ -1428,6 +1423,9 @@ class ReviewContractTest(unittest.TestCase):
                     saved["original_allocations"][0]["invoice_number"],
                     "87654321",
                 )
+            finally:
+                _reset_engine_override()
+                engine.dispose()
 
     def test_reviewed_export_refuses_unresolved_governed_exceptions(self):
         class GovernedHTTPException(Exception):

@@ -24,6 +24,7 @@ dist-ssr
 *.sw?
 .env
 backend/.env
+backend/.env.compose
 *.db
 *.db-shm
 *.db-wal
@@ -39,6 +40,7 @@ __pycache__/
 .etop-promotions/
 .sprint4a-backup/
 sprint4a_payload/
+/archive/
 
 # Runtime document-intelligence data: real customer checks, lockbox
 # extraction results, and PNC exports. Never committed - local disk only.

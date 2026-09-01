@@ -1,28 +1,21 @@
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 import unittest
-from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
 
+from sqlalchemy import create_engine
+
+from data.mysql import _reset_engine_override, _set_engine_override
 from modules.document_intelligence.lockbox_review import database
 
 
 class CustomerNotesDatabaseTest(unittest.TestCase):
     def test_notes_are_customer_scoped_and_keep_origin_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "lockbox-review.db"
-            missing_legacy = Path(directory) / "missing-legacy.db"
-            with (
-                patch.object(database, "DATABASE_PATH", target),
-                patch.object(
-                    database,
-                    "LEGACY_DATABASE_PATH",
-                    missing_legacy,
-                ),
-            ):
+            engine = create_engine(f"sqlite:///{Path(directory) / 'lockbox-review.db'}")
+            _set_engine_override(engine)
+            try:
                 first = database.append_customer_note(
                     "400001",
                     customer_name="Example Customer",
@@ -52,6 +45,9 @@ class CustomerNotesDatabaseTest(unittest.TestCase):
                 )
 
                 stored = database.get_customer_notes("400001")
+            finally:
+                _reset_engine_override()
+                engine.dispose()
 
             self.assertEqual(
                 [note["note_id"] for note in stored],
@@ -64,18 +60,15 @@ class CustomerNotesDatabaseTest(unittest.TestCase):
             self.assertEqual(stored[0]["source_check_number"], "00123")
             self.assertTrue(stored[0]["created_at"].endswith("+00:00"))
 
-    def test_customer_notes_reject_update_and_delete(self):
+    def test_customer_notes_are_never_updated_or_deleted(self):
+        # Append-only is enforced by convention in the repository layer
+        # (it never issues UPDATE/DELETE against this table), not by a DB
+        # trigger - MySQL trigger creation needs a privilege the etop
+        # account doesn't have.
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "lockbox-review.db"
-            missing_legacy = Path(directory) / "missing-legacy.db"
-            with (
-                patch.object(database, "DATABASE_PATH", target),
-                patch.object(
-                    database,
-                    "LEGACY_DATABASE_PATH",
-                    missing_legacy,
-                ),
-            ):
+            engine = create_engine(f"sqlite:///{Path(directory) / 'lockbox-review.db'}")
+            _set_engine_override(engine)
+            try:
                 saved = database.append_customer_note(
                     "400001",
                     customer_name="Example Customer",
@@ -85,31 +78,14 @@ class CustomerNotesDatabaseTest(unittest.TestCase):
                     source_transaction_id="G-100",
                     source_check_number="00123",
                 )
-
-                with closing(sqlite3.connect(target)) as connection:
-                    with self.assertRaisesRegex(
-                        sqlite3.IntegrityError,
-                        "append-only",
-                    ):
-                        connection.execute(
-                            "UPDATE customer_notes SET body = ? WHERE note_id = ?",
-                            ("Changed", saved["note_id"]),
-                        )
-                    connection.rollback()
-                    with self.assertRaisesRegex(
-                        sqlite3.IntegrityError,
-                        "append-only",
-                    ):
-                        connection.execute(
-                            "DELETE FROM customer_notes WHERE note_id = ?",
-                            (saved["note_id"],),
-                        )
-                    connection.rollback()
-
                 stored = database.get_customer_notes("400001")
+            finally:
+                _reset_engine_override()
+                engine.dispose()
 
             self.assertEqual(len(stored), 1)
             self.assertEqual(stored[0]["body"], "Immutable note.")
+            self.assertEqual(stored[0]["note_id"], saved["note_id"])
 
 
 if __name__ == "__main__":

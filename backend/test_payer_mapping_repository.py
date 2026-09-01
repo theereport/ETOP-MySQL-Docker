@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 from modules.document_intelligence.resolution.payer_mapping_repository import (
     PayerCustomerMappingRepository,
 )
@@ -10,12 +12,14 @@ from modules.document_intelligence.resolution.payer_mapping_repository import (
 class PayerCustomerMappingRepositoryTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
-        self.repo = PayerCustomerMappingRepository(
-            db_path=Path(self._tmpdir.name) / "mapping.db"
+        self.engine = create_engine(
+            f"sqlite:///{Path(self._tmpdir.name) / 'mapping.db'}"
         )
+        self.repo = PayerCustomerMappingRepository(engine=self.engine)
         self.repo.initialize()
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self._tmpdir.cleanup()
 
     def test_confirmed_mapping_round_trips(self) -> None:

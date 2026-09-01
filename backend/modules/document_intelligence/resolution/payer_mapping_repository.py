@@ -1,50 +1,59 @@
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 
-from core.test_path_override import resolve_test_path_override
+from sqlalchemy import select
+from sqlalchemy.engine import Engine
+
+from data.mysql import get_engine, metadata, payer_customer_mapping_table
+
 
 class PayerCustomerMappingRepository:
-    def __init__(self, db_path=None):
-        self.db_path = Path(
-            db_path
-            if db_path is not None
-            else resolve_test_path_override(
-                "ETOP_TEST_CASH_PAYER_LEARNING_DB",
-                "data/modules/document_intelligence/document_intelligence.db",
-            )
-        )
-    def initialize(self):
-        self.db_path.parent.mkdir(parents=True,exist_ok=True)
-        c = sqlite3.connect(self.db_path)
-        try:
-            with c:
-                c.execute("""CREATE TABLE IF NOT EXISTS payer_customer_mapping(
-                    mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    routing_number TEXT NOT NULL DEFAULT '',
-                    bank_account_last4 TEXT NOT NULL DEFAULT '',
-                    normalized_payer_name TEXT NOT NULL DEFAULT '',
-                    customer_number TEXT NOT NULL, confidence REAL NOT NULL,
-                    confirmed_by_user INTEGER NOT NULL DEFAULT 0,
-                    first_seen_at TEXT NOT NULL,last_seen_at TEXT NOT NULL,
-                    UNIQUE(routing_number,bank_account_last4,normalized_payer_name))""")
-        finally:
-            c.close()
+    def __init__(self, engine: Engine | None = None) -> None:
+        self._engine = engine or get_engine()
 
-    def upsert(self,routing_number,bank_account_last4,normalized_payer_name,customer_number,confidence,confirmed_by_user=True):
-        now=datetime.now(timezone.utc).isoformat()
-        c = sqlite3.connect(self.db_path)
-        try:
-            with c:
-                c.execute("""INSERT INTO payer_customer_mapping
-                (routing_number,bank_account_last4,normalized_payer_name,customer_number,confidence,confirmed_by_user,first_seen_at,last_seen_at)
-                VALUES(?,?,?,?,?,?,?,?)
-                ON CONFLICT(routing_number,bank_account_last4,normalized_payer_name)
-                DO UPDATE SET customer_number=excluded.customer_number,confidence=excluded.confidence,
-                confirmed_by_user=excluded.confirmed_by_user,last_seen_at=excluded.last_seen_at""",
-                (routing_number or "",bank_account_last4 or "",normalized_payer_name or "",customer_number,confidence,1 if confirmed_by_user else 0,now,now))
-        finally:
-            c.close()
+    def initialize(self):
+        metadata.create_all(
+            self._engine, checkfirst=True, tables=[payer_customer_mapping_table]
+        )
+
+    def upsert(self, routing_number, bank_account_last4, normalized_payer_name, customer_number, confidence, confirmed_by_user=True):
+        now = datetime.now(timezone.utc).isoformat()
+        self.initialize()
+        table = payer_customer_mapping_table
+        routing_number = routing_number or ""
+        bank_account_last4 = bank_account_last4 or ""
+        normalized_payer_name = normalized_payer_name or ""
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                select(table.c.mapping_id).where(
+                    table.c.routing_number == routing_number,
+                    table.c.bank_account_last4 == bank_account_last4,
+                    table.c.normalized_payer_name == normalized_payer_name,
+                )
+            ).first()
+            if existing is None:
+                connection.execute(
+                    table.insert().values(
+                        routing_number=routing_number,
+                        bank_account_last4=bank_account_last4,
+                        normalized_payer_name=normalized_payer_name,
+                        customer_number=customer_number,
+                        confidence=confidence,
+                        confirmed_by_user=1 if confirmed_by_user else 0,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    )
+                )
+            else:
+                connection.execute(
+                    table.update()
+                    .where(table.c.mapping_id == existing[0])
+                    .values(
+                        customer_number=customer_number,
+                        confidence=confidence,
+                        confirmed_by_user=1 if confirmed_by_user else 0,
+                        last_seen_at=now,
+                    )
+                )
 
     def find_confirmed_customer_numbers(self, routing_number, bank_account_last4):
         """Distinct human-confirmed customer numbers previously recorded
@@ -57,15 +66,15 @@ class PayerCustomerMappingRepository:
         if not routing_number or not bank_account_last4:
             return []
         self.initialize()
-        c = sqlite3.connect(self.db_path)
-        try:
-            c.row_factory = sqlite3.Row
-            rows = c.execute(
-                """SELECT DISTINCT customer_number FROM payer_customer_mapping
-                WHERE routing_number = ? AND bank_account_last4 = ?
-                  AND confirmed_by_user = 1""",
-                (routing_number, bank_account_last4),
-            ).fetchall()
-        finally:
-            c.close()
-        return [row["customer_number"] for row in rows]
+        table = payer_customer_mapping_table
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(table.c.customer_number)
+                .where(
+                    table.c.routing_number == routing_number,
+                    table.c.bank_account_last4 == bank_account_last4,
+                    table.c.confirmed_by_user == 1,
+                )
+                .distinct()
+            ).all()
+        return [row[0] for row in rows]

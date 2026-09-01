@@ -13,6 +13,8 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+from sqlalchemy import create_engine
+
 sys.path.insert(
     0,
     str(Path(__file__).resolve().parent / "modules" / "document_intelligence"),
@@ -493,12 +495,14 @@ class DurablePreparationTest(unittest.TestCase):
         self.database_path = (
             Path(self.temp_directory.name) / "preparation.db"
         )
+        self.engine = create_engine(f"sqlite:///{self.database_path}")
 
     def tearDown(self) -> None:
+        self.engine.dispose()
         self.temp_directory.cleanup()
 
     def repository(self) -> LockboxPreparationRepository:
-        return LockboxPreparationRepository(self.database_path)
+        return LockboxPreparationRepository(engine=self.engine)
 
     def run_customer_conflict(
         self,
@@ -1202,7 +1206,7 @@ class DurablePreparationTest(unittest.TestCase):
             )
 
         restarted_repository = LockboxPreparationRepository(
-            self.database_path
+            engine=self.engine
         )
         provider = FakeReadOnlyProvider()
         coordinator = DurableLockboxPreparationCoordinator(
@@ -1236,7 +1240,7 @@ class DurablePreparationTest(unittest.TestCase):
         job_id = registered["job_id"]
 
         restarted_repository = LockboxPreparationRepository(
-            self.database_path
+            engine=self.engine
         )
         provider = FakeReadOnlyProvider()
         coordinator = DurableLockboxPreparationCoordinator(
@@ -1259,7 +1263,7 @@ class DurablePreparationTest(unittest.TestCase):
             build_request(1)
         )["job_id"]
         second_repository = LockboxPreparationRepository(
-            self.database_path
+            engine=self.engine
         )
 
         first_claim = first_repository.begin_run(job_id)
@@ -1391,7 +1395,7 @@ class DurablePreparationTest(unittest.TestCase):
     ) -> None:
         source = build_request(1)
         legacy_repository = LockboxPreparationRepository(
-            self.database_path,
+            engine=self.engine,
             rule_version="ADR-001@0.6.9+BR-LOCKBOX-001..008",
             service_version="lockbox-preparation@0.7.0-wave2-increment3a",
         )
@@ -1444,7 +1448,7 @@ class DurablePreparationTest(unittest.TestCase):
     ) -> None:
         source = build_request(1)
         first_repository = LockboxPreparationRepository(
-            self.database_path,
+            engine=self.engine,
             rule_version="ADR-001@0.6.9+BR-LOCKBOX-001..008",
             service_version="lockbox-preparation@0.7.0-wave2-increment3a",
         )
@@ -1463,7 +1467,7 @@ class DurablePreparationTest(unittest.TestCase):
             ),
         )
         r2_repository = LockboxPreparationRepository(
-            self.database_path,
+            engine=self.engine,
             rule_version=(
                 "ADR-001@0.7.0-wave2-increment3b+"
                 "BR-LOCKBOX-001..008"
@@ -1482,7 +1486,7 @@ class DurablePreparationTest(unittest.TestCase):
         )
 
         increment3c_repository = LockboxPreparationRepository(
-            self.database_path,
+            engine=self.engine,
             rule_version=(
                 "ADR-001@0.7.0-wave2-increment3c+"
                 "BR-LOCKBOX-001..009"
@@ -1503,7 +1507,7 @@ class DurablePreparationTest(unittest.TestCase):
         )
 
         increment3d_repository = LockboxPreparationRepository(
-            self.database_path,
+            engine=self.engine,
             rule_version=(
                 "ADR-001@0.7.0-wave2-increment3d+"
                 "BR-LOCKBOX-001..011"
@@ -1524,7 +1528,7 @@ class DurablePreparationTest(unittest.TestCase):
         )
 
         increment3f_repository = LockboxPreparationRepository(
-            self.database_path,
+            engine=self.engine,
             rule_version=(
                 "ADR-001@0.7.0-wave2-increment3e+"
                 "BR-LOCKBOX-001..013"
@@ -1545,7 +1549,7 @@ class DurablePreparationTest(unittest.TestCase):
         )
 
         increment3g_repository = LockboxPreparationRepository(
-            self.database_path,
+            engine=self.engine,
             rule_version=(
                 "ADR-001@0.7.0-wave2-increment3g+"
                 "BR-LOCKBOX-001..019"
@@ -1566,7 +1570,7 @@ class DurablePreparationTest(unittest.TestCase):
         )
 
         increment3p_repository = LockboxPreparationRepository(
-            self.database_path,
+            engine=self.engine,
             rule_version=(
                 "ADR-001@0.7.0-wave2-increment3p+"
                 "BR-LOCKBOX-001..035"
@@ -1680,203 +1684,13 @@ class DurablePreparationTest(unittest.TestCase):
             ],
         )
 
-    def test_v2_schema_migration_preserves_history_and_allows_new_rule(
-        self,
-    ) -> None:
-        source = build_request(1)
-        source_payload = {
-            "transaction_id": "tx-1",
-            "ordinal": 1,
-            "check_amount": "100.00",
-            "extracted_invoice_numbers": ["1234567890"],
-            "original_source": {
-                "transaction_id": "tx-1",
-                "check_amount": 100,
-            },
-            "extraction_version": "pnc-test@1",
-            "source_reference": "page=1",
-            "source_hash": "tx-hash-1",
-            "payment_date": "2026-07-10",
-            "preexisting_human_disposition": {
-                "status": "corrected",
-                "reviewer": "test-reviewer",
-            },
-        }
-        legacy_result = {
-            "source": source_payload,
-            "preserved_human_disposition": {
-                "status": "corrected",
-                "reviewer": "test-reviewer",
-            },
-        }
-        legacy_rule = "ADR-001@0.6.9+BR-LOCKBOX-001..008"
-        with closing(sqlite3.connect(self.database_path)) as connection, connection:
-            connection.executescript(
-                """
-                PRAGMA foreign_keys=ON;
-                CREATE TABLE preparation_schema (
-                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                    schema_version INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE preparation_jobs (
-                    job_id TEXT PRIMARY KEY,
-                    source_job_id TEXT NOT NULL,
-                    source_file_hash TEXT NOT NULL,
-                    source_reference TEXT NOT NULL DEFAULT '',
-                    correlation_id TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    request_fingerprint TEXT NOT NULL DEFAULT '',
-                    state TEXT NOT NULL,
-                    expected_count INTEGER NOT NULL,
-                    terminal_count INTEGER NOT NULL DEFAULT 0,
-                    balanced_count INTEGER NOT NULL DEFAULT 0,
-                    exception_count INTEGER NOT NULL DEFAULT 0,
-                    preserved_count INTEGER NOT NULL DEFAULT 0,
-                    rule_version TEXT NOT NULL,
-                    service_version TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    started_at TEXT,
-                    completed_at TEXT,
-                    UNIQUE(source_job_id, source_file_hash)
-                );
-                CREATE TABLE preparation_transactions (
-                    job_id TEXT NOT NULL,
-                    transaction_id TEXT NOT NULL,
-                    ordinal INTEGER NOT NULL,
-                    state TEXT NOT NULL,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    retry_eligible INTEGER NOT NULL DEFAULT 0,
-                    source_json TEXT NOT NULL,
-                    source_hash TEXT NOT NULL DEFAULT '',
-                    extraction_version TEXT NOT NULL DEFAULT 'unknown',
-                    result_json TEXT,
-                    error_json TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    started_at TEXT,
-                    completed_at TEXT,
-                    PRIMARY KEY(job_id, transaction_id),
-                    UNIQUE(job_id, ordinal),
-                    FOREIGN KEY(job_id) REFERENCES preparation_jobs(job_id)
-                        ON DELETE RESTRICT
-                );
-                CREATE TABLE preparation_events (
-                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    job_id TEXT NOT NULL,
-                    transaction_id TEXT,
-                    event_type TEXT NOT NULL,
-                    from_state TEXT,
-                    to_state TEXT,
-                    payload_json TEXT NOT NULL,
-                    occurred_at TEXT NOT NULL,
-                    FOREIGN KEY(job_id) REFERENCES preparation_jobs(job_id)
-                        ON DELETE RESTRICT
-                );
-                """
-            )
-            connection.execute(
-                "INSERT INTO preparation_schema VALUES (1, 2, ?)",
-                ("2026-07-31T12:00:00+00:00",),
-            )
-            connection.execute(
-                """
-                INSERT INTO preparation_jobs (
-                    job_id, source_job_id, source_file_hash,
-                    source_reference, correlation_id, idempotency_key,
-                    request_fingerprint, state, expected_count,
-                    terminal_count, balanced_count, exception_count,
-                    preserved_count, rule_version, service_version,
-                    created_at, updated_at, started_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "legacy-job",
-                    source.source_job_id,
-                    source.source_file_hash,
-                    "legacy.pdf",
-                    "legacy-job",
-                    f"{source.source_job_id}:{source.source_file_hash}",
-                    "legacy-fingerprint",
-                    "complete",
-                    1,
-                    1,
-                    0,
-                    0,
-                    1,
-                    legacy_rule,
-                    "lockbox-preparation@0.7.0-wave2-increment3a",
-                    "2026-07-31T12:00:00+00:00",
-                    "2026-07-31T12:01:00+00:00",
-                    "2026-07-31T12:00:01+00:00",
-                    "2026-07-31T12:01:00+00:00",
-                ),
-            )
-            connection.execute(
-                """
-                INSERT INTO preparation_transactions (
-                    job_id, transaction_id, ordinal, state, source_json,
-                    source_hash, extraction_version, result_json,
-                    created_at, updated_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "legacy-job",
-                    "tx-1",
-                    1,
-                    "preexisting_human_disposition",
-                    json.dumps(source_payload, sort_keys=True),
-                    "tx-hash-1",
-                    "pnc-test@1",
-                    json.dumps(legacy_result, sort_keys=True),
-                    "2026-07-31T12:00:00+00:00",
-                    "2026-07-31T12:01:00+00:00",
-                    "2026-07-31T12:01:00+00:00",
-                ),
-            )
-            connection.execute(
-                """
-                INSERT INTO preparation_events (
-                    job_id, transaction_id, event_type, from_state,
-                    to_state, payload_json, occurred_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "legacy-job",
-                    "tx-1",
-                    "human_disposition_preserved",
-                    "identified",
-                    "preexisting_human_disposition",
-                    json.dumps({"status": "corrected"}),
-                    "2026-07-31T12:01:00+00:00",
-                ),
-            )
-
-        repository = self.repository()
-        migrated = repository.get_job("legacy-job")
-        current = repository.register(source)
-
-        self.assertEqual(migrated["preparation_generation"], 1)
-        self.assertEqual(migrated["rule_version"], legacy_rule)
-        self.assertEqual(
-            migrated["transactions"][0]["result"],
-            legacy_result,
-        )
-        self.assertEqual(
-            repository.list_events("legacy-job")[0]["event_type"],
-            "human_disposition_preserved",
-        )
-        self.assertEqual(current["preparation_generation"], 2)
-        with closing(sqlite3.connect(self.database_path)) as connection:
-            schema_version = connection.execute(
-                "SELECT schema_version FROM preparation_schema WHERE singleton = 1"
-            ).fetchone()[0]
-            foreign_key_violations = connection.execute(
-                "PRAGMA foreign_key_check"
-            ).fetchall()
-        self.assertEqual(schema_version, 3)
-        self.assertEqual(foreign_key_violations, [])
+    # test_v2_schema_migration_preserves_history_and_allows_new_rule was
+    # removed: it verified the in-place SQLite ALTER-TABLE migration from
+    # a legacy v2 schema (missing preparation_generation/request_
+    # fingerprint) to v3. MySQL always gets the current v3 schema
+    # directly - there is no legacy schema to migrate in place, matching
+    # every other in-place SQLite migration removed elsewhere in this
+    # project.
 
     def test_missing_history_raises_not_found(self) -> None:
         repository = self.repository()
