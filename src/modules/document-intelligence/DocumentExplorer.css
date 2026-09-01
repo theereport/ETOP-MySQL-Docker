@@ -241,6 +241,21 @@
   cursor: pointer;
 }
 
+.de-table td:last-child {
+  display: flex;
+  gap: 6px;
+}
+
+.de-delete-button {
+  border-color: #6b2330 !important;
+  background: #2a1418 !important;
+  color: #f2a3ac !important;
+}
+
+.de-delete-button:hover {
+  background: #3a1a20 !important;
+}
+
 .de-pagination {
   border-bottom: 0;
 }

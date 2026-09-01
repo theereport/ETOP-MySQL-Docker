@@ -24,6 +24,9 @@ type DocumentExplorerProps = {
   onProcess: (
     job: DocumentJob,
   ) => void
+  onDelete: (
+    jobIds: string[],
+  ) => void
   isBusy?: boolean
 }
 
@@ -148,6 +151,7 @@ function DocumentExplorer({
   jobs,
   onOpen,
   onProcess,
+  onDelete,
   isBusy = false,
 }: DocumentExplorerProps) {
   const [
@@ -532,6 +536,37 @@ function DocumentExplorer({
     setTagDraft('')
   }
 
+  const deleteSelected = () => {
+    if (selectedIds.length === 0) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      selectedIds.length === 1
+        ? 'Delete this document permanently? This cannot be undone.'
+        : `Delete ${selectedIds.length} documents permanently? This cannot be undone.`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    onDelete(selectedIds)
+    setSelectedIds([])
+  }
+
+  const deleteOne = (jobId: string) => {
+    const confirmed = window.confirm(
+      'Delete this document permanently? This cannot be undone.',
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    onDelete([jobId])
+  }
+
   const removeTag = (
     jobId: string,
     tag: string,
@@ -818,6 +853,14 @@ function DocumentExplorer({
             >
               Clear Selection
             </button>
+
+            <button
+              type="button"
+              className="de-delete-button"
+              onClick={deleteSelected}
+            >
+              Delete Selected
+            </button>
           </div>
         </div>
       )}
@@ -1020,6 +1063,18 @@ function DocumentExplorer({
                           Open
                         </button>
                       )}
+
+                      <button
+                        type="button"
+                        className="de-delete-button"
+                        onClick={() =>
+                          deleteOne(
+                            job.job_id,
+                          )
+                        }
+                      >
+                        Delete
+                      </button>
                     </td>
                   </tr>
                 )

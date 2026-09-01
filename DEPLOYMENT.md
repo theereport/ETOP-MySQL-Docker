@@ -67,6 +67,40 @@ talks to the backend over HTTP - see `src/api/client.ts`'s `VITE_API_BASE_URL`).
    external ERP connection specifically - `false` there means the `MYSQL_*`
    credentials/host in `backend/.env` need attention, not a Docker problem.
 
+## Optional: GPU passthrough for Ollama
+
+Ollama's chat (`gemma3:12b`) and embedding (`nomic-embed-text`) inference run
+on CPU by default. On a host with a compatible NVIDIA GPU, passthrough makes
+those noticeably faster. This is opt-in via a separate override file
+(`docker-compose.gpu.yml`) rather than being on by default, because the GPU
+device reservation makes `docker compose up` hard-fail on any host where the
+setup below isn't complete - it does not gracefully fall back to CPU.
+
+GPU passthrough is host-specific: it uses whichever machine actually runs
+`docker compose up`, not a fixed/remote GPU. Each host needs this done
+separately - the compose file doesn't carry the GPU with it.
+
+Requirements on the host:
+- An NVIDIA GPU with a current driver installed.
+- The [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+  installed and configured for Docker (`nvidia-ctk runtime configure
+  --runtime=docker` followed by a Docker daemon restart, on a native Linux
+  Docker host).
+- On Windows via Docker Desktop specifically: the WSL2 backend (not
+  Hyper-V/linuxkit) is required for GPU passthrough at all - check with
+  `docker info` (`Kernel Version` should *not* say `linuxkit`) - plus Docker
+  Desktop's "Use the WSL 2 based engine" and GPU support settings enabled.
+
+Once that's done, start (or restart) the stack with both compose files:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml --env-file backend/.env.compose up -d
+```
+
+Verify Ollama can see the GPU:
+```bash
+docker compose exec ollama nvidia-smi
+```
+
 ## Day-to-day
 
 ```bash

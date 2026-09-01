@@ -10,7 +10,7 @@ class DocumentIntelligenceSettings:
     module_version: str = "0.5.0"
     max_upload_bytes: int = 50 * 1024 * 1024
     # Technical safety limits, not document-validity or financial-policy rules.
-    max_pdf_pages: int = 500
+    max_pdf_pages: int = 1000
     max_targeted_ocr_pages: int = 25
     max_ocr_render_dimension_pixels: int = 10_000
     max_ocr_render_pixels: int = 20_000_000

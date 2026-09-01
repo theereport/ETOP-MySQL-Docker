@@ -5,6 +5,7 @@ import {
 } from 'react'
 
 import {
+  deleteDocumentJob,
   getDocumentResult,
   processDocument,
   uploadDocument,
@@ -348,6 +349,32 @@ function EnterpriseDocuments({
     }
   }
 
+  const deleteJobs = async (
+    jobIds: string[],
+  ) => {
+    clearMessages()
+
+    try {
+      for (const jobId of jobIds) {
+        await deleteDocumentJob(jobId)
+      }
+
+      setNoticeMessage(
+        jobIds.length === 1
+          ? 'Document deleted.'
+          : `${jobIds.length} documents deleted.`,
+      )
+      await refreshData()
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to delete the selected document(s).',
+      )
+      await refreshData()
+    }
+  }
+
   const handleFiles = async (
     fileList: FileList | File[],
   ) => {
@@ -633,6 +660,9 @@ function EnterpriseDocuments({
             }}
             onProcess={(job) => {
               void runJob(job)
+            }}
+            onDelete={(jobIds) => {
+              void deleteJobs(jobIds)
             }}
             isBusy={
               isLoading ||

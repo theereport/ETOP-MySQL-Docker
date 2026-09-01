@@ -98,6 +98,21 @@ export async function getDocumentJobs(
   return payload.jobs ?? []
 }
 
+export async function deleteDocumentJob(
+  jobId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/jobs/${encodeURIComponent(jobId)}`,
+    { method: 'DELETE' },
+  )
+
+  if (!response.ok) {
+    throw new Error(
+      await readError(response),
+    )
+  }
+}
+
 export async function getVendorInvoiceJobs(
   limit = 1,
   offset = 0,

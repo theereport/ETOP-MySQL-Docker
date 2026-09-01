@@ -40,6 +40,7 @@ from .service import (
     count_jobs,
     create_upload_job,
     create_vendor_invoice_intake,
+    delete_job,
     get_health,
     get_job,
     get_job_processing_run,
@@ -166,6 +167,11 @@ def get_document_file(job_id: str) -> FileResponse:
 @router.get("/jobs/{job_id}", response_model=DocumentJobResponse)
 def read_document_job(job_id: str) -> DocumentJobResponse:
     return DocumentJobResponse(**get_job(job_id))
+
+
+@router.delete("/jobs/{job_id}", status_code=204)
+def remove_document_job(job_id: str) -> None:
+    delete_job(job_id)
 
 
 @router.get("/jobs", response_model=DocumentJobListResponse)

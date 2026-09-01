@@ -5,12 +5,14 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from data.mysql import (
     doc_jobs_table,
     doc_processing_runs_table,
     doc_results_table,
+    document_review_history_table,
+    document_reviews_table,
     get_engine,
     metadata,
 )
@@ -18,7 +20,13 @@ from data.mysql import (
 from .settings import settings
 
 
-_TABLES = [doc_jobs_table, doc_results_table, doc_processing_runs_table]
+_TABLES = [
+    doc_jobs_table,
+    doc_results_table,
+    doc_processing_runs_table,
+    document_reviews_table,
+    document_review_history_table,
+]
 
 
 def utc_now_iso() -> str:
@@ -363,3 +371,35 @@ def count_jobs(*, document_type: str | None = None) -> int:
         query = query.where(table.c.document_type == document_type)
     with get_engine().connect() as connection:
         return int(connection.execute(query).scalar())
+
+
+def delete_job(job_id: str) -> bool:
+    """Remove a job and its dependent rows (results, runs, review history).
+
+    Returns True if the job existed and was deleted, False otherwise.
+    """
+
+    initialize_database()
+    with get_engine().begin() as connection:
+        connection.execute(
+            delete(document_review_history_table).where(
+                document_review_history_table.c.job_id == job_id
+            )
+        )
+        connection.execute(
+            delete(document_reviews_table).where(
+                document_reviews_table.c.job_id == job_id
+            )
+        )
+        connection.execute(
+            delete(doc_results_table).where(doc_results_table.c.job_id == job_id)
+        )
+        connection.execute(
+            delete(doc_processing_runs_table).where(
+                doc_processing_runs_table.c.job_id == job_id
+            )
+        )
+        result = connection.execute(
+            delete(doc_jobs_table).where(doc_jobs_table.c.job_id == job_id)
+        )
+        return result.rowcount > 0

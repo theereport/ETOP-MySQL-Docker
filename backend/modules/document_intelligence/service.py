@@ -647,6 +647,19 @@ def save_current_job_review(
         )
 
 
+def delete_job(job_id: str) -> None:
+    job = get_job(job_id)
+
+    try:
+        path = _managed_pdf_path(job)
+    except (FileNotFoundError, RuntimeError):
+        path = None
+    if path is not None:
+        path.unlink(missing_ok=True)
+
+    repository.delete_job(job_id)
+
+
 def get_managed_job_pdf_path(job_id: str) -> Path:
     job = get_job(job_id)
     try:

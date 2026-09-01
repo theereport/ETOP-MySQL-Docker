@@ -52,7 +52,7 @@ configured local Tesseract runtime for pages marked `requires_ocr`. Native
 deterministic rules have no numeric confidence unless the source engine
 actually supplied one.
 
-Technical resource guards reject PDFs over 500 pages and bound targeted OCR to
+Technical resource guards reject PDFs over 1000 pages and bound targeted OCR to
 25 pages, 30 seconds per OCR call, 120 seconds per document, 10,000 rendered
 pixels per dimension, and 20,000,000 rendered pixels per page. Skipped,
 timed-out, or oversized-raster pages remain explicit review evidence.

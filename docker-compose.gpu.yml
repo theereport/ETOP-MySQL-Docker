@@ -1,0 +1,25 @@
+# Optional GPU passthrough for Ollama.
+#
+# This is a separate, opt-in override rather than part of docker-compose.yml
+# because the GPU device reservation below makes `docker compose up` hard-fail
+# on any host where the NVIDIA driver + NVIDIA Container Toolkit aren't fully
+# installed - it does not gracefully fall back to CPU. Keeping it out of the
+# base file means every host (including one with no GPU at all) keeps working
+# with the plain `docker compose up -d`.
+#
+# To use it, on a host that has:
+#   - an NVIDIA GPU
+#   - the NVIDIA driver installed
+#   - the NVIDIA Container Toolkit installed and configured for Docker
+#     (see DEPLOYMENT.md)
+# run:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --env-file backend/.env.compose up -d
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
