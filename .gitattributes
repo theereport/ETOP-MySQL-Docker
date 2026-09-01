@@ -1,0 +1,5 @@
+# Shell scripts run inside Linux containers (nginx/entrypoint.sh,
+# backend/scripts/backup_mysql.sh) - CRLF line endings break `sh` on Alpine
+# ("illegal option -" from a mangled `set -eu`). Force LF regardless of the
+# checkout platform's core.autocrlf setting.
+*.sh text eol=lf
