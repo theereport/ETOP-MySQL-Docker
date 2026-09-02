@@ -51,6 +51,13 @@ class FakeNotesRepository:
     def get_ap_due_date_cache(self, week_start, week_end):
         return self.ap_cache.get((week_start, week_end))
 
+    def get_ap_due_date_cache_for_range(self, week_start, week_end):
+        return {
+            key: value
+            for key, value in self.ap_cache.items()
+            if key[0] >= week_start and key[1] <= week_end
+        }
+
     def replace_ap_due_date_cache(self, buckets, *, refreshed_at):
         self.ap_cache = {
             (bucket["week_start"], bucket["week_end"]): bucket for bucket in buckets

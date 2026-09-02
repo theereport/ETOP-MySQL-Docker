@@ -268,6 +268,25 @@ class CashFlowForecastingNotesRepository:
             ).mappings().first()
         return dict(row) if row is not None else None
 
+    def get_ap_due_date_cache_for_range(
+        self, week_start: str, week_end: str
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """Batched sibling of get_ap_due_date_cache() - one query covering
+        every cached week between week_start and week_end (inclusive),
+        keyed by (week_start, week_end), instead of one query per week."""
+
+        self.initialize()
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(cash_flow_ap_due_date_cache_table).where(
+                    cash_flow_ap_due_date_cache_table.c.week_start >= week_start,
+                    cash_flow_ap_due_date_cache_table.c.week_end <= week_end,
+                )
+            ).mappings().all()
+        return {
+            (row["week_start"], row["week_end"]): dict(row) for row in rows
+        }
+
     def ap_cache_refreshed_at(self) -> str | None:
         self.initialize()
         with self._engine.connect() as connection:

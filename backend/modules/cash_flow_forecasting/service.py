@@ -163,12 +163,13 @@ class CashFlowForecastingService:
         if cache_refreshed_at is None:
             empty = {index: 0.0 for index, _, _ in weeks}
             return empty, empty, False
+        cached_by_week = self._notes_repository.get_ap_due_date_cache_for_range(
+            weeks[0][1].isoformat(), weeks[-1][2].isoformat()
+        )
         open_totals: dict[int, float] = {}
         hold_totals: dict[int, float] = {}
         for index, start, end in weeks:
-            cached = self._notes_repository.get_ap_due_date_cache(
-                start.isoformat(), end.isoformat()
-            )
+            cached = cached_by_week.get((start.isoformat(), end.isoformat()))
             open_totals[index] = cached["open_amount"] if cached else 0.0
             hold_totals[index] = cached["open_on_hold_amount"] if cached else 0.0
         return open_totals, hold_totals, True
