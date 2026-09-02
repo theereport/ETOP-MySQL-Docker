@@ -11,6 +11,8 @@ from .schemas import (
 from .service import (
     ARCollectionsCustomerNotFound,
     ARCollectionsService,
+    ARCollectionsSourceIntegrityError,
+    ARCollectionsSourceUnavailable,
     ar_collections_service,
 )
 
@@ -23,6 +25,34 @@ router = APIRouter(
 
 def _customer_number_path() -> int:
     return Path(ge=1)
+
+
+def _raise_customer_error(exc: Exception) -> None:
+    if isinstance(exc, ARCollectionsCustomerNotFound):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "customer_not_found",
+                "message": str(exc),
+            },
+        ) from exc
+    if isinstance(exc, ARCollectionsSourceUnavailable):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "ar_collections_source_unavailable",
+                "message": str(exc),
+            },
+        ) from exc
+    if isinstance(exc, ARCollectionsSourceIntegrityError):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "ar_collections_source_integrity_error",
+                "message": str(exc),
+            },
+        ) from exc
+    raise exc
 
 
 @router.get("/health")
@@ -41,14 +71,13 @@ def get_customer_collections(
         return ar_collections_service.get_customer_collections(
             customer_number
         )
-    except ARCollectionsCustomerNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={
-                "code": "customer_not_found",
-                "message": str(exc),
-            },
-        ) from exc
+    except (
+        ARCollectionsCustomerNotFound,
+        ARCollectionsSourceIntegrityError,
+        ARCollectionsSourceUnavailable,
+    ) as exc:
+        _raise_customer_error(exc)
+        raise AssertionError("unreachable")
 
 
 @router.get(
@@ -72,11 +101,10 @@ def create_customer_note(
 ) -> ARCollectionsNoteRecord:
     try:
         return ar_collections_service.create_note(customer_number, payload)
-    except ARCollectionsCustomerNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={
-                "code": "customer_not_found",
-                "message": str(exc),
-            },
-        ) from exc
+    except (
+        ARCollectionsCustomerNotFound,
+        ARCollectionsSourceIntegrityError,
+        ARCollectionsSourceUnavailable,
+    ) as exc:
+        _raise_customer_error(exc)
+        raise AssertionError("unreachable")
