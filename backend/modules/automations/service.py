@@ -340,6 +340,11 @@ def _execute_sql_source(
         result = execute_mysql_query(
             validated_sql=validated_sql,
             row_limit=AUTOMATION_ROW_LIMIT,
+            # Scheduled automations have no interactive user session to
+            # attribute the run to - None is the "shared/legacy" bucket
+            # visible to every SQL Workspace user, the correct home for a
+            # system-triggered run rather than any one person's history.
+            created_by=None,
         )
     except HTTPException as exc:
         raise AutomationExecutionError(str(exc.detail)) from exc

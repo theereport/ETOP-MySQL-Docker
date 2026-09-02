@@ -11,8 +11,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from typing import Annotated
+
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -22,6 +24,10 @@ from core.sql_validator import (
     normalize_and_validate_sql,
 )
 from core.test_path_override import resolve_test_path_override
+from modules.workflow_foundation.service import (
+    WorkflowAuthenticationRequired,
+    workflow_foundation_service,
+)
 
 
 load_dotenv()
@@ -61,6 +67,32 @@ def _connect() -> sqlite3.Connection:
     connection.execute("PRAGMA busy_timeout=5000")
     return connection
 
+
+def _current_user_id(
+    authorization: Annotated[str | None, Header()] = None,
+) -> str | None:
+    """The requesting account's user_id, for scoping saved queries/history.
+
+    Every /sql/* route already requires the sql_workspace module grant
+    (ModuleAccessMiddleware), so a valid Bearer token is always present by
+    the time this runs - the None fallback is defense-in-depth only, not
+    an expected path. Returns user_id (stable) rather than username, so
+    ownership survives a username change.
+    """
+
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        session = workflow_foundation_service.session_for_token(token)
+    except WorkflowAuthenticationRequired:
+        return None
+    return session["user"]["user_id"]
+
+
+CurrentUserId = Annotated[str | None, Depends(_current_user_id)]
+
+
 class ExecuteSqlRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=250_000)
     row_limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
@@ -80,6 +112,17 @@ class SavedQueryUpdate(BaseModel):
     sql: str = Field(min_length=1, max_length=250_000)
 
 
+def _add_column_if_missing(
+    connection: sqlite3.Connection, table: str, column: str, ddl: str
+) -> None:
+    existing = {
+        row[1]
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in existing:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def initialize_sql_workspace_database() -> None:
     with _connect() as connection:
         connection.execute(
@@ -91,7 +134,8 @@ def initialize_sql_workspace_database() -> None:
                 description TEXT NOT NULL DEFAULT '',
                 sql_text TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                created_by TEXT
             )
             """
         )
@@ -105,9 +149,24 @@ def initialize_sql_workspace_database() -> None:
                 row_count INTEGER NOT NULL DEFAULT 0,
                 execution_ms REAL NOT NULL DEFAULT 0,
                 error_message TEXT,
-                executed_at TEXT NOT NULL
+                executed_at TEXT NOT NULL,
+                created_by TEXT
             )
             """
+        )
+
+        # Existing databases created before created_by existed - added via
+        # ALTER rather than relying on CREATE TABLE IF NOT EXISTS, which is
+        # a no-op once the table already exists. NULL created_by (every
+        # pre-existing row) is treated as "shared/legacy" everywhere this
+        # is queried below - visible and editable by anyone, preserving
+        # today's behavior for old data. Only new rows going forward are
+        # scoped to their creator.
+        _add_column_if_missing(
+            connection, "saved_queries", "created_by", "created_by TEXT"
+        )
+        _add_column_if_missing(
+            connection, "query_history", "created_by", "created_by TEXT"
         )
 
         connection.execute(
@@ -143,6 +202,7 @@ def record_history(
     row_count: int,
     execution_ms: float,
     error_message: str | None,
+    created_by: str | None,
 ) -> None:
     with _connect() as connection:
         connection.execute(
@@ -153,9 +213,10 @@ def record_history(
                 row_count,
                 execution_ms,
                 error_message,
-                executed_at
+                executed_at,
+                created_by
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sql_text,
@@ -164,6 +225,7 @@ def record_history(
                 execution_ms,
                 error_message,
                 datetime.now().isoformat(timespec="seconds"),
+                created_by,
             ),
         )
 
@@ -174,6 +236,7 @@ def record_history(
 def execute_mysql_query(
     validated_sql: str,
     row_limit: int,
+    created_by: str | None,
 ) -> dict[str, Any]:
     """
     Executes validated read-only SQL through the shared MaddenDatabase
@@ -198,6 +261,7 @@ def execute_mysql_query(
             row_count=len(rows),
             execution_ms=execution_ms,
             error_message=None,
+            created_by=created_by,
         )
 
         return {
@@ -226,6 +290,7 @@ def execute_mysql_query(
             row_count=0,
             execution_ms=execution_ms,
             error_message=error_message,
+            created_by=created_by,
         )
 
         raise
@@ -260,22 +325,28 @@ def validate_sql(request: ExecuteSqlRequest) -> dict[str, Any]:
 
 
 @router.post("/execute")
-def execute_sql(request: ExecuteSqlRequest) -> dict[str, Any]:
+def execute_sql(
+    request: ExecuteSqlRequest, current_user_id: CurrentUserId
+) -> dict[str, Any]:
     validated_sql = normalize_and_validate_sql(request.sql)
 
     return execute_mysql_query(
         validated_sql=validated_sql,
         row_limit=request.row_limit,
+        created_by=current_user_id,
     )
 
 
 @router.post("/export")
-def export_sql_results(request: ExecuteSqlRequest) -> StreamingResponse:
+def export_sql_results(
+    request: ExecuteSqlRequest, current_user_id: CurrentUserId
+) -> StreamingResponse:
     validated_sql = normalize_and_validate_sql(request.sql)
 
     result = execute_mysql_query(
         validated_sql=validated_sql,
         row_limit=request.row_limit,
+        created_by=current_user_id,
     )
 
     output = io.StringIO(newline="")
@@ -314,11 +385,15 @@ def export_sql_results(request: ExecuteSqlRequest) -> StreamingResponse:
 
 @router.get("/saved")
 def get_saved_queries(
+    current_user_id: CurrentUserId,
     search: str = Query(default="", max_length=200),
     category: str = Query(default="", max_length=100),
 ) -> dict[str, Any]:
-    conditions: list[str] = []
-    parameters: list[Any] = []
+    # created_by IS NULL = a query saved before per-user scoping existed -
+    # treated as shared/legacy, visible to everyone (see initialize_
+    # sql_workspace_database's migration comment).
+    conditions: list[str] = ["(created_by = ? OR created_by IS NULL)"]
+    parameters: list[Any] = [current_user_id]
 
     if search.strip():
         search_value = f"%{search.strip()}%"
@@ -382,6 +457,7 @@ def get_saved_queries(
 @router.post("/saved")
 def create_saved_query(
     request: SavedQueryCreate,
+    current_user_id: CurrentUserId,
 ) -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
 
@@ -394,9 +470,10 @@ def create_saved_query(
                 description,
                 sql_text,
                 created_at,
-                updated_at
+                updated_at,
+                created_by
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 request.title.strip(),
@@ -405,6 +482,7 @@ def create_saved_query(
                 request.sql.strip(),
                 now,
                 now,
+                current_user_id,
             ),
         )
 
@@ -422,10 +500,13 @@ def create_saved_query(
 def update_saved_query(
     saved_query_id: int,
     request: SavedQueryUpdate,
+    current_user_id: CurrentUserId,
 ) -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
 
     with _connect() as connection:
+        # created_by IS NULL (legacy/shared, saved before per-user scoping
+        # existed) stays editable by anyone, matching get_saved_queries.
         cursor = connection.execute(
             """
             UPDATE saved_queries
@@ -435,7 +516,7 @@ def update_saved_query(
                 description = ?,
                 sql_text = ?,
                 updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND (created_by = ? OR created_by IS NULL)
             """,
             (
                 request.title.strip(),
@@ -444,6 +525,7 @@ def update_saved_query(
                 request.sql.strip(),
                 now,
                 saved_query_id,
+                current_user_id,
             ),
         )
 
@@ -462,11 +544,13 @@ def update_saved_query(
 
 
 @router.delete("/saved/{saved_query_id}")
-def delete_saved_query(saved_query_id: int) -> dict[str, Any]:
+def delete_saved_query(
+    saved_query_id: int, current_user_id: CurrentUserId
+) -> dict[str, Any]:
     with _connect() as connection:
         cursor = connection.execute(
-            "DELETE FROM saved_queries WHERE id = ?",
-            (saved_query_id,),
+            "DELETE FROM saved_queries WHERE id = ? AND (created_by = ? OR created_by IS NULL)",
+            (saved_query_id, current_user_id),
         )
 
         connection.commit()
@@ -502,11 +586,15 @@ def get_saved_query_categories() -> dict[str, Any]:
 
 @router.get("/history")
 def get_query_history(
+    current_user_id: CurrentUserId,
     limit: int = Query(default=50, ge=1, le=250),
 ) -> dict[str, Any]:
     with _connect() as connection:
         connection.row_factory = sqlite3.Row
 
+        # created_by IS NULL = run before per-user scoping existed - shown
+        # to everyone as shared/legacy history, same treatment as saved
+        # queries.
         rows = connection.execute(
             """
             SELECT
@@ -518,10 +606,11 @@ def get_query_history(
                 error_message,
                 executed_at
             FROM query_history
+            WHERE created_by = ? OR created_by IS NULL
             ORDER BY id DESC
             LIMIT ?
             """,
-            (limit,),
+            (current_user_id, limit),
         ).fetchall()
 
     history = []
@@ -538,9 +627,15 @@ def get_query_history(
 
 
 @router.delete("/history")
-def clear_query_history() -> dict[str, Any]:
+def clear_query_history(current_user_id: CurrentUserId) -> dict[str, Any]:
     with _connect() as connection:
-        connection.execute("DELETE FROM query_history")
+        # Only clears the requesting user's own history (plus legacy
+        # unattributed rows, same shared treatment as reads above) - never
+        # another user's history.
+        connection.execute(
+            "DELETE FROM query_history WHERE created_by = ? OR created_by IS NULL",
+            (current_user_id,),
+        )
         connection.commit()
 
     return {
