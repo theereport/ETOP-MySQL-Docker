@@ -267,7 +267,11 @@ class TaxComplianceService:
         return "expired" if parsed < today else "current"
 
     def _check_customer_row(
-        self, row: dict[str, Any]
+        self,
+        row: dict[str, Any],
+        *,
+        exemption_records_by_code: dict[str, list[TaxExemptionCodeRecord]]
+        | None = None,
     ) -> CustomerExemptionCheckResult:
         exemption_code = _clean_text(row.get("CUTAXEXCD"))
         expiration_date = _parse_erp_date(row.get("CUDTETXEXP"))
@@ -276,6 +280,11 @@ class TaxComplianceService:
         if not exemption_code:
             match_status = "no_exemption_code_on_customer"
             matched: list[TaxExemptionCodeRecord] = []
+        elif exemption_records_by_code is not None:
+            matched = exemption_records_by_code.get(exemption_code, [])
+            match_status = (
+                "matched" if matched else "no_matching_exemption_code_found"
+            )
         else:
             matched_rows = self._repository.get_exemption_codes_by_code(
                 exemption_code
@@ -321,6 +330,22 @@ class TaxComplianceService:
         rows = self._repository.get_customers_tax_fields(unique_numbers)
         rows_by_number = {int(row["CUNUMBER"]): row for row in rows}
 
+        exemption_codes = sorted(
+            {
+                _clean_text(row.get("CUTAXEXCD"))
+                for row in rows_by_number.values()
+                if _clean_text(row.get("CUTAXEXCD"))
+            }
+        )
+        exemption_records_by_code: dict[str, list[TaxExemptionCodeRecord]] = {}
+        for exemption_row in self._repository.get_exemption_codes_by_codes(
+            exemption_codes
+        ):
+            code = _clean_text(exemption_row.get("TTXECODEXE"))
+            exemption_records_by_code.setdefault(code, []).append(
+                self._exemption_from_row(exemption_row)
+            )
+
         results: list[CustomerExemptionCheckResult] = []
         not_found: list[int] = []
         for number in unique_numbers:
@@ -328,7 +353,12 @@ class TaxComplianceService:
             if row is None:
                 not_found.append(number)
                 continue
-            results.append(self._check_customer_row(row))
+            results.append(
+                self._check_customer_row(
+                    row,
+                    exemption_records_by_code=exemption_records_by_code,
+                )
+            )
 
         retrieved_at = self._clock().astimezone(UTC).isoformat()
         return CustomerExemptionCheckBatchResponse(

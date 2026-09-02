@@ -157,6 +157,25 @@ class TaxComplianceRepository:
         """
         return madden_database.fetch_all(sql, (exempt_code,))
 
+    def get_exemption_codes_by_codes(
+        self,
+        exempt_codes: list[str],
+    ) -> list[dict[str, Any]]:
+        """Batched sibling of get_exemption_codes_by_code() - one query for
+        however many distinct exempt_codes are given, instead of one query
+        per customer being checked."""
+
+        if not exempt_codes:
+            return []
+        placeholders = ", ".join(["%s"] * len(exempt_codes))
+        sql = f"""
+        SELECT {self._EXEMPTION_COLUMNS}
+        FROM TMTAXE
+        WHERE TRIM(TTXECODEXE) IN ({placeholders})
+        ORDER BY TRIM(TTXECODEXE), TTXECODSTE
+        """
+        return madden_database.fetch_all(sql, tuple(exempt_codes))
+
     def get_customer_tax_fields(
         self,
         customer_number: int,

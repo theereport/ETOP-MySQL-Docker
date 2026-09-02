@@ -58,6 +58,12 @@ class FakeTaxComplianceRepository:
             if row["TTXECODEXE"] == exempt_code
         ]
 
+    def get_exemption_codes_by_codes(self, exempt_codes):
+        codes = set(exempt_codes)
+        return [
+            row for row in self._exemption_codes if row["TTXECODEXE"] in codes
+        ]
+
     def get_customer_tax_fields(self, customer_number):
         return self._customer_rows.get(customer_number)
 
@@ -337,6 +343,46 @@ class CustomerExemptionCheckTests(unittest.TestCase):
         statuses = {r.customer_number: r.match_status for r in response.results}
         self.assertEqual(statuses[1], "matched")
         self.assertEqual(statuses[2], "no_exemption_code_on_customer")
+
+    def test_batch_check_matches_each_customer_to_its_own_exemption_code(self):
+        # The batched lookup fetches all distinct exemption codes in one
+        # call and groups them - a customer must only ever be matched
+        # against exemption rows for its own code, never another
+        # customer's, and an unrecognized code must still report as such.
+        service = TaxComplianceService(
+            repository=FakeTaxComplianceRepository(
+                exemption_codes=[
+                    make_exemption_row(TTXECODEXE="RS", TTXEDSC="Resale"),
+                    make_exemption_row(
+                        TTXECODEXE="AG", TTXEDSC="Agricultural"
+                    ),
+                ],
+                customer_rows=[
+                    make_customer_row(CUNUMBER=1, CUTAXEXCD="RS"),
+                    make_customer_row(CUNUMBER=2, CUTAXEXCD="AG"),
+                    make_customer_row(CUNUMBER=3, CUTAXEXCD="ZZ"),
+                ],
+            ),
+            notes_repository=FakeNotesRepository(),
+            clock=lambda: FIXED_NOW,
+        )
+        response = service.check_customers_exemption([1, 2, 3])
+        by_number = {r.customer_number: r for r in response.results}
+
+        self.assertEqual(by_number[1].match_status, "matched")
+        self.assertEqual(
+            [code.description for code in by_number[1].matched_exemption_codes],
+            ["Resale"],
+        )
+        self.assertEqual(by_number[2].match_status, "matched")
+        self.assertEqual(
+            [code.description for code in by_number[2].matched_exemption_codes],
+            ["Agricultural"],
+        )
+        self.assertEqual(
+            by_number[3].match_status, "no_matching_exemption_code_found"
+        )
+        self.assertEqual(by_number[3].matched_exemption_codes, [])
 
 
 class TaxComplianceNoteTests(unittest.TestCase):
