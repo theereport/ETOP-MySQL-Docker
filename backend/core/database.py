@@ -22,6 +22,18 @@ SQL_TIMEOUT_SECONDS = int(
     os.getenv("SQL_TIMEOUT_SECONDS", "60")
 )
 
+# Shared ceiling for the handful of deliberate, infrequent, dedicated-
+# connection full scans of PMHD (accounts_payable's open-ledger scan and
+# cash_flow_forecasting's AP due-date cache refresh both scan the same
+# unindexed, multi-million-row table). These used to carry their own
+# independently-chosen timeouts (600s and 240s) that would have started
+# failing at different points as PMHD keeps growing, even though both do a
+# comparably unfiltered full scan of it. A single shared constant keeps them
+# aligned without depending on two people remembering to update both.
+ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS = int(
+    os.getenv("ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS", "600")
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -380,7 +392,13 @@ class MaddenDatabase:
         self,
     ) -> MySQLConnection:
         """
-        Creates a new MySQL connection using the shared backend settings.
+        Checks out a MySQL connection from the shared pool (created on first
+        use, keyed by pool_name), instead of opening a brand-new TCP+auth
+        connection to the ERP server on every call. mysql-connector-python
+        auto-creates/reuses the named pool from connect() itself; returning
+        the connection via the existing cursor()/read_consistent_snapshot()
+        finally-block close() already returns it to the pool rather than
+        tearing down the session.
         """
 
         return mysql.connector.connect(
@@ -457,6 +475,15 @@ class MaddenDatabase:
             "use_pure": True,
             "charset": "utf8mb4",
             "collation": "utf8mb4_unicode_ci",
+            # Every fetch_all/fetch_one/read_consistent_snapshot call used to
+            # open a brand-new TCP+auth connection to the (remote) ERP MySQL
+            # server. Naming the pool makes mysql-connector-python create it
+            # once and hand out/reuse its connections on every later connect()
+            # call with this same pool_name from this process.
+            "pool_name": "madden_erp",
+            "pool_size": int(
+                os.getenv("MYSQL_POOL_SIZE", "5")
+            ),
         }
 
     @staticmethod
