@@ -18,12 +18,16 @@ import type {
   PlatformTask,
   SearchResult,
 } from './types'
+// Imported from workflow-foundation's own api.ts, not its barrel - that
+// barrel also statically re-exports WorkflowFoundationWorkspace, and this
+// file is part of the always-eager PlatformCenter, so a barrel import here
+// would pull that lazy-loaded workspace back into the main bundle.
 import {
   getWorkflowNotifications,
   getWorkflowTasks,
   getWorkflowToken,
   markWorkflowNotificationRead,
-} from '../features/workflow-foundation'
+} from '../features/workflow-foundation/api'
 import { acknowledgeJobQueueItem, getJobQueueJobs } from '../features/job-queue'
 
 type Props = {
