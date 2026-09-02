@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -70,6 +71,7 @@ from modules.automations.schemas import (  # noqa: E402
     AutomationDefinition,
     AutomationExecution,
 )
+import modules.automations.validation as automation_validation  # noqa: E402
 from modules.automations.validation import (  # noqa: E402
     AutomationValidationError,
     normalize_timezone_name,
@@ -260,8 +262,62 @@ class AutomationGovernanceTests(unittest.TestCase):
         )
         automation.script_path = str(script)
 
-        saved = save_automation(automation)
+        # Scripts must live under an allowlisted root (see validation.py) -
+        # this test's temp directory stands in for an operator-configured
+        # ETOP_AUTOMATION_SCRIPTS_ROOT for the scope of this one test.
+        with unittest.mock.patch.object(
+            automation_validation,
+            "ALLOWED_SCRIPT_ROOTS",
+            (Path(self.temp_directory.name).resolve(),),
+        ):
+            saved = save_automation(automation)
         self.assertEqual(saved.script_path, str(script))
+
+    def test_active_script_outside_allowed_root_is_rejected(self) -> None:
+        # No ETOP_AUTOMATION_SCRIPTS_ROOT override here - this proves the
+        # built-in default allowlist actually excludes an arbitrary
+        # location (this test's own temp directory), not just that some
+        # allowlist exists.
+        script = Path(self.temp_directory.name) / "valid.py"
+        script.write_text("print('ok')\n", encoding="utf-8")
+        automation = _automation(
+            source_type="python",
+            script_path=str(script),
+        )
+
+        with self.assertRaisesRegex(
+            AutomationValidationError,
+            "Script files must live under",
+        ):
+            save_automation(automation)
+
+    def test_active_output_folder_outside_allowed_root_is_rejected(
+        self,
+    ) -> None:
+        automation = _automation(source_type="sql")
+        automation.delivery.output_folder = str(
+            Path(self.temp_directory.name) / "drop"
+        )
+
+        with self.assertRaisesRegex(
+            AutomationValidationError,
+            "Output folder must live under",
+        ):
+            save_automation(automation)
+
+    def test_active_output_folder_under_backend_data_is_allowed(
+        self,
+    ) -> None:
+        # BACKEND_DIR here is this test file's own directory (backend/),
+        # matching validation.py's _DEFAULT_OUTPUT_ROOTS[0] - the existing,
+        # already-established "automation run outputs" default location.
+        automation = _automation(source_type="sql")
+        automation.delivery.output_folder = str(
+            BACKEND_DIR / "data" / "automation_outputs" / "sub"
+        )
+
+        saved = save_automation(automation)
+        self.assertTrue(saved.delivery.output_folder.endswith("sub"))
 
     def test_active_saved_report_must_still_exist(self) -> None:
         automation = _automation(source_type="sql")

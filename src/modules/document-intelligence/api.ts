@@ -308,6 +308,44 @@ export function getLockboxExportUrl(
   return `${API_BASE}/jobs/${encodeURIComponent(jobId)}/lockbox/export`
 }
 
+async function downloadBlobResponse(
+  url: string,
+  fallbackFileName: string,
+): Promise<void> {
+  // Fetched as an authenticated blob (same Bearer-token fetch every other
+  // API call uses) rather than pointed at directly with a raw <a href> -
+  // a plain anchor navigation can't carry an Authorization header, so it
+  // would 401 unless the session cookie fallback happens to apply.
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(await readError(response))
+
+  const blob = await response.blob()
+  const disposition = response.headers.get('content-disposition') ?? ''
+  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  const quotedName = disposition.match(/filename="([^"]+)"/i)?.[1]
+  const fileName = encodedName
+    ? decodeURIComponent(encodedName)
+    : quotedName || fallbackFileName
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  try {
+    anchor.href = objectUrl
+    anchor.download = fileName
+    document.body.appendChild(anchor)
+    anchor.click()
+  } finally {
+    anchor.remove()
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+export function downloadLockboxExport(jobId: string): Promise<void> {
+  return downloadBlobResponse(
+    getLockboxExportUrl(jobId),
+    'Lockbox_Parser_Export.xlsx',
+  )
+}
+
 
 export async function uploadLockboxGroundTruth(
   jobId: string,
@@ -455,6 +493,13 @@ export async function appendLockboxCustomerNote(
 
 export function getReviewedLockboxExportUrl(jobId: string): string {
   return `${API_BASE}/jobs/${encodeURIComponent(jobId)}/lockbox/reviewed-export`
+}
+
+export function downloadReviewedLockboxExport(jobId: string): Promise<void> {
+  return downloadBlobResponse(
+    getReviewedLockboxExportUrl(jobId),
+    'Lockbox_Reviewed_PNC_Export.xlsx',
+  )
 }
 
 export type LockboxReviewQueueExportRequest = {

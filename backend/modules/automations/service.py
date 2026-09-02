@@ -26,7 +26,12 @@ from .schemas import (
     AutomationDefinition,
     RunAutomationResponse,
 )
-from .validation import resolve_script_path
+from .validation import (
+    ALLOWED_OUTPUT_ROOTS,
+    ALLOWED_SCRIPT_ROOTS,
+    is_within_allowed_roots,
+    resolve_script_path,
+)
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -78,6 +83,16 @@ def _get_output_path(
 
     if not output_folder.is_absolute():
         output_folder = BACKEND_DIR / output_folder
+
+    output_folder = output_folder.resolve()
+
+    # Defense in depth: validate_automation() already rejects this at save
+    # time, but this also covers an automation saved before that check
+    # existed.
+    if not is_within_allowed_roots(output_folder, ALLOWED_OUTPUT_ROOTS):
+        raise AutomationExecutionError(
+            f"Output folder is outside the allowed root(s): {output_folder}"
+        )
 
     output_folder.mkdir(parents=True, exist_ok=True)
 
@@ -340,6 +355,11 @@ def _execute_sql_source(
         result = execute_mysql_query(
             validated_sql=validated_sql,
             row_limit=AUTOMATION_ROW_LIMIT,
+            # Scheduled automations have no interactive user session to
+            # attribute the run to - None is the "shared/legacy" bucket
+            # visible to every SQL Workspace user, the correct home for a
+            # system-triggered run rather than any one person's history.
+            created_by=None,
         )
     except HTTPException as exc:
         raise AutomationExecutionError(str(exc.detail)) from exc
@@ -373,6 +393,14 @@ def _run_script(
     automation: AutomationDefinition,
 ) -> subprocess.CompletedProcess[str]:
     script_path = resolve_script_path(automation.script_path)
+
+    # Defense in depth: validate_automation() already rejects this at
+    # save time, but this also covers an automation saved before that
+    # check existed.
+    if not is_within_allowed_roots(script_path, ALLOWED_SCRIPT_ROOTS):
+        raise AutomationExecutionError(
+            f"Script path is outside the allowed root(s): {script_path}"
+        )
 
     if automation.source_type == "powershell":
         executable = (

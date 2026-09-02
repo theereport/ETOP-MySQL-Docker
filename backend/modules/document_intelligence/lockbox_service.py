@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from .lockbox_review.queue_export import _safe_file_part
 from .pnc_lockbox_export import export_pnc_workbook
 from .pnc_lockbox_parser import parse_pnc_lockbox, save_result
 from core.test_path_override import resolve_test_path_override
@@ -54,7 +55,11 @@ def _initialize_database() -> None:
 
 
 def result_path(job_id: str) -> Path:
-    return LOCKBOX_RESULT_DIR / f"{job_id}.json"
+    # job_id reaches here straight from a URL path parameter with no
+    # format constraint (router.py) - sanitized the same way
+    # lockbox_review/queue_export.py already treats it, so it can never
+    # escape LOCKBOX_RESULT_DIR via a crafted value.
+    return LOCKBOX_RESULT_DIR / f"{_safe_file_part(job_id, 'lockbox')}.json"
 
 
 def process_lockbox(job_id: str, pdf_path: str | Path) -> dict[str, Any]:
@@ -455,7 +460,10 @@ def create_lockbox_export(
 ) -> Path:
     result = get_lockbox_result(job_id)
 
-    output = LOCKBOX_EXPORT_DIR / f"{job_id}_PNC_Lockbox.xlsx"
+    output = (
+        LOCKBOX_EXPORT_DIR
+        / f"{_safe_file_part(job_id, 'lockbox')}_PNC_Lockbox.xlsx"
+    )
 
     return export_pnc_workbook(
         result,

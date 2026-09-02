@@ -84,6 +84,8 @@ class WorkflowValidationError(ValueError):
 class WorkflowFoundationService:
     SESSION_HOURS = 12
     PASSWORD_RESET_HOURS = 24
+    LOGIN_LOCKOUT_THRESHOLD = 5
+    LOGIN_LOCKOUT_MINUTES = 15
 
     def __init__(
         self,
@@ -189,19 +191,51 @@ class WorkflowFoundationService:
         return self._issue_session(user_id)
 
     def login(self, payload: LoginRequest) -> AuthSessionResponse:
-        account = self.repository.get_account_credentials(payload.username)
         invalid = WorkflowAuthenticationRequired(
             "The username or password was not recognized by this local ETOP instance."
         )
-        if account is None or account["status"] != "active":
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        now = now.astimezone(UTC)
+
+        # Tracked by the submitted username string regardless of whether an
+        # account with that name actually exists (see the password check
+        # below, which is equally unconditional) - a lockout never reveals
+        # account existence, same guarantee the generic `invalid` message
+        # already gives for a wrong password.
+        lockout = self.repository.get_login_lockout(payload.username)
+        if lockout and lockout["locked_until"]:
+            locked_until = datetime.fromisoformat(lockout["locked_until"])
+            if locked_until > now:
+                raise WorkflowAuthenticationRequired(
+                    "Too many failed sign-in attempts. Try again in a few minutes."
+                )
+
+        account = self.repository.get_account_credentials(payload.username)
+        password_ok = False
+        if account is not None and account["status"] == "active":
+            try:
+                salt = bytes.fromhex(account["password_salt"])
+                candidate = self._password_digest(payload.password, salt)
+                password_ok = secrets.compare_digest(
+                    candidate, account["password_hash"]
+                )
+            except (TypeError, ValueError):
+                password_ok = False
+
+        if not password_ok:
+            lockout_until = (
+                now + timedelta(minutes=self.LOGIN_LOCKOUT_MINUTES)
+            ).isoformat()
+            self.repository.record_failed_login(
+                payload.username,
+                lockout_threshold=self.LOGIN_LOCKOUT_THRESHOLD,
+                lockout_until=lockout_until,
+            )
             raise invalid
-        try:
-            salt = bytes.fromhex(account["password_salt"])
-            candidate = self._password_digest(payload.password, salt)
-        except (TypeError, ValueError):
-            raise invalid from None
-        if not secrets.compare_digest(candidate, account["password_hash"]):
-            raise invalid
+
+        self.repository.clear_login_attempts(payload.username)
         return self._issue_session(account["user_id"])
 
     def _issue_session(self, user_id: str) -> AuthSessionResponse:

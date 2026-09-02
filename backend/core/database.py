@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time as datetime_time
@@ -20,6 +21,8 @@ load_dotenv()
 SQL_TIMEOUT_SECONDS = int(
     os.getenv("SQL_TIMEOUT_SECONDS", "60")
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MaddenSnapshotReader:
@@ -97,6 +100,17 @@ class MaddenDatabase:
             yield cursor
 
         except mysql.connector.Error as database_error:
+            # This detail is deliberately still surfaced to the client, not
+            # just logged: sql_workspace.py's whole point is showing a user
+            # exactly why their own query failed (str(database_error.detail)
+            # becomes the query's error message in query_history), and
+            # schema_explorer.py already reveals this same table/column
+            # metadata to any authorized user by design - genericizing this
+            # message would break that debugging feature without actually
+            # hiding anything schema_explorer doesn't already show. Logged
+            # here too so a real operational failure (not a bad user query)
+            # is visible server-side without needing to reproduce it.
+            logger.exception("Madden database query failed.")
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -222,6 +236,7 @@ class MaddenDatabase:
                 datetime.now(UTC).isoformat(),
             )
         except (mysql.connector.Error, ValueError) as database_error:
+            logger.exception("Madden consistent read-only snapshot failed.")
             raise HTTPException(
                 status_code=400,
                 detail=(

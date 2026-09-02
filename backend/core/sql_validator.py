@@ -33,6 +33,16 @@ FORBIDDEN_KEYWORDS = {
     "EXEC",
     "EXECUTE",
     "LOAD",
+    # `\bLOAD\b` alone does not match "LOAD_FILE(...)" - `_` is a word
+    # character, so there is no boundary between "LOAD" and "_FILE". That
+    # is correct regex behavior (LOAD_FILE is a distinct identifier, not a
+    # continuation of the bare word LOAD) but leaves this specific,
+    # dangerous function uncovered - it reads arbitrary files off the
+    # MySQL server's filesystem given FILE privilege. Listed explicitly
+    # rather than trying to make LOAD "greedier" (which would false-positive
+    # on any legitimate identifier merely containing "load" as a substring,
+    # e.g. a column named WORKLOAD_ID).
+    "LOAD_FILE",
     "HANDLER",
     "INTO OUTFILE",
     "INTO DUMPFILE",
@@ -197,6 +207,24 @@ def normalize_and_validate_sql(raw_sql: str) -> str:
         raise HTTPException(
             status_code=400,
             detail="Enter a SQL query before running it.",
+        )
+
+    # MySQL's "versioned comment" syntax (/*!50000 ... */ or /*!ANY_DIGITS
+    # ... */) is NOT inert to MySQL - it unconditionally executes the
+    # content inside once the digits are <= the server's version (in
+    # practice, using a low/zero version number always executes it). But
+    # remove_comments_and_strings() below strips it like any other block
+    # comment before the keyword scan runs, so a forbidden command hidden
+    # inside one is invisible to validation while still being invisible-non-
+    # comment SQL to MySQL itself. Rejected outright rather than partially
+    # parsed - no legitimate read-only reporting query needs this syntax.
+    if "/*!" in sql:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "MySQL versioned comments (/*!...*/) are not allowed in "
+                "this SQL editor."
+            ),
         )
 
     # Existing Workbench queries may begin with this statement.

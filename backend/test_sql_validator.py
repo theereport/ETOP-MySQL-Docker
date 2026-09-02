@@ -84,6 +84,30 @@ class ReadOnlySqlValidatorTests(unittest.TestCase):
             "blocked SQL command: INTO OUTFILE",
         )
 
+    def test_load_file_function_is_blocked(self) -> None:
+        self.assert_blocked(
+            "SELECT LOAD_FILE('/etc/passwd')",
+            "blocked SQL command: LOAD_FILE",
+        )
+
+    def test_load_data_statement_remains_blocked(self) -> None:
+        self.assert_blocked(
+            "LOAD DATA INFILE '/tmp/x.csv' INTO TABLE report_cache",
+            "beginning with LOAD",
+        )
+
+    def test_versioned_comment_is_rejected(self) -> None:
+        self.assert_blocked(
+            "SELECT 1 /*!50000,(SELECT 1 FROM report_cache)*/",
+            "versioned comments",
+        )
+
+    def test_versioned_comment_hiding_a_write_is_rejected(self) -> None:
+        self.assert_blocked(
+            "SELECT 1 /*!00000 UNION SELECT password FROM wf_user_accounts*/",
+            "versioned comments",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

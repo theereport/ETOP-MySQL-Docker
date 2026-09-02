@@ -19,6 +19,7 @@ from data.mysql import (
     wf_audit_events_table,
     wf_definitions_table,
     wf_invitation_events_table,
+    wf_login_attempts_table,
     wf_module_access_events_table,
     wf_modules_table,
     wf_notifications_table,
@@ -620,6 +621,66 @@ class WorkflowFoundationRepository:
                 ).where(func.lower(wf_user_accounts_table.c.username) == username.lower())
             ).mappings().first()
             return dict(row) if row else None
+
+    def get_login_lockout(self, username: str) -> dict[str, Any] | None:
+        key = username.strip().lower()
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                select(
+                    wf_login_attempts_table.c.failed_count,
+                    wf_login_attempts_table.c.locked_until,
+                ).where(wf_login_attempts_table.c.username == key)
+            ).mappings().first()
+            return dict(row) if row else None
+
+    def record_failed_login(
+        self,
+        username: str,
+        *,
+        lockout_threshold: int,
+        lockout_until: str | None,
+    ) -> None:
+        key = username.strip().lower()
+        now = self._now()
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                select(wf_login_attempts_table.c.failed_count).where(
+                    wf_login_attempts_table.c.username == key
+                )
+            ).first()
+            next_count = (existing[0] if existing else 0) + 1
+            locked_until = (
+                lockout_until if next_count >= lockout_threshold else None
+            )
+            if existing is None:
+                connection.execute(
+                    wf_login_attempts_table.insert().values(
+                        username=key,
+                        failed_count=next_count,
+                        first_failed_at=now,
+                        locked_until=locked_until,
+                        updated_at=now,
+                    )
+                )
+            else:
+                connection.execute(
+                    wf_login_attempts_table.update()
+                    .where(wf_login_attempts_table.c.username == key)
+                    .values(
+                        failed_count=next_count,
+                        locked_until=locked_until,
+                        updated_at=now,
+                    )
+                )
+
+    def clear_login_attempts(self, username: str) -> None:
+        key = username.strip().lower()
+        with self._engine.begin() as connection:
+            connection.execute(
+                delete(wf_login_attempts_table).where(
+                    wf_login_attempts_table.c.username == key
+                )
+            )
 
     def create_session(
         self,

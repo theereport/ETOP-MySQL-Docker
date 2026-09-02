@@ -1078,6 +1078,17 @@ export function getAPVendorInvoiceFileUrl(jobId: string): string {
   return `${API_BASE}/documents/jobs/${encodeURIComponent(jobId)}/file`
 }
 
+export async function getAPVendorInvoiceFile(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await fetch(getAPVendorInvoiceFileUrl(jobId), { signal })
+  if (!response.ok) {
+    throw new Error(`Unable to load the source PDF (status ${response.status}).`)
+  }
+  return response.blob()
+}
+
 export function getAPControlCases(
   action: 'approval_review' | 'payment_preparation',
   signal?: AbortSignal,

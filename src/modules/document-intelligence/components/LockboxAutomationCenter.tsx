@@ -7,11 +7,11 @@ import {
 } from 'react'
 
 import {
+  downloadLockboxExport,
   downloadLockboxReviewQueueExport,
-  getLockboxExportUrl,
+  downloadReviewedLockboxExport,
   getLockboxResult,
   getLockboxReview,
-  getReviewedLockboxExportUrl,
   processLockboxJob,
   uploadLockboxGroundTruth,
 } from '../api'
@@ -106,6 +106,8 @@ export default function LockboxAutomationCenter({
   const [isProcessing, setIsProcessing] = useState(false)
   const [isComparing, setIsComparing] = useState(false)
   const [isExportingQueue, setIsExportingQueue] = useState(false)
+  const [isExportingParserOriginal, setIsExportingParserOriginal] = useState(false)
+  const [isExportingReviewed, setIsExportingReviewed] = useState(false)
   const [isUploadingPdf, setIsUploadingPdf] = useState(false)
   const [isRestoring, setIsRestoring] = useState(false)
   const [processedJobIds, setProcessedJobIds] = useState<Set<string>>(
@@ -614,6 +616,41 @@ export default function LockboxAutomationCenter({
       setIsExportingQueue(false)
     }
   }
+
+  const exportOriginalParserResult = async () => {
+    if (!selectedJobId) return
+    setIsExportingParserOriginal(true)
+    setErrorMessage('')
+    try {
+      await downloadLockboxExport(selectedJobId)
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to export the original parser result.',
+      )
+    } finally {
+      setIsExportingParserOriginal(false)
+    }
+  }
+
+  const exportReviewedResult = async () => {
+    if (!selectedJobId) return
+    setIsExportingReviewed(true)
+    setErrorMessage('')
+    try {
+      await downloadReviewedLockboxExport(selectedJobId)
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to export the reviewed PNC workbook.',
+      )
+    } finally {
+      setIsExportingReviewed(false)
+    }
+  }
+
   const governedReviewReady = governedLockboxReviewIsReady(
     durablePreparation,
     preparedTransactions,
@@ -842,7 +879,14 @@ export default function LockboxAutomationCenter({
             <div className="lockbox-selected-file"><span>Check total</span><strong>{result ? money(result.total_check_amount) : '—'}</strong><small>{result ? `${result.allocation_count} output rows` : 'No processed result'}</small></div>
             {result ? (
               <div className="lockbox-export-actions">
-                <a className="ed-button-link secondary lockbox-large-action" href={getLockboxExportUrl(selectedJobId)}>Original Parser Export</a>
+                <button
+                  type="button"
+                  className="ed-button-link secondary lockbox-large-action"
+                  onClick={() => void exportOriginalParserResult()}
+                  disabled={isExportingParserOriginal}
+                >
+                  {isExportingParserOriginal ? 'Exporting…' : 'Original Parser Export'}
+                </button>
                 {preparationIncomplete
                   || effectiveReviewCount > 0
                   || heldCount > 0 ? (
@@ -860,7 +904,14 @@ export default function LockboxAutomationCenter({
                       : `Resolve ${effectiveReviewCount} Review Exception${effectiveReviewCount === 1 ? '' : 's'} Before Export`}
                   </button>
                 ) : (
-                  <a className="ed-button-link lockbox-large-action primary" href={getReviewedLockboxExportUrl(selectedJobId)}>Reviewed PNC Excel</a>
+                  <button
+                    type="button"
+                    className="ed-button-link lockbox-large-action primary"
+                    onClick={() => void exportReviewedResult()}
+                    disabled={isExportingReviewed}
+                  >
+                    {isExportingReviewed ? 'Exporting…' : 'Reviewed PNC Excel'}
+                  </button>
                 )}
               </div>
             ) : <button type="button" className="secondary lockbox-large-action" disabled>Download PNC Excel</button>}

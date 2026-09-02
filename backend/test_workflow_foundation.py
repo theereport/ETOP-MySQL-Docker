@@ -132,6 +132,90 @@ class WorkflowFoundationTests(unittest.TestCase):
         session = reloaded.current_session(logged_in.token)
         self.assertEqual(session.user.username, "josh")
 
+    def test_login_locks_out_after_threshold_failed_attempts(self) -> None:
+        for _ in range(self.service.LOGIN_LOCKOUT_THRESHOLD):
+            with self.assertRaises(WorkflowAuthenticationRequired) as raised:
+                self.service.login(
+                    LoginRequest(username="josh", password="wrong-password")
+                )
+            self.assertIn(
+                "username or password", str(raised.exception)
+            )
+
+        # The threshold-th failure just set the lockout - the *next*
+        # attempt is what should see it, even with the correct password,
+        # proving lockout blocks the account, not just repeated wrong
+        # guesses.
+        with self.assertRaises(WorkflowAuthenticationRequired) as raised:
+            self.service.login(
+                LoginRequest(
+                    username="josh", password="controlled-local-password"
+                )
+            )
+        self.assertIn("Too many failed sign-in attempts", str(raised.exception))
+
+    def test_login_lockout_expires_after_duration(self) -> None:
+        for _ in range(self.service.LOGIN_LOCKOUT_THRESHOLD):
+            with self.assertRaises(WorkflowAuthenticationRequired):
+                self.service.login(
+                    LoginRequest(username="josh", password="wrong-password")
+                )
+
+        later = WorkflowFoundationService(
+            repository=WorkflowFoundationRepository(
+                engine=self.engine,
+                clock=lambda: datetime(2026, 8, 7, 17, 46, tzinfo=UTC),
+            ),
+            clock=lambda: datetime(2026, 8, 7, 17, 46, tzinfo=UTC),
+        )
+        session = later.login(
+            LoginRequest(
+                username="josh", password="controlled-local-password"
+            )
+        )
+        self.assertEqual(session.user.username, "josh")
+
+    def test_successful_login_clears_prior_failed_attempts(self) -> None:
+        for _ in range(self.service.LOGIN_LOCKOUT_THRESHOLD - 1):
+            with self.assertRaises(WorkflowAuthenticationRequired):
+                self.service.login(
+                    LoginRequest(username="josh", password="wrong-password")
+                )
+
+        # One below the threshold, then a real login - should succeed and
+        # reset the counter rather than carrying those near-threshold
+        # failures forward.
+        self.service.login(
+            LoginRequest(
+                username="josh", password="controlled-local-password"
+            )
+        )
+
+        with self.assertRaises(WorkflowAuthenticationRequired) as raised:
+            self.service.login(
+                LoginRequest(username="josh", password="wrong-password")
+            )
+        self.assertIn("username or password", str(raised.exception))
+
+    def test_login_lockout_applies_to_nonexistent_usernames_too(self) -> None:
+        # Tracked identically for a real vs. fake username - the lockout
+        # response must never be a signal of whether the account exists.
+        for _ in range(self.service.LOGIN_LOCKOUT_THRESHOLD):
+            with self.assertRaises(WorkflowAuthenticationRequired):
+                self.service.login(
+                    LoginRequest(
+                        username="no-such-user", password="anything-at-all"
+                    )
+                )
+
+        with self.assertRaises(WorkflowAuthenticationRequired) as raised:
+            self.service.login(
+                LoginRequest(
+                    username="no-such-user", password="anything-else"
+                )
+            )
+        self.assertIn("Too many failed sign-in attempts", str(raised.exception))
+
     def test_only_coordinator_can_create_local_accounts(self) -> None:
         observer = self.create_user("observer", "workflow_observer")
         observer_token = self.login("observer")
