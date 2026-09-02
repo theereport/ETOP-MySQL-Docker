@@ -32,6 +32,7 @@ class ReviewedAllocation(BaseModel):
 
 class SaveTransactionReviewRequest(BaseModel):
     allocations: list[ReviewedAllocation]
+    expected_reviewed_at: str | None
     reviewer: str = ""
     notes: str = ""
     status: ReviewStatus = "corrected"

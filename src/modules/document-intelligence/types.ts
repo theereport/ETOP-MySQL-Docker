@@ -382,6 +382,7 @@ export type LockboxReviewResult = Omit<
 
 export type SaveLockboxTransactionReviewRequest = {
   allocations: ReviewedLockboxAllocation[]
+  expected_reviewed_at: string | null
   reviewer: string
   notes: string
   status: LockboxReviewStatus

@@ -675,6 +675,7 @@ class ReviewContractTest(unittest.TestCase):
         ):
             request = SaveTransactionReviewRequest(
                 allocations=[],
+                expected_reviewed_at=None,
                 status=status,
                 customer_number="customer-test",
                 customer_name="Example Customer",
@@ -854,6 +855,7 @@ class ReviewContractTest(unittest.TestCase):
                             "raw_invoice_candidates": ["unresolved OCR"],
                         }
                     ],
+                    expected_reviewed_at=None,
                     status="held",
                     reviewer="reviewer-test",
                     notes="Needs customer research.",

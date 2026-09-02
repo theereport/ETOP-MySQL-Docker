@@ -481,6 +481,7 @@ export function preparedReviewPayload(
   const customer = prepared.customer
   return {
     allocations: recommendationAllocations(transaction, prepared),
+    expected_reviewed_at: transaction.reviewed_at,
     reviewer: transaction.reviewer,
     notes: transaction.notes,
     status: nextStatus(transaction, prepared),

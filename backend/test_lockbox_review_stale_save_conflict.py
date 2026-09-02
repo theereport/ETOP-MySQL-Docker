@@ -6,6 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 
 from data.mysql import _reset_engine_override, _set_engine_override
@@ -27,7 +28,14 @@ def _source(transaction: dict) -> dict:
     return {"transactions": [transaction]}
 
 
-class MiscGlEntryTest(unittest.TestCase):
+class StaleTransactionReviewSaveIsRejectedTests(unittest.TestCase):
+    """save_transaction_review previously read the review once (check) and
+    wrote much later (use) with no re-check in between - a second reviewer
+    (or a stale second tab) could silently overwrite an intervening save.
+    Mirrors the expected_processing_run_id optimistic-concurrency check
+    service.py's save_current_job_review already used for document review
+    saves, which this lockbox review save never had."""
+
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -62,12 +70,12 @@ class MiscGlEntryTest(unittest.TestCase):
         base.update(overrides)
         return base
 
-    def _payload(self, **overrides) -> dict:
+    def _payload(self, *, expected_reviewed_at: str | None, **overrides) -> dict:
         base = SaveTransactionReviewRequest(
             allocations=[
-                {"invoice_number": "12345678", "net_invoice_amount": 90.00}
+                {"invoice_number": "12345678", "net_invoice_amount": 100.00}
             ],
-            expected_reviewed_at=None,
+            expected_reviewed_at=expected_reviewed_at,
             status="corrected",
             customer_number="640194",
             customer_name="Gothenburg Tire",
@@ -75,80 +83,45 @@ class MiscGlEntryTest(unittest.TestCase):
         base.update(overrides)
         return base
 
-    def test_misc_gl_amount_covers_the_remaining_difference(self) -> None:
+    def test_second_save_with_stale_expected_reviewed_at_is_rejected(self) -> None:
         with patch.object(
             review_service,
             "get_lockbox_result",
             lambda _job_id: deepcopy(_source(self._transaction())),
         ):
-            result = review_service.save_transaction_review(
+            first = review_service.save_transaction_review(
+                "job-1", "T-1", self._payload(expected_reviewed_at=None)
+            )
+            first_reviewed_at = first["transactions"][0]["reviewed_at"]
+            self.assertIsNotNone(first_reviewed_at)
+
+            # Simulates a second reviewer (or a stale second tab) that still
+            # has the pre-review state loaded - expected_reviewed_at=None
+            # no longer matches what is actually stored.
+            with self.assertRaises(HTTPException) as raised:
+                review_service.save_transaction_review(
+                    "job-1",
+                    "T-1",
+                    self._payload(
+                        expected_reviewed_at=None,
+                        notes="A second, stale reviewer's edit.",
+                    ),
+                )
+            self.assertEqual(raised.exception.status_code, 409)
+
+            # The correct current token is always accepted.
+            second = review_service.save_transaction_review(
                 "job-1",
                 "T-1",
                 self._payload(
-                    misc_gl_reason="Service Charge ADJ",
-                    misc_gl_amount=10.00,
+                    expected_reviewed_at=first_reviewed_at,
+                    notes="A caught-up reviewer's edit.",
                 ),
             )
-
-        transaction = result["transactions"][0]
-        self.assertEqual(transaction["difference"], 0.0)
-        self.assertTrue(transaction["balanced"])
-        self.assertEqual(transaction["misc_gl"]["gl_code"], "3880")
-        self.assertEqual(transaction["misc_gl"]["amount"], 10.0)
-
-    def test_unknown_reason_is_rejected(self) -> None:
-        with patch.object(
-            review_service,
-            "get_lockbox_result",
-            lambda _job_id: deepcopy(_source(self._transaction())),
-        ):
-            with self.assertRaises(Exception):
-                review_service.save_transaction_review(
-                    "job-2",
-                    "T-1",
-                    self._payload(
-                        misc_gl_reason="Not A Real Reason",
-                        misc_gl_amount=10.00,
-                    ),
-                )
-
-    def test_amount_without_reason_is_rejected(self) -> None:
-        with patch.object(
-            review_service,
-            "get_lockbox_result",
-            lambda _job_id: deepcopy(_source(self._transaction())),
-        ):
-            with self.assertRaises(Exception):
-                review_service.save_transaction_review(
-                    "job-3",
-                    "T-1",
-                    self._payload(misc_gl_amount=10.00),
-                )
-
-    def test_misc_gl_entry_round_trips_on_reload(self) -> None:
-        with patch.object(
-            review_service,
-            "get_lockbox_result",
-            lambda _job_id: deepcopy(_source(self._transaction())),
-        ):
-            review_service.save_transaction_review(
-                "job-4",
-                "T-1",
-                self._payload(
-                    misc_gl_reason="Service Charge ADJ",
-                    misc_gl_location="DAL",
-                    misc_gl_department="AR",
-                    misc_gl_amount=10.00,
-                ),
+            self.assertEqual(
+                second["transactions"][0]["notes"],
+                "A caught-up reviewer's edit.",
             )
-            reloaded = review_service.get_lockbox_review("job-4")
-
-        misc_gl = reloaded["transactions"][0]["misc_gl"]
-        self.assertEqual(misc_gl["reason"], "Service Charge ADJ")
-        self.assertEqual(misc_gl["gl_code"], "3880")
-        self.assertEqual(misc_gl["location"], "DAL")
-        self.assertEqual(misc_gl["department"], "AR")
-        self.assertEqual(misc_gl["amount"], 10.0)
 
 
 if __name__ == "__main__":

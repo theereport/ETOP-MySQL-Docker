@@ -79,6 +79,7 @@ class SaveTransactionReviewPayerMappingTest(unittest.TestCase):
             allocations=[
                 {"invoice_number": "12345678", "net_invoice_amount": 100.00}
             ],
+            expected_reviewed_at=None,
             status="corrected",
             customer_number="640194",
             customer_name="Gothenburg Tire",
