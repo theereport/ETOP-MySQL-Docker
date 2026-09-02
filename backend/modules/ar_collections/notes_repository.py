@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
+from core.evidence_integrity import verify_snapshot_hash
 from data.mysql import ar_collections_notes_table, get_engine, metadata
 
 
@@ -101,14 +102,15 @@ class ARCollectionsNotesRepository:
     def _note_from_row(row) -> dict[str, Any]:
         snapshot_json = row["evidence_snapshot_json"]
         expected_hash = row["evidence_snapshot_sha256"]
-        actual_hash = hashlib.sha256(
-            snapshot_json.encode("utf-8")
-        ).hexdigest()
-        if actual_hash != expected_hash:
-            raise ARCollectionsNoteIntegrityError(
+        verify_snapshot_hash(
+            snapshot_json,
+            expected_hash,
+            error=ARCollectionsNoteIntegrityError,
+            message=(
                 "Stored AR collections note evidence failed its SHA-256 "
                 "integrity check."
-            )
+            ),
+        )
         result = dict(row)
         result["erp_write"] = bool(result["erp_write"])
         result["evidence_snapshot"] = json.loads(

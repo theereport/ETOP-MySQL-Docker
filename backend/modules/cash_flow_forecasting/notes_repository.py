@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import Engine
 
+from core.evidence_integrity import verify_snapshot_hash
 from data.mysql import (
     cash_flow_ap_due_date_cache_table,
     cash_flow_forecast_actuals_table,
@@ -220,12 +221,15 @@ class CashFlowForecastingNotesRepository:
     def _actual_from_row(row) -> dict[str, Any]:
         snapshot_json = row["evidence_snapshot_json"]
         expected_hash = row["evidence_snapshot_sha256"]
-        actual_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
-        if actual_hash != expected_hash:
-            raise CashFlowForecastIntegrityError(
+        verify_snapshot_hash(
+            snapshot_json,
+            expected_hash,
+            error=CashFlowForecastIntegrityError,
+            message=(
                 "Stored cash flow actual record failed its SHA-256 "
                 "integrity check."
-            )
+            ),
+        )
         result = {
             key: value
             for key, value in dict(row).items()
