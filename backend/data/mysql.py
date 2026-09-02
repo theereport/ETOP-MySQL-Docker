@@ -1343,6 +1343,23 @@ wf_sessions_table = Table(
     Index("idx_wf_sessions_token", "token_hash", "expires_at"),
 )
 
+wf_login_attempts_table = Table(
+    "wf_login_attempts",
+    metadata,
+    # Keyed on lowercased username (matching the case-insensitive lookup in
+    # get_account_credentials) rather than user_id - tracked regardless of
+    # whether the username is real, since revealing that would itself leak
+    # account existence. A deliberately separate table from
+    # wf_user_accounts: this is transient security bookkeeping, not
+    # identity data, and keeping it separate means it never needs an
+    # ALTER on the core accounts table.
+    Column("username", String(255), primary_key=True),
+    Column("failed_count", Integer, nullable=False, server_default="0"),
+    Column("first_failed_at", String(64), nullable=True),
+    Column("locked_until", String(64), nullable=True),
+    Column("updated_at", String(64), nullable=False),
+)
+
 wf_modules_table = Table(
     "wf_modules",
     metadata,
