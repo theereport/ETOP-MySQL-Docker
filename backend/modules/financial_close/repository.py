@@ -445,6 +445,7 @@ class FinancialCloseRepository:
                 .where(table.c.cycle_id == record["cycle_id"], table.c.control_id.is_(None))
                 .order_by(table.c.subject_version.desc(), table.c.sequence.desc())
                 .limit(1)
+                .with_for_update()
             ).mappings().first()
         else:
             prior = connection.execute(
@@ -452,6 +453,7 @@ class FinancialCloseRepository:
                 .where(table.c.control_id == control_id)
                 .order_by(table.c.subject_version.desc(), table.c.sequence.desc())
                 .limit(1)
+                .with_for_update()
             ).mappings().first()
         previous_hash = prior["record_hash"] if prior else ZERO_HASH
         next_version = int(prior["subject_version"]) + 1 if prior else 1
@@ -504,6 +506,7 @@ class FinancialCloseRepository:
             .where(table.c.template_id == record["template_id"])
             .order_by(table.c.sequence.desc())
             .limit(1)
+            .with_for_update()
         ).mappings().first()
         previous_hash = prior["record_hash"] if prior else ZERO_HASH
         sequence = int(prior["sequence"]) + 1 if prior else 1
@@ -680,40 +683,45 @@ class FinancialCloseRepository:
         self.initialize()
         events = fc_control_events_table
         controls = fc_control_items_table
-        with self._engine.begin() as connection:
-            existing = connection.execute(
-                select(events).where(
-                    events.c.actor_user_id == record["actor"]["user_id"],
-                    events.c.idempotency_key == record["idempotency_key"],
-                )
-            ).mappings().first()
-            if existing:
-                if existing["request_sha256"] != record["request_sha256"]:
-                    raise FinancialCloseConflict(
-                        "That event idempotency key was already used with a different request."
+        try:
+            with self._engine.begin() as connection:
+                existing = connection.execute(
+                    select(events).where(
+                        events.c.actor_user_id == record["actor"]["user_id"],
+                        events.c.idempotency_key == record["idempotency_key"],
                     )
-                return self._decode_event(existing)
-            control = connection.execute(
-                select(controls).where(
-                    controls.c.control_id == record["control_id"],
-                    controls.c.cycle_id == record["cycle_id"],
-                )
-            ).mappings().first()
-            if control is None:
-                raise FinancialCloseNotFound(
-                    f"Financial close control {record['control_id']} was not found in cycle {record['cycle_id']}."
-                )
-            integrity = self._verify_control_chain(connection, record["control_id"])
-            if not integrity["valid"]:
-                raise FinancialCloseIntegrityError(
-                    f"Financial close control {record['control_id']} has a broken evidence chain."
-                )
-            cycle_integrity = self._verify_cycle_chain(connection, record["cycle_id"])
-            if not cycle_integrity["valid"]:
-                raise FinancialCloseIntegrityError(
-                    f"Financial close cycle {record['cycle_id']} has a broken evidence chain."
-                )
-            return self._insert_event(connection, record)
+                ).mappings().first()
+                if existing:
+                    if existing["request_sha256"] != record["request_sha256"]:
+                        raise FinancialCloseConflict(
+                            "That event idempotency key was already used with a different request."
+                        )
+                    return self._decode_event(existing)
+                control = connection.execute(
+                    select(controls).where(
+                        controls.c.control_id == record["control_id"],
+                        controls.c.cycle_id == record["cycle_id"],
+                    )
+                ).mappings().first()
+                if control is None:
+                    raise FinancialCloseNotFound(
+                        f"Financial close control {record['control_id']} was not found in cycle {record['cycle_id']}."
+                    )
+                integrity = self._verify_control_chain(connection, record["control_id"])
+                if not integrity["valid"]:
+                    raise FinancialCloseIntegrityError(
+                        f"Financial close control {record['control_id']} has a broken evidence chain."
+                    )
+                cycle_integrity = self._verify_cycle_chain(connection, record["cycle_id"])
+                if not cycle_integrity["valid"]:
+                    raise FinancialCloseIntegrityError(
+                        f"Financial close cycle {record['cycle_id']} has a broken evidence chain."
+                    )
+                return self._insert_event(connection, record)
+        except IntegrityError as exc:
+            raise FinancialCloseConflict(
+                "The event could not be recorded because its immutable evidence chain identity is invalid."
+            ) from exc
 
     def _load_template_version(
         self,
