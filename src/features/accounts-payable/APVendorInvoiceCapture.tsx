@@ -10,7 +10,7 @@ import type { ChangeEvent, DragEvent } from 'react'
 import APVendorNumberSearchField from './APVendorNumberSearchField'
 import {
   getAPGLCodingSuggestions,
-  getAPVendorInvoiceFileUrl,
+  getAPVendorInvoiceFile,
   getAPVendorInvoiceJob,
   getAPVendorInvoiceJobs,
   getAPVendorInvoiceResult,
@@ -165,6 +165,7 @@ export default function APVendorInvoiceCapture({
   const dragDepth = useRef(0)
   const [glSuggestions, setGlSuggestions] = useState<APGLCodingSuggestionsResponse | null>(null)
   const [glSuggestionsStatus, setGlSuggestionsStatus] = useState<AsyncStatus>('idle')
+  const [sourcePdfUrl, setSourcePdfUrl] = useState<string | null>(null)
   const selectedJob = useMemo(
     () => jobs.find((job) => job.job_id === selectedJobId) ?? null,
     [jobs, selectedJobId],
@@ -313,6 +314,33 @@ export default function APVendorInvoiceCapture({
       detailGeneration.current += 1
     }
   }, [loadSelected, selectedJob])
+
+  useEffect(() => {
+    // Fetched as an authenticated blob (same Bearer-token fetch every other
+    // API call uses) rather than pointed at directly with a raw <a href> -
+    // a plain anchor navigation can't carry an Authorization header, so it
+    // would 401 unless the session cookie fallback happens to apply.
+    const controller = new AbortController()
+    let objectUrl: string | null = null
+    const timeoutId = window.setTimeout(() => {
+      setSourcePdfUrl(null)
+      if (!selectedJob) return
+      getAPVendorInvoiceFile(selectedJob.job_id, controller.signal)
+        .then((blob) => {
+          if (controller.signal.aborted) return
+          objectUrl = URL.createObjectURL(blob)
+          setSourcePdfUrl(objectUrl)
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setSourcePdfUrl(null)
+        })
+    }, 0)
+    return () => {
+      window.clearTimeout(timeoutId)
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [selectedJob])
 
   const reviewVendorNumber = correctedFields.vendor_number?.trim() ?? ''
 
@@ -712,7 +740,7 @@ export default function APVendorInvoiceCapture({
             {detailStatus === 'success' && selectedJob && (
               <>
                 <section className="ap-panel ap-capture-source">
-                  <div className="ap-panel-heading"><div><span className="ap-kicker">Preserved source</span><h3>{selectedJob.original_file_name}</h3></div><a className="ap-secondary-button" href={getAPVendorInvoiceFileUrl(selectedJob.job_id)} target="_blank" rel="noreferrer">Open original PDF</a></div>
+                  <div className="ap-panel-heading"><div><span className="ap-kicker">Preserved source</span><h3>{selectedJob.original_file_name}</h3></div>{sourcePdfUrl ? <a className="ap-secondary-button" href={sourcePdfUrl} target="_blank" rel="noreferrer">Open original PDF</a> : <span className="ap-secondary-button" aria-disabled="true">Loading PDF…</span>}</div>
                   <dl>
                     <div><dt>SHA-256</dt><dd>{selectedJob.source_sha256 ?? 'Unavailable for legacy upload'}</dd></div>
                     <div><dt>Current state</dt><dd>{selectedJob.status.replaceAll('_', ' ')}</dd></div>
