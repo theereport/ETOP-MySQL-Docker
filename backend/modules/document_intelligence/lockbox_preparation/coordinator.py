@@ -184,6 +184,12 @@ class DurableLockboxPreparationCoordinator:
                             completed,
                         )
                     )
+                future.add_done_callback(
+                    lambda completed, job_id=job_id: self._evict_if_still_current(
+                        job_id,
+                        completed,
+                    )
+                )
                 self._active[job_id] = future
                 return self.repository.get_job(job_id)
 
@@ -199,6 +205,22 @@ class DurableLockboxPreparationCoordinator:
         error = future.exception()
         result = None if error is not None else future.result()
         self._on_job_complete(job_id, result, error)
+
+    def _evict_if_still_current(
+        self,
+        job_id: str,
+        future: Future[dict[str, Any]],
+    ) -> None:
+        """Drop a completed job's Future once it is done, so this process's
+        lifetime doesn't accumulate one permanent entry per job ever run.
+        Only evicts if `future` is still the entry on record for job_id - a
+        retried job's resume() call replaces the dict entry with a new
+        Future before the old one's callbacks necessarily finish running,
+        and that replacement must never be evicted out from under it."""
+
+        with self._active_lock:
+            if self._active.get(job_id) is future:
+                del self._active[job_id]
 
     def resume_recovered(self) -> list[dict[str, Any]]:
         return [

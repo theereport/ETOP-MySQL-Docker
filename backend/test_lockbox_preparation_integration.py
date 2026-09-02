@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 import types
 import unittest
 from datetime import date
@@ -2191,6 +2192,20 @@ class RuntimeRegistrationTest(unittest.TestCase):
             self.assertTrue(result["prepared_not_approved"])
             self.assertFalse(result["can_auto_approve"])
             self.assertFalse(result["erp_write_performed"])
+            # The completed job's Future must be evicted from the
+            # coordinator's in-memory tracking dict once done, not retained
+            # for the life of the process - see
+            # DurableLockboxPreparationCoordinator._evict_if_still_current.
+            # The eviction done-callback runs on the worker thread and isn't
+            # guaranteed to have finished by the moment wait() unblocks this
+            # thread, so poll briefly rather than asserting immediately.
+            deadline = time.monotonic() + 2
+            while (
+                registered["job_id"] in coordinator._active
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            self.assertNotIn(registered["job_id"], coordinator._active)
             engine.dispose()
 
 
