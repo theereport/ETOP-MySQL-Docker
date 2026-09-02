@@ -1723,6 +1723,7 @@ export default function LockboxReviewWorkspace({
     try {
       const reviewPayload = {
         allocations,
+        expected_reviewed_at: transaction.reviewed_at,
         reviewer,
         notes,
         status: nextStatus,

@@ -216,7 +216,6 @@ def extract_vendor_invoice_text(
                 elapsed = monotonic() - ocr_started_at
                 remaining_total = ocr_total_timeout_seconds - elapsed
                 if len(attempted_pages) >= max_ocr_pages:
-                    failed_pages.append(page_number)
                     skipped_pages.append(page_number)
                     ocr_status = "skipped_page_limit"
                     ocr_error = (
@@ -227,7 +226,6 @@ def extract_vendor_invoice_text(
                         f"Page {page_number} requires OCR but was not attempted: {ocr_error}"
                     )
                 elif remaining_total <= 0:
-                    failed_pages.append(page_number)
                     skipped_pages.append(page_number)
                     ocr_status = "skipped_time_limit"
                     ocr_error = (
@@ -248,7 +246,6 @@ def extract_vendor_invoice_text(
                         - (monotonic() - ocr_started_at)
                     )
                     if remaining_total <= 0:
-                        failed_pages.append(page_number)
                         skipped_pages.append(page_number)
                         ocr_status = "skipped_time_limit"
                         ocr_error = (

@@ -474,6 +474,23 @@ def save_transaction_review(
             detail="An override reason is required to approve an unbalanced transaction.",
         )
 
+    # Optimistic concurrency: `transaction` above was read at the top of
+    # this function, before all the validation work just done - a second
+    # reviewer (or a stale second tab) could have saved a review for this
+    # exact transaction in the meantime. Re-check the truly current
+    # reviewed_at right before writing, matching the
+    # expected_processing_run_id pattern service.py's
+    # save_current_job_review already uses for document review saves.
+    current_reviewed_at = get_reviews(job_id).get(transaction_id, {}).get("reviewed_at")
+    if payload.get("expected_reviewed_at") != current_reviewed_at:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This lockbox transaction was reviewed by someone else after "
+                "this review was loaded. Reload the transaction before saving."
+            ),
+        )
+
     save_review(
         job_id,
         transaction_id,

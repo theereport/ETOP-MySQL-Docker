@@ -442,6 +442,22 @@ def _process_job(job_id: str) -> dict:
             extraction = native_extraction
             classification = preliminary
 
+        if classification["document_type"] == "pnc_lockbox":
+            # This generic route's registered parser for "pnc_lockbox"
+            # (PNCLockboxParser) is a lightweight text-scraping classifier
+            # aid only - it does no customer/ERP matching and its result
+            # never feeds the governed lockbox_preparation reconciliation
+            # pipeline. Processing a lockbox PDF here instead of through
+            # POST /jobs/{job_id}/lockbox/process would silently produce a
+            # different, materially weaker "current result" for the same
+            # document depending on which route touched it.
+            raise RuntimeError(
+                "This document was classified as a PNC lockbox remittance. "
+                "Process it via the dedicated lockbox endpoint "
+                "(POST /jobs/{job_id}/lockbox/process) so it goes through "
+                "the governed reconciliation pipeline, not this generic one."
+            )
+
         parser = parser_registry.get(classification["document_type"])
         parsed = parser.parse(
             {

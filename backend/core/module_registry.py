@@ -66,7 +66,7 @@ class ModuleRegistry:
                 key=fallback_key,
                 name=fallback_key.replace("_", " ").title(),
                 version="unknown",
-                enabled=True,
+                enabled=False,
                 state="failed",
                 message=f"Module failed to load: {exc}",
             )

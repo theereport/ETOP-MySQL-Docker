@@ -11,6 +11,10 @@ class AllocationMatcher:
         active.sort(key=lambda i:(i.invoice_date or i.due_date,i.invoice_number))
         singles=[i for i in active if abs(i.open_amount-check_amount)<=self.tolerance]
         if len(singles)==1: return self._result(check_amount,singles,"single_invoice_exact",1.0)
+        if len(singles)>1:
+            r=self._result(check_amount,[singles[0]],"ambiguous_exact_match",.70)
+            r.status="review_required"; r.alternate_matches=len(singles); r.warnings=["Multiple invoices individually match the check amount exactly."]
+            return r
         buckets={}
         for i in active: buckets.setdefault(i.aging_bucket or "UNASSIGNED",[]).append(i)
         bm=[(b,v) for b,v in buckets.items() if abs(sum((x.open_amount for x in v),Decimal("0"))-check_amount)<=self.tolerance]

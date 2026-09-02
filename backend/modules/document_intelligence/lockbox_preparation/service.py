@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
@@ -16,6 +17,8 @@ from .control_projection import (
 )
 from .coordinator import DurableLockboxPreparationCoordinator
 from .policy import normalize_invoice
+
+logger = logging.getLogger(__name__)
 
 
 LockboxSourceLoader = Callable[[str], dict[str, Any]]
@@ -243,12 +246,20 @@ class DurableLockboxPreparationService:
         source_job_id: str,
         source_file_hash: str,
     ) -> dict[str, Any] | None:
-        """Return exact historical control or identify a genuinely new source.
+        """Return the exact historical control, or treat this as a fresh source.
 
-        Absence of the exact Increment 3E rule/service identity is not an
-        error for a different immutable PDF. A present but malformed control
-        still fails through ``_control_snapshot`` and is never treated as a
-        fresh source.
+        The one Increment 3E/3F R1 control this checks for (78 transactions,
+        30 accepted balanced, 48 accepted review) is a single historical
+        reference document from that development phase, not a general
+        mechanism - the literal counts in _control_snapshot() were never
+        meant to validate any *other* document's control. Absence of a
+        matching record is expected for every other immutable PDF. A record
+        that exists under the same frozen rule/service identity but doesn't
+        match that exact shape is logged (it would be unusual - possibly a
+        corrupted or partially-written record) and is likewise treated as
+        "no control available," falling back to apply_fresh_source_projection,
+        rather than permanently 409ing every status/resume/history call for
+        that job.
         """
 
         try:
@@ -278,9 +289,16 @@ class DurableLockboxPreparationService:
             and int(snapshot.get("balanced_count") or 0) == 30
             and int(snapshot.get("exception_count") or 0) == 48
         ):
-            raise RuntimeError(
-                "The exact accepted Increment 3F R1 78/30/48 control is "
-                "required before Increment 3I may create candidate work."
+            logger.warning(
+                "Source job %s has a snapshot under the frozen Increment "
+                "3E/3F R1 control identity that doesn't match the exact "
+                "78/30/48 golden shape; treating it as no control available "
+                "rather than blocking this job on every future request.",
+                source_job_id,
+            )
+            raise KeyError(
+                "No exact Increment 3F R1 78/30/48 control is available "
+                f"for source job {source_job_id}."
             )
         return snapshot
 
