@@ -236,6 +236,32 @@ class ARCollectionsRepository:
             (header_key,),
         )
 
+    def get_credit_management_detail_for_headers(
+        self,
+        header_keys: list[int],
+    ) -> list[dict[str, Any]]:
+        """Batched sibling of get_credit_management_detail() - one query for
+        however many header_keys are given, instead of one query per
+        header. Mirrors freight_logistics's route-scoped payment
+        detail/correction lookups, which already fetch every child row for
+        their whole parent scope in a single query."""
+
+        if not header_keys:
+            return []
+        placeholders = ", ".join(["%s"] * len(header_keys))
+        return madden_database.fetch_all(
+            f"""
+            SELECT
+                TCMOHNBKY,
+                TCMODNBSEQ,
+                TRIM(TCMODTXT) AS TCMODTXT
+            FROM TMCRMD
+            WHERE TCMOHNBKY IN ({placeholders})
+            ORDER BY TCMOHNBKY ASC, TCMODNBSEQ ASC
+            """,
+            tuple(header_keys),
+        )
+
     def get_aging_snapshots(
         self,
         customer_number: int,

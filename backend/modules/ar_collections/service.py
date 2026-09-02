@@ -452,12 +452,19 @@ class ARCollectionsService:
         header_rows = self._repository.get_credit_management_headers(
             customer_number
         )
+        header_keys = [int(header.get("TCMOHNBKY") or 0) for header in header_rows]
+        detail_rows_by_header: dict[int, list[dict[str, Any]]] = {}
+        for detail in self._repository.get_credit_management_detail_for_headers(
+            header_keys
+        ):
+            detail_rows_by_header.setdefault(
+                int(detail.get("TCMOHNBKY") or 0), []
+            ).append(detail)
+
         notes: list[ERPCreditManagementNote] = []
         for header in header_rows:
             header_key = int(header.get("TCMOHNBKY") or 0)
-            detail_rows = self._repository.get_credit_management_detail(
-                header_key
-            )
+            detail_rows = detail_rows_by_header.get(header_key, [])
             detail_lines = [
                 text
                 for text in (

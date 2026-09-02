@@ -83,6 +83,15 @@ class FakeARCollectionsRepository:
     def get_credit_management_detail(self, header_key):
         return self._credit_management_detail_by_key.get(header_key, [])
 
+    def get_credit_management_detail_for_headers(self, header_keys):
+        return [
+            detail
+            for header_key in header_keys
+            for detail in self._credit_management_detail_by_key.get(
+                header_key, []
+            )
+        ]
+
     def get_aging_snapshots(self, customer_number, limit=12):
         return self._aging_snapshots
 
@@ -363,6 +372,55 @@ class ARCollectionsEvidenceTests(unittest.TestCase):
         self.assertEqual(
             note.detail_lines,
             ["Left voicemail.", "Customer called back."],
+        )
+
+    def test_credit_management_detail_is_grouped_by_the_right_header(self):
+        # The batched detail lookup returns rows for every header in one
+        # call - each header's notes must end up attached to exactly that
+        # header, not mixed together or attached to the wrong one.
+        credit_headers = [
+            {
+                "TCMOHNBKY": 42, "CUNUMBER": 555000,
+                "TCMOHTXT": "Past due follow-up",
+                "TCMOHDTDO": "20260120", "TCMOHDTDN": None,
+                "TCMOHDTCRT": "20260110", "TCMOHUSRCR": "JDOE",
+                "TCMOHDTCHG": "20260111", "TCMOHUSRCH": "JDOE",
+            },
+            {
+                "TCMOHNBKY": 43, "CUNUMBER": 555000,
+                "TCMOHTXT": "Dispute on invoice 9001",
+                "TCMOHDTDO": "20260122", "TCMOHDTDN": None,
+                "TCMOHDTCRT": "20260112", "TCMOHUSRCR": "ASMITH",
+                "TCMOHDTCHG": None, "TCMOHUSRCH": "",
+            },
+        ]
+        credit_detail_by_key = {
+            42: [
+                {"TCMOHNBKY": 42, "TCMODNBSEQ": 1, "TCMODTXT": "Left voicemail."},
+            ],
+            43: [
+                {"TCMOHNBKY": 43, "TCMODNBSEQ": 1, "TCMODTXT": "Credit memo requested."},
+                {"TCMOHNBKY": 43, "TCMODNBSEQ": 2, "TCMODTXT": "Credit memo issued."},
+            ],
+        }
+        service = make_service(
+            summary=make_customer_summary(),
+            repository=FakeARCollectionsRepository(
+                credit_management_headers=credit_headers,
+                credit_management_detail_by_key=credit_detail_by_key,
+            ),
+        )
+        evidence = service.get_customer_collections(555000)
+
+        self.assertEqual(evidence.erp_credit_management_notes.count, 2)
+        by_key = {
+            note.header_key: note
+            for note in evidence.erp_credit_management_notes.notes
+        }
+        self.assertEqual(by_key[42].detail_lines, ["Left voicemail."])
+        self.assertEqual(
+            by_key[43].detail_lines,
+            ["Credit memo requested.", "Credit memo issued."],
         )
 
     def test_aging_history_snapshots_map(self):
