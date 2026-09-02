@@ -11,6 +11,7 @@ from sqlalchemy import case, cast, delete, func, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.types import Float as SAFloat
 
+from core.evidence_integrity import verify_snapshot_hash
 from data.mysql import (
     ap_control_cases_table,
     ap_control_reviews_table,
@@ -970,12 +971,15 @@ class AccountsPayableRepository:
     def _control_case_from_row(row) -> dict[str, Any]:
         snapshot_json = str(row["evidence_snapshot_json"])
         expected_hash = str(row["evidence_snapshot_sha256"])
-        actual_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
-        if actual_hash != expected_hash:
-            raise RuntimeError(
+        verify_snapshot_hash(
+            snapshot_json,
+            expected_hash,
+            error=RuntimeError,
+            message=(
                 "Stored AP control-case evidence failed its SHA-256 "
                 "integrity check."
-            )
+            ),
+        )
         result = dict(row)
         result["evidence_snapshot"] = json.loads(
             result.pop("evidence_snapshot_json")
@@ -991,12 +995,15 @@ class AccountsPayableRepository:
     def _cash_scenario_from_row(row) -> dict[str, Any]:
         snapshot_json = str(row["evidence_snapshot_json"])
         expected_hash = str(row["evidence_snapshot_sha256"])
-        actual_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
-        if actual_hash != expected_hash:
-            raise RuntimeError(
+        verify_snapshot_hash(
+            snapshot_json,
+            expected_hash,
+            error=RuntimeError,
+            message=(
                 "Stored AP cash-scenario evidence failed its SHA-256 "
                 "integrity check."
-            )
+            ),
+        )
         result = dict(row)
         result["include_review_required"] = bool(
             result["include_review_required"]
@@ -1015,12 +1022,15 @@ class AccountsPayableRepository:
     def _exception_action_from_row(row) -> dict[str, Any]:
         snapshot_json = str(row["evidence_snapshot_json"])
         expected_hash = str(row["evidence_snapshot_sha256"])
-        actual_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
-        if actual_hash != expected_hash:
-            raise RuntimeError(
+        verify_snapshot_hash(
+            snapshot_json,
+            expected_hash,
+            error=RuntimeError,
+            message=(
                 "Stored AP exception-action evidence failed its SHA-256 "
                 "integrity check."
-            )
+            ),
+        )
         result = {k: v for k, v in dict(row).items() if k != "action_rank"}
         result["erp_write"] = bool(result["erp_write"])
         result["evidence_snapshot"] = json.loads(

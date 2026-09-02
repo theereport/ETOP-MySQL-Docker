@@ -121,6 +121,24 @@ class ERPEvidenceRepository:
     def __init__(self, database=madden_database) -> None:
         self.database = database
 
+    def _fetch_page(
+        self,
+        sql: str,
+        params: tuple[Any, ...],
+        limit: int,
+        *,
+        reader: Any = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Runs a query whose SQL already requested `limit + 1` rows (the
+        standard way every bounded query in this repository detects
+        truncation without a separate COUNT(*)), then trims back to
+        `limit` and reports whether that was the complete result (True)
+        or truncated (False). `reader` lets a caller run this inside a
+        read-consistent snapshot instead of on self.database directly."""
+
+        rows = (reader or self.database).fetch_all(sql, params)
+        return rows[:limit], len(rows) <= limit
+
     def get_credit_customer(self, customer_number: int) -> dict[str, Any] | None:
         return self.database.fetch_one(
             """
@@ -146,7 +164,7 @@ class ERPEvidenceRepository:
         limit: int,
     ) -> tuple[list[dict[str, Any]], bool]:
         bounded_limit = max(1, min(limit, self.OPEN_AR_MAX_LIMIT))
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 TARONUMCST AS customer_number,
@@ -171,8 +189,8 @@ class ERPEvidenceRepository:
             LIMIT {bounded_limit + 1}
             """,
             (customer_number,),
+            bounded_limit,
         )
-        return rows[:bounded_limit], len(rows) <= bounded_limit
 
     def get_related_accounts(
         self,
@@ -185,7 +203,7 @@ class ERPEvidenceRepository:
         if enterprise and enterprise != "0":
             predicates.extend(["CUNUMBER = %s", "CUNUMENT = %s"])
             parameters.extend([enterprise, enterprise])
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 CUNUMBER,
@@ -201,8 +219,8 @@ class ERPEvidenceRepository:
             LIMIT {self.RELATED_ACCOUNT_LIMIT + 1}
             """,
             tuple(parameters),
+            self.RELATED_ACCOUNT_LIMIT,
         )
-        return rows[: self.RELATED_ACCOUNT_LIMIT], len(rows) <= self.RELATED_ACCOUNT_LIMIT
 
     def inspect_confirmed_ap_mapping(
         self,
@@ -299,7 +317,7 @@ class ERPEvidenceRepository:
             upper_query = normalized_query.upper()
             parameters = (upper_query, upper_query)
 
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 PVNUMVEN AS vendor_number,
@@ -322,8 +340,8 @@ class ERPEvidenceRepository:
                 int(normalized_query) if normalized_query.isdigit() else -1,
                 normalized_query.upper(),
             ),
+            bounded_limit,
         )
-        return rows[:bounded_limit], len(rows) <= bounded_limit
 
     def search_ap_posted_invoice_identities(
         self,
@@ -347,7 +365,7 @@ class ERPEvidenceRepository:
                 "A vendor candidate or exact invoice number is required."
             )
 
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 H.PMHNBVND AS vendor_number,
@@ -371,13 +389,13 @@ class ERPEvidenceRepository:
             LIMIT {bounded_limit + 1}
             """,
             tuple(parameters),
+            bounded_limit,
         )
-        return rows[:bounded_limit], len(rows) <= bounded_limit
 
     def get_ap_posted_headers(
         self, vendor_number: int, invoice_number: str
     ) -> tuple[list[dict[str, Any]], bool]:
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 PMHNBVND AS vendor_number,
@@ -407,13 +425,13 @@ class ERPEvidenceRepository:
             LIMIT {self.AP_HEADER_LIMIT + 1}
             """,
             (vendor_number, invoice_number),
+            self.AP_HEADER_LIMIT,
         )
-        return rows[: self.AP_HEADER_LIMIT], len(rows) <= self.AP_HEADER_LIMIT
 
     def get_ap_posted_details(
         self, vendor_number: int, invoice_number: str
     ) -> tuple[list[dict[str, Any]], bool]:
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 PMDSEQ AS sequence_number,
@@ -432,13 +450,13 @@ class ERPEvidenceRepository:
             LIMIT {self.AP_DETAIL_LIMIT + 1}
             """,
             (vendor_number, invoice_number),
+            self.AP_DETAIL_LIMIT,
         )
-        return rows[: self.AP_DETAIL_LIMIT], len(rows) <= self.AP_DETAIL_LIMIT
 
     def get_ap_gl_distributions(
         self, vendor_number: int, invoice_number: str
     ) -> tuple[list[dict[str, Any]], bool]:
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 PMGNBSEQ AS sequence_number,
@@ -459,8 +477,8 @@ class ERPEvidenceRepository:
             LIMIT {self.AP_GL_LIMIT + 1}
             """,
             (vendor_number, invoice_number),
+            self.AP_GL_LIMIT,
         )
-        return rows[: self.AP_GL_LIMIT], len(rows) <= self.AP_GL_LIMIT
 
     def get_ap_gl_distributions_for_invoices(
         self, vendor_number: int, invoice_numbers: list[str]
@@ -474,7 +492,7 @@ class ERPEvidenceRepository:
         if not invoice_numbers:
             return [], True
         placeholders = ", ".join(["%s"] * len(invoice_numbers))
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 PMGNBINV AS invoice_number,
@@ -496,8 +514,8 @@ class ERPEvidenceRepository:
             LIMIT {self.AP_GL_BATCH_LIMIT + 1}
             """,
             (vendor_number, *invoice_numbers),
+            self.AP_GL_BATCH_LIMIT,
         )
-        return rows[: self.AP_GL_BATCH_LIMIT], len(rows) <= self.AP_GL_BATCH_LIMIT
 
     def get_po_receiving_match(
         self, vendor_number: int, invoice_number: str
@@ -531,7 +549,7 @@ class ERPEvidenceRepository:
         there is no real price-variance signal in receiving data, so this
         method surfaces quantities only, never a cost/price comparison."""
 
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 d.PMDSEQ AS sequence_number,
@@ -563,8 +581,8 @@ class ERPEvidenceRepository:
             LIMIT {self.AP_PO_MATCH_LIMIT + 1}
             """,
             (vendor_number, invoice_number),
+            self.AP_PO_MATCH_LIMIT,
         )
-        return rows[: self.AP_PO_MATCH_LIMIT], len(rows) <= self.AP_PO_MATCH_LIMIT
 
     def get_gl_account_descriptions(
         self, division_and_account: list[tuple[int, int]]
@@ -698,7 +716,7 @@ class ERPEvidenceRepository:
     def get_ap_input_headers(
         self, vendor_number: int, invoice_number: str
     ) -> tuple[list[dict[str, Any]], bool]:
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 PTHNBVND AS vendor_number,
@@ -721,13 +739,13 @@ class ERPEvidenceRepository:
             LIMIT {self.AP_HEADER_LIMIT + 1}
             """,
             (vendor_number, invoice_number),
+            self.AP_HEADER_LIMIT,
         )
-        return rows[: self.AP_HEADER_LIMIT], len(rows) <= self.AP_HEADER_LIMIT
 
     def get_ap_input_details(
         self, vendor_number: int, invoice_number: str
     ) -> tuple[list[dict[str, Any]], bool]:
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 PTDSEQ AS sequence_number,
@@ -746,13 +764,13 @@ class ERPEvidenceRepository:
             LIMIT {self.AP_INPUT_LIMIT + 1}
             """,
             (vendor_number, invoice_number),
+            self.AP_INPUT_LIMIT,
         )
-        return rows[: self.AP_INPUT_LIMIT], len(rows) <= self.AP_INPUT_LIMIT
 
     def get_ap_input_payment_splits(
         self, vendor_number: int, invoice_number: str
     ) -> tuple[list[dict[str, Any]], bool]:
-        rows = self.database.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 PTYSEQ AS sequence_number,
@@ -767,8 +785,8 @@ class ERPEvidenceRepository:
             LIMIT {self.AP_HEADER_LIMIT + 1}
             """,
             (vendor_number, invoice_number),
+            self.AP_HEADER_LIMIT,
         )
-        return rows[: self.AP_HEADER_LIMIT], len(rows) <= self.AP_HEADER_LIMIT
 
     def inspect_ap_spend_mapping(self) -> dict[str, dict[str, dict[str, Any]]]:
         """Read column metadata only for the fixed AP spend source projection."""
@@ -957,7 +975,7 @@ class ERPEvidenceRepository:
     ) -> tuple[list[dict[str, Any]], bool]:
         bounded_limit = max(1, min(limit, self.AP_SPEND_VENDOR_LIMIT))
         predicates, parameters = self._ap_spend_predicates(**query_arguments)
-        rows = reader.fetch_all(
+        return self._fetch_page(
             f"""
             SELECT
                 G.PMGNBVND AS vendor_number,
@@ -984,8 +1002,9 @@ class ERPEvidenceRepository:
             LIMIT {bounded_limit + 1}
             """,
             tuple(parameters),
+            bounded_limit,
+            reader=reader,
         )
-        return rows[:bounded_limit], len(rows) <= bounded_limit
 
     def get_ap_vendor_names(self, vendor_numbers: list[int]) -> dict[str, str | None]:
         return self._get_ap_vendor_names_from(self.database, vendor_numbers)

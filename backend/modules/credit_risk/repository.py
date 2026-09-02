@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 
+from core.evidence_integrity import verify_snapshot_hash
 from data.mysql import (
     credit_line_proposals_table,
     credit_order_recommendations_table,
@@ -723,14 +724,15 @@ class CreditRiskRepository:
     def _assessment_from_row(row) -> dict[str, Any]:
         snapshot_json = row["evidence_snapshot_json"]
         expected_hash = row["evidence_snapshot_sha256"]
-        actual_hash = hashlib.sha256(
-            snapshot_json.encode("utf-8")
-        ).hexdigest()
-        if actual_hash != expected_hash:
-            raise AssessmentEvidenceIntegrityError(
+        verify_snapshot_hash(
+            snapshot_json,
+            expected_hash,
+            error=AssessmentEvidenceIntegrityError,
+            message=(
                 "Stored Credit Risk assessment evidence failed its "
                 "SHA-256 integrity check."
-            )
+            ),
+        )
 
         return {
             "assessment_id": row["assessment_id"],
@@ -766,14 +768,15 @@ class CreditRiskRepository:
     def _proposal_from_row(row) -> dict[str, Any]:
         snapshot_json = row["evidence_snapshot_json"]
         expected_hash = row["evidence_snapshot_sha256"]
-        actual_hash = hashlib.sha256(
-            snapshot_json.encode("utf-8")
-        ).hexdigest()
-        if actual_hash != expected_hash:
-            raise AssessmentEvidenceIntegrityError(
+        verify_snapshot_hash(
+            snapshot_json,
+            expected_hash,
+            error=AssessmentEvidenceIntegrityError,
+            message=(
                 "Stored credit-line proposal evidence failed its SHA-256 "
                 "integrity check."
-            )
+            ),
+        )
         return {
             "proposal_id": row["proposal_id"],
             "customer_number": row["customer_number"],
@@ -800,14 +803,15 @@ class CreditRiskRepository:
     def _portfolio_review_from_row(row) -> dict[str, Any]:
         snapshot_json = row["evidence_snapshot_json"]
         expected_hash = row["evidence_snapshot_sha256"]
-        actual_hash = hashlib.sha256(
-            snapshot_json.encode("utf-8")
-        ).hexdigest()
-        if actual_hash != expected_hash:
-            raise AssessmentEvidenceIntegrityError(
+        verify_snapshot_hash(
+            snapshot_json,
+            expected_hash,
+            error=AssessmentEvidenceIntegrityError,
+            message=(
                 "Stored credit portfolio review evidence failed its SHA-256 "
                 "integrity check."
-            )
+            ),
+        )
         return {
             "portfolio_review_id": row["portfolio_review_id"],
             "customer_number": row["customer_number"],
@@ -832,14 +836,15 @@ class CreditRiskRepository:
     def _order_recommendation_from_row(row) -> dict[str, Any]:
         snapshot_json = row["evidence_snapshot_json"]
         expected_hash = row["evidence_snapshot_sha256"]
-        actual_hash = hashlib.sha256(
-            snapshot_json.encode("utf-8")
-        ).hexdigest()
-        if actual_hash != expected_hash:
-            raise AssessmentEvidenceIntegrityError(
+        verify_snapshot_hash(
+            snapshot_json,
+            expected_hash,
+            error=AssessmentEvidenceIntegrityError,
+            message=(
                 "Stored credit order recommendation evidence failed its "
                 "SHA-256 integrity check."
-            )
+            ),
+        )
         result = {k: v for k, v in dict(row).items() if k != "assessment_rank"}
         result["erp_write"] = bool(result["erp_write"])
         result["evidence_snapshot"] = json.loads(
