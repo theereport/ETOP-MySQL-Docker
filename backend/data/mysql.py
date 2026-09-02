@@ -458,6 +458,19 @@ vendor_notes_table = Table(
 )
 
 
+vendor_po_fill_rate_cache_table = Table(
+    "vendor_po_fill_rate_cache",
+    metadata,
+    Column("vendor_number", Integer, primary_key=True),
+    Column("window_days", Integer, nullable=False),
+    Column("po_count", Integer, nullable=False),
+    Column("quantity_ordered", Float, nullable=False),
+    Column("quantity_received", Float, nullable=False),
+    Column("quantity_backorder", Float, nullable=False),
+    Column("refreshed_at", String(64), nullable=False),
+)
+
+
 # --- cash_flow_forecasting module ------------------------------------------
 #
 # Three of these four tables are append-only (enforced by convention, same
