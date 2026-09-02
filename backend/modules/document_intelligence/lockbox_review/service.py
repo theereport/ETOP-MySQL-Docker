@@ -20,7 +20,7 @@ from .database import (
     migrate_legacy_reviews,
     save_review,
 )
-from .queue_export import export_review_queue_workbook
+from .queue_export import _safe_file_part, export_review_queue_workbook
 from core.test_path_override import resolve_test_path_override
 
 MODULE_DIR = Path(__file__).resolve().parent
@@ -803,7 +803,10 @@ def create_reviewed_export(job_id: str) -> Path:
                 "must be resolved before reviewed export."
             ),
         )
-    output = EXPORT_DIR / f"{job_id}_PNC_Lockbox_Reviewed.xlsx"
+    output = (
+        EXPORT_DIR
+        / f"{_safe_file_part(job_id, 'lockbox')}_PNC_Lockbox_Reviewed.xlsx"
+    )
     return export_pnc_workbook(build_reviewed_result(job_id), output)
 
 
