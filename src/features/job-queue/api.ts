@@ -1,4 +1,7 @@
-import { getWorkflowToken } from '../workflow-foundation'
+// From workflow-foundation's own api.ts, not its barrel - that barrel also
+// statically re-exports WorkflowFoundationWorkspace, and this module is
+// reachable from App.tsx's always-eager job-queue import.
+import { getWorkflowToken } from '../workflow-foundation/api'
 import type { JobQueueJob, JobQueueSummary } from './types'
 
 const API_BASE = 'http://127.0.0.1:8000/api/v1/platform/job-queue'

@@ -2,8 +2,22 @@
 Integration test for FastAPI and ETOP kernel lifecycle.
 """
 
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
+
+# A handful of other test files (e.g. test_ap_vendor_spend_intelligence.py)
+# replace sys.modules["core"]/["core.database"] with a minimal fake module
+# at import time and never restore it - fine for their own narrow needs,
+# but if pytest collects one of those files first (alphabetically, several
+# do), importing `main` below (which transitively imports the real
+# core.database through its startup initialize_database() call) would
+# silently get their fake stub instead of the real module. Force a real
+# one regardless of collection order.
+for _stale in ("core", "core.database"):
+    if _stale in sys.modules and not hasattr(sys.modules[_stale], "__file__"):
+        del sys.modules[_stale]
 
 from core.event_bus import EventBus
 from core.kernel import KernelState, get_kernel

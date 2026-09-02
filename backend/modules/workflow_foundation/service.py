@@ -269,14 +269,26 @@ class WorkflowFoundationService:
             )
         return session
 
+    def _session_and_permissions_for_token(
+        self, token: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not token:
+            raise WorkflowAuthenticationRequired("Sign in to the local workflow foundation.")
+        result = self.repository.get_session_with_permissions(
+            self._session_token_hash(token)
+        )
+        if result is None:
+            raise WorkflowAuthenticationRequired(
+                "The local workflow session is missing, expired, or signed out."
+            )
+        return result
+
     def current_session(self, token: str) -> CurrentSessionResponse:
-        session = self.session_for_token(token)
+        session, permissions = self._session_and_permissions_for_token(token)
         return CurrentSessionResponse(
             expires_at=session["expires_at"],
             user=UserSummary.model_validate(session["user"]),
-            permissions=EffectivePermissions.model_validate(
-                self.repository.get_permissions(session["user"]["user_id"])
-            ),
+            permissions=EffectivePermissions.model_validate(permissions),
             authority_boundary=AUTHORITY_BOUNDARY,
         )
 
@@ -301,8 +313,7 @@ class WorkflowFoundationService:
         token: str,
         acceptable_module_ids: tuple[str, ...] | list[str],
     ) -> dict[str, Any]:
-        session = self.session_for_token(token)
-        permissions = self.repository.get_permissions(session["user"]["user_id"])
+        session, permissions = self._session_and_permissions_for_token(token)
         allowed = set(permissions["module_ids"])
         if not allowed.intersection(acceptable_module_ids):
             raise WorkflowPermissionDenied(

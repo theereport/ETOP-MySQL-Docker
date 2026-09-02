@@ -754,6 +754,106 @@ class WorkflowFoundationRepository:
                 "user": self._user_summary(connection, row.user_id),
             }
 
+    def get_session_with_permissions(
+        self, token_hash: str
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Combined sibling of get_session() + get_permissions() for the two
+        callers (authorize_module_access, current_session) that need both
+        together on every authenticated request. One held connection
+        instead of two separate pool checkouts, and the user-identity and
+        access-profile-status/version reads are combined into a single
+        query instead of two - 4 round trips total (1 combined identity+
+        access-profile select, 1 last_seen_at update, 1 roles select, 1
+        configured-module-ids select) instead of 6 across 2 connections."""
+
+        now = self._now()
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                select(
+                    wf_sessions_table.c.session_id,
+                    wf_sessions_table.c.expires_at,
+                    wf_user_accounts_table.c.user_id,
+                    wf_user_accounts_table.c.username,
+                    wf_user_accounts_table.c.status,
+                    wf_user_accounts_table.c.created_at,
+                    wf_persons_table.c.person_id,
+                    wf_persons_table.c.display_name,
+                    wf_access_profiles_table.c.access_version,
+                )
+                .select_from(
+                    wf_sessions_table.join(
+                        wf_user_accounts_table,
+                        wf_user_accounts_table.c.user_id == wf_sessions_table.c.user_id,
+                    )
+                    .join(
+                        wf_persons_table,
+                        wf_persons_table.c.person_id == wf_user_accounts_table.c.person_id,
+                    )
+                    .join(
+                        wf_access_profiles_table,
+                        wf_access_profiles_table.c.user_id == wf_user_accounts_table.c.user_id,
+                    )
+                )
+                .where(
+                    wf_sessions_table.c.token_hash == token_hash,
+                    wf_sessions_table.c.revoked_at.is_(None),
+                    wf_sessions_table.c.expires_at > now,
+                    wf_user_accounts_table.c.status == "active",
+                )
+            ).mappings().first()
+            if row is None:
+                return None
+            connection.execute(
+                wf_sessions_table.update()
+                .where(wf_sessions_table.c.session_id == row["session_id"])
+                .values(last_seen_at=now)
+            )
+            user_id = row["user_id"]
+            configured = self._configured_module_ids(connection, user_id)
+            roles = connection.execute(
+                select(wf_roles_table)
+                .select_from(
+                    wf_role_assignments_table.join(
+                        wf_roles_table,
+                        wf_roles_table.c.role_id == wf_role_assignments_table.c.role_id,
+                    )
+                )
+                .where(
+                    wf_role_assignments_table.c.user_id == user_id,
+                    wf_role_assignments_table.c.assignment_status == "active",
+                    wf_role_assignments_table.c.effective_from <= now,
+                    (
+                        wf_role_assignments_table.c.effective_to.is_(None)
+                        | (wf_role_assignments_table.c.effective_to > now)
+                    ),
+                )
+                .order_by(wf_roles_table.c.name, wf_roles_table.c.role_id)
+            ).mappings().all()
+
+            session = {
+                "session_id": row["session_id"],
+                "expires_at": row["expires_at"],
+                "user": {
+                    "person_id": row["person_id"],
+                    "user_id": user_id,
+                    "username": row["username"],
+                    "display_name": row["display_name"],
+                    "status": row["status"],
+                    "roles": [self._role_summary(role) for role in roles],
+                    "authentication_assurance": "local_credential",
+                    "authority_status": "not_configured",
+                    "created_at": row["created_at"],
+                },
+            }
+            permissions = {
+                "module_ids": configured if row["status"] == "active" else [],
+                "access_version": row["access_version"],
+                "default_behavior": "deny",
+                "authority_effect": "none",
+                "decision_authority": False,
+            }
+            return session, permissions
+
     def revoke_session(self, token_hash: str, actor_user_id: str) -> None:
         now = self._now()
         with self._engine.begin() as connection:
@@ -845,6 +945,82 @@ class WorkflowFoundationRepository:
             "created_at": row["created_at"],
         }
 
+    def _user_summaries_for_ids(
+        self,
+        connection: Connection,
+        user_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Batched sibling of _user_summary() - one query for identity, one
+        for roles, regardless of how many user_ids are requested, instead of
+        two queries per user."""
+
+        if not user_ids:
+            return {}
+
+        identity_rows = connection.execute(
+            select(
+                wf_user_accounts_table.c.user_id,
+                wf_user_accounts_table.c.username,
+                wf_user_accounts_table.c.status,
+                wf_user_accounts_table.c.created_at,
+                wf_persons_table.c.person_id,
+                wf_persons_table.c.display_name,
+            ).select_from(
+                wf_user_accounts_table.join(
+                    wf_persons_table,
+                    wf_persons_table.c.person_id == wf_user_accounts_table.c.person_id,
+                )
+            ).where(wf_user_accounts_table.c.user_id.in_(user_ids))
+        ).mappings().all()
+
+        now = self._now()
+        role_rows = connection.execute(
+            select(
+                wf_role_assignments_table.c.user_id,
+                wf_roles_table.c.role_id,
+                wf_roles_table.c.name,
+                wf_roles_table.c.description,
+                wf_roles_table.c.queue_scope,
+            )
+            .select_from(
+                wf_role_assignments_table.join(
+                    wf_roles_table,
+                    wf_roles_table.c.role_id == wf_role_assignments_table.c.role_id,
+                )
+            )
+            .where(
+                wf_role_assignments_table.c.user_id.in_(user_ids),
+                wf_role_assignments_table.c.assignment_status == "active",
+                wf_role_assignments_table.c.effective_from <= now,
+                (
+                    wf_role_assignments_table.c.effective_to.is_(None)
+                    | (wf_role_assignments_table.c.effective_to > now)
+                ),
+            )
+            .order_by(wf_roles_table.c.name, wf_roles_table.c.role_id)
+        ).mappings().all()
+
+        roles_by_user: dict[str, list[dict[str, Any]]] = {}
+        for role_row in role_rows:
+            roles_by_user.setdefault(role_row["user_id"], []).append(
+                self._role_summary(role_row)
+            )
+
+        return {
+            row["user_id"]: {
+                "person_id": row["person_id"],
+                "user_id": row["user_id"],
+                "username": row["username"],
+                "display_name": row["display_name"],
+                "status": row["status"],
+                "roles": roles_by_user.get(row["user_id"], []),
+                "authentication_assurance": "local_credential",
+                "authority_status": "not_configured",
+                "created_at": row["created_at"],
+            }
+            for row in identity_rows
+        }
+
     def list_users(self) -> list[dict[str, Any]]:
         with self._engine.connect() as connection:
             rows = connection.execute(
@@ -852,7 +1028,16 @@ class WorkflowFoundationRepository:
                     func.lower(wf_user_accounts_table.c.username)
                 )
             ).all()
-            return [self._user_summary(connection, row.user_id) for row in rows]
+            user_ids = [row.user_id for row in rows]
+            summaries = self._user_summaries_for_ids(connection, user_ids)
+            missing = [
+                user_id for user_id in user_ids if user_id not in summaries
+            ]
+            if missing:
+                raise WorkflowFoundationNotFound(
+                    f"Workflow user {missing[0]} was not found."
+                )
+            return [summaries[user_id] for user_id in user_ids]
 
     def get_user(self, user_id: str) -> dict[str, Any]:
         with self._engine.connect() as connection:

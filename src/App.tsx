@@ -1,6 +1,8 @@
 import {
   type FormEvent,
   type KeyboardEvent,
+  lazy,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -11,41 +13,24 @@ import type { ReactNode } from 'react'
 
 import './App.css'
 import './DesktopShell.css'
-import SqlWorkspace from './components/SqlWorkspace'
-import CashApplication from './components/CashApplication/CashApplication'
-import ReportBuilder from './components/ReportBuilder/ReportBuilder'
-import AutomationCenter from './components/AutomationCenter/AutomationCenter'
 import WorkspaceErrorBoundary from './components/WorkspaceErrorBoundary'
-import Customer360 from "./features/customer360/Customer360";
-import CreditRiskWorkspace from './features/credit-risk'
-import VendorIntelligenceWorkspace from './features/vendor-intelligence'
-import ARCollectionsWorkspace from './features/ar-collections'
-import FreightLogisticsWorkspace from './features/freight-logistics'
-import InventoryPurchasingWorkspace from './features/inventory-purchasing'
-import TaxComplianceWorkspace from './features/tax-compliance'
-import SalesOrderVisibilityWorkspace from './features/sales-order-visibility'
-import PricingContractsWorkspace from './features/pricing-contracts'
-import GeneralLedgerWorkspace from './features/general-ledger'
-import CashFlowForecastingWorkspace from './features/cash-flow-forecasting'
-import AccountsPayableWorkspace from './features/accounts-payable'
-import FinancialCloseWorkspace from './features/financial-close'
-import PaymentNotesWorkspace from './features/payment-notes'
-import WorkflowFoundationWorkspace from './features/workflow-foundation'
-import {
-  SecurityAccessWorkspace,
-  useAccess,
-} from './features/security-access'
+import WorkspaceLoadingFallback from './components/WorkspaceLoadingFallback'
 import type { ETOPModuleId } from './features/workflow-foundation/types'
+// Imported from their own files, not the './features/security-access' and
+// './features/workflow-foundation' barrels - those barrels also statically
+// re-export SecurityAccessWorkspace/WorkflowFoundationWorkspace, so a
+// static import from the barrel would pull those lazy-loaded workspaces
+// back into the main bundle regardless of the lazy() below.
+import { useAccess } from './features/security-access/AccessContext'
 import {
   getWorkflowNotifications,
   getWorkflowTasks,
   getWorkflowToken,
   WORKFLOW_SESSION_EVENT,
-} from './features/workflow-foundation'
+} from './features/workflow-foundation/api'
 import { getJobQueueSummary } from './features/job-queue'
 import type { JobQueueSummary } from './features/job-queue'
 import EnterpriseDashboard from "./features/enterprise-dashboard/EnterpriseDashboard";
-import EnterpriseDocuments from './modules/document-intelligence'
 import {
   PlatformCenter,
   getNotifications,
@@ -53,6 +38,73 @@ import {
   type SearchResult,
 } from "./platform";
 import { moduleManifests } from './platform/registry/manifests'
+
+// Every other workspace is opened on demand, not on initial load - lazy()
+// keeps each one (and whatever it pulls in, e.g. SQL Workspace's Monaco
+// editor) out of the main bundle until its module is actually selected,
+// instead of every user downloading all ~20 workspaces upfront.
+const SqlWorkspace = lazy(() => import('./components/SqlWorkspace'))
+const CashApplication = lazy(
+  () => import('./components/CashApplication/CashApplication'),
+)
+const ReportBuilder = lazy(
+  () => import('./components/ReportBuilder/ReportBuilder'),
+)
+const AutomationCenter = lazy(
+  () => import('./components/AutomationCenter/AutomationCenter'),
+)
+const Customer360 = lazy(() => import('./features/customer360/Customer360'))
+const CreditRiskWorkspace = lazy(
+  () => import('./features/credit-risk/CreditRiskWorkspace'),
+)
+const VendorIntelligenceWorkspace = lazy(
+  () => import('./features/vendor-intelligence/VendorIntelligenceWorkspace'),
+)
+const ARCollectionsWorkspace = lazy(
+  () => import('./features/ar-collections/ARCollectionsWorkspace'),
+)
+const FreightLogisticsWorkspace = lazy(
+  () => import('./features/freight-logistics/FreightLogisticsWorkspace'),
+)
+const InventoryPurchasingWorkspace = lazy(
+  () =>
+    import('./features/inventory-purchasing/InventoryPurchasingWorkspace'),
+)
+const TaxComplianceWorkspace = lazy(
+  () => import('./features/tax-compliance/TaxComplianceWorkspace'),
+)
+const SalesOrderVisibilityWorkspace = lazy(
+  () =>
+    import('./features/sales-order-visibility/SalesOrderVisibilityWorkspace'),
+)
+const PricingContractsWorkspace = lazy(
+  () => import('./features/pricing-contracts/PricingContractsWorkspace'),
+)
+const GeneralLedgerWorkspace = lazy(
+  () => import('./features/general-ledger/GeneralLedgerWorkspace'),
+)
+const CashFlowForecastingWorkspace = lazy(
+  () =>
+    import('./features/cash-flow-forecasting/CashFlowForecastingWorkspace'),
+)
+const AccountsPayableWorkspace = lazy(
+  () => import('./features/accounts-payable/AccountsPayableWorkspace'),
+)
+const FinancialCloseWorkspace = lazy(
+  () => import('./features/financial-close/FinancialCloseWorkspace'),
+)
+const PaymentNotesWorkspace = lazy(
+  () => import('./features/payment-notes/PaymentNotesWorkspace'),
+)
+const WorkflowFoundationWorkspace = lazy(
+  () => import('./features/workflow-foundation/WorkflowFoundationWorkspace'),
+)
+const SecurityAccessWorkspace = lazy(
+  () => import('./features/security-access/SecurityAccessWorkspace'),
+)
+const EnterpriseDocuments = lazy(
+  () => import('./modules/document-intelligence/DocumentIntelligence'),
+)
 
 type AssistantMode = 'knowledge' | 'general'
 type CustomerWorkspaceView = 'search' | 'risk-review'
@@ -957,6 +1009,7 @@ function App() {
             workspaceName={currentModule.shortTitle}
             onReturnHome={() => openModule('Dashboard')}
           >
+          <Suspense fallback={<WorkspaceLoadingFallback />}>
           {selectedModule === 'Dashboard' && (
             <EnterpriseDashboard
               displayName={session.user.display_name}
@@ -1515,6 +1568,7 @@ function App() {
               </button>
             </section>
           )}
+          </Suspense>
           </WorkspaceErrorBoundary>
         </div>
       </main>

@@ -6,7 +6,7 @@ import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 
 from modules.credit_risk.repository import CreditRiskRepository
 from modules.credit_risk.schemas import (
@@ -154,6 +154,108 @@ class CreditPortfolioMonitoringTests(unittest.TestCase):
         # (it never issues UPDATE/DELETE against these tables), not by a
         # DB trigger - MySQL trigger creation needs a privilege the etop
         # account doesn't have.
+
+    def test_latest_proposal_and_review_lookups_are_batched(self) -> None:
+        proposal_ids = iter(f"proposal-{index}" for index in range(1, 10))
+        review_ids = iter(f"portfolio-review-{index}" for index in range(1, 10))
+        service = CreditRiskService(
+            repository=self.repository,
+            customer_summary_service=self.source,
+            clock=lambda: datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
+            id_factory=lambda: "unused-assessment-id",
+            proposal_id_factory=lambda: next(proposal_ids),
+            portfolio_review_id_factory=lambda: next(review_ids),
+        )
+        service.create_credit_line_proposal(
+            910000001,
+            CreditLineProposalCreate(
+                proposed_credit_line=1500.0,
+                review_date=date(2026, 8, 20),
+                analyst_identity="Credit Manager",
+                rationale="First proposal.",
+            ),
+        )
+        second_proposal = service.create_credit_line_proposal(
+            910000001,
+            CreditLineProposalCreate(
+                proposed_credit_line=1750.0,
+                review_date=date(2026, 8, 21),
+                analyst_identity="Credit Manager",
+                rationale="A later, superseding proposal.",
+            ),
+        )
+        review = service.create_portfolio_review(
+            910000002,
+            PortfolioReviewCreate(
+                disposition="information_requested",
+                reviewer_identity="Credit Manager",
+                notes="Only the routine customer has a review.",
+            ),
+        )
+
+        def _count_statements(customer_numbers: list[int]) -> tuple[int, dict, dict]:
+            statements: list[str] = []
+
+            def _record(conn, cursor, statement, parameters, context, executemany):
+                statements.append(statement)
+
+            event.listen(self.engine, "before_cursor_execute", _record)
+            try:
+                proposals = (
+                    self.repository
+                    .list_latest_credit_line_proposals_by_customers(
+                        customer_numbers
+                    )
+                )
+                reviews = (
+                    self.repository.list_latest_portfolio_reviews_by_customers(
+                        customer_numbers
+                    )
+                )
+            finally:
+                event.remove(self.engine, "before_cursor_execute", _record)
+            return len(statements), proposals, reviews
+
+        few_count, proposals, reviews = _count_statements([910000001])
+        many_count, _, _ = _count_statements(
+            [910000001, 910000002, 910000003, 910000004, 910000005]
+        )
+        # Query count (including initialize()'s own fixed overhead) must not
+        # grow with how many customer_numbers are requested - the old code
+        # issued one query per customer for each of these two lookups.
+        self.assertEqual(few_count, many_count)
+
+        proposals, reviews = (
+            self.repository.list_latest_credit_line_proposals_by_customers(
+                [910000001, 910000002, 910000003]
+            ),
+            self.repository.list_latest_portfolio_reviews_by_customers(
+                [910000001, 910000002, 910000003]
+            ),
+        )
+        self.assertEqual(
+            proposals[910000001]["proposal_id"],
+            second_proposal.proposal_id,
+        )
+        self.assertNotIn(910000002, proposals)
+        self.assertNotIn(910000003, proposals)
+
+        self.assertEqual(
+            reviews[910000002]["portfolio_review_id"],
+            review.portfolio_review_id,
+        )
+        self.assertNotIn(910000001, reviews)
+        self.assertNotIn(910000003, reviews)
+
+    def test_batched_lookups_return_empty_for_no_customers(self) -> None:
+        self.assertEqual(
+            self.repository.list_latest_credit_line_proposals_by_customers([]),
+            {},
+        )
+        self.assertEqual(
+            self.repository.list_latest_portfolio_reviews_by_customers([]),
+            {},
+        )
 
 
 if __name__ == "__main__":

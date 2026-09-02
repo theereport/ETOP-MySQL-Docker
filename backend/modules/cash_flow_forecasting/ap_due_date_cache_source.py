@@ -4,7 +4,7 @@ from typing import Any
 
 import mysql.connector
 
-from core.database import madden_database
+from core.database import ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS, madden_database
 
 
 # PMHD retains full AP history, not just open items - confirmed live that
@@ -35,8 +35,13 @@ from core.database import madden_database
 # module needs completed in ~87 seconds when given more time, so this
 # reads PMHD once with an extended session timeout and caches the result
 # - it is a deliberate, infrequent batch read, never part of the
-# interactive request path.
-AP_CACHE_REFRESH_TIMEOUT_SECONDS = 240
+# interactive request path. The timeout itself is shared with
+# accounts_payable/erp_ledger_scan.py's PMHD scan via
+# core.database.ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS - see that constant's
+# docstring for why: both modules do a comparably unfiltered full scan of
+# the same table and previously carried independently-chosen ceilings
+# (240s here, 600s there) that would have started failing at different
+# points as PMHD keeps growing.
 
 
 class ApDueDateCacheRefreshFailed(RuntimeError):
@@ -44,7 +49,16 @@ class ApDueDateCacheRefreshFailed(RuntimeError):
 
 
 def scan_all_open_ap_invoices() -> list[dict[str, Any]]:
-    config = dict(madden_database.config)
+    # Deliberately NOT from madden_database's connection pool - see the
+    # identical note in accounts_payable/erp_ledger_scan.py._connect(): this
+    # is a single dedicated connection with its own extended SESSION
+    # MAX_EXECUTION_TIME, which pool_reset_session would not clear before a
+    # later, unrelated caller reused the same pooled connection.
+    config = {
+        key: value
+        for key, value in madden_database.config.items()
+        if key not in ("pool_name", "pool_size")
+    }
     try:
         connection = mysql.connector.connect(**config)
     except mysql.connector.Error as exc:
@@ -61,7 +75,7 @@ def scan_all_open_ap_invoices() -> list[dict[str, Any]]:
         try:
             cursor.execute(
                 "SET SESSION MAX_EXECUTION_TIME = "
-                f"{AP_CACHE_REFRESH_TIMEOUT_SECONDS * 1000}"
+                f"{ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS * 1000}"
             )
         except mysql.connector.Error:
             pass

@@ -8,9 +8,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
+# A handful of other test files (e.g. test_ap_vendor_spend_intelligence.py)
+# replace sys.modules["core"]/["core.database"] with a minimal fake module
+# at import time and never restore it - fine for their own narrow needs,
+# but if pytest collects one of those files first (alphabetically, several
+# do), this file's transitive `from core.database import ...` (via
+# modules.vendor_intelligence.po_fill_rate_cache_source) would silently get
+# their fake stub instead of the real module. Force a real one regardless
+# of collection order.
+for _stale in ("core", "core.database"):
+    if _stale in sys.modules and not hasattr(sys.modules[_stale], "__file__"):
+        del sys.modules[_stale]
+
+from modules.vendor_intelligence import service as service_module
+from modules.vendor_intelligence.po_fill_rate_cache_source import (
+    PoFillRateCacheRefreshFailed,
+)
 from modules.vendor_intelligence.schemas import VendorNoteCreate
 from modules.vendor_intelligence.service import (
     VendorIntelligenceService,
@@ -23,14 +41,12 @@ FIXED_NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
 
 class FakeVendorRepository:
     def __init__(self, vendor_row=None, open_pos=None, receipts=None,
-                 open_invoices=None, paid_invoices=None,
-                 fill_rate_summary=None):
+                 open_invoices=None, paid_invoices=None):
         self._vendor_row = vendor_row
         self._open_pos = open_pos or []
         self._receipts = receipts or []
         self._open_invoices = open_invoices or []
         self._paid_invoices = paid_invoices or []
-        self._fill_rate_summary = fill_rate_summary
 
     def search_vendors(self, **kwargs):
         return [self._vendor_row] if self._vendor_row else []
@@ -43,9 +59,6 @@ class FakeVendorRepository:
     def get_open_purchase_orders(self, vendor_number, limit=50):
         return self._open_pos
 
-    def get_po_fill_rate_summary(self, vendor_number, *, window_days=365):
-        return self._fill_rate_summary
-
     def get_receiving_history(self, vendor_number, limit=50):
         return self._receipts
 
@@ -57,8 +70,9 @@ class FakeVendorRepository:
 
 
 class FakeNotesRepository:
-    def __init__(self):
+    def __init__(self, po_fill_rate_cache=None):
         self._notes: dict[str, dict] = {}
+        self._po_fill_rate_cache: dict[int, dict] = po_fill_rate_cache or {}
 
     def list_notes(self, vendor_number):
         return [
@@ -82,6 +96,15 @@ class FakeNotesRepository:
         stored["erp_write"] = False
         self._notes[record["note_id"]] = stored
         return stored
+
+    def get_po_fill_rate_cache(self, vendor_number):
+        return self._po_fill_rate_cache.get(vendor_number)
+
+    def replace_po_fill_rate_cache(self, rows, *, window_days, refreshed_at):
+        self._po_fill_rate_cache = {
+            row["vendor_number"]: {**row, "window_days": window_days}
+            for row in rows
+        }
 
 
 def make_vendor_row(**overrides):
@@ -284,18 +307,27 @@ class VendorEvidenceTests(unittest.TestCase):
         self.assertEqual(empty_evidence.receiving.cost_variance_completeness, "unavailable")
         self.assertIsNone(empty_evidence.receiving.total_cost_variance)
 
-    def test_performance_fill_rate_computed_from_po_history(self):
+    def test_performance_fill_rate_computed_from_cached_po_history(self):
+        # _build_performance_summary() reads the pre-aggregated
+        # refresh_po_fill_rate_cache() cache (via notes_repository), not a
+        # live per-vendor ERP query - see PoFillRateCacheRefreshFailed and
+        # po_fill_rate_cache_source.py for why that live join was too slow
+        # for the interactive request path.
         service = VendorIntelligenceService(
-            repository=FakeVendorRepository(
-                vendor_row=make_vendor_row(),
-                fill_rate_summary={
-                    "po_count": 12,
-                    "quantity_ordered": 200,
-                    "quantity_received": 150,
-                    "quantity_backorder": 50,
+            repository=FakeVendorRepository(vendor_row=make_vendor_row()),
+            notes_repository=FakeNotesRepository(
+                po_fill_rate_cache={
+                    1234567: {
+                        "vendor_number": 1234567,
+                        "window_days": 365,
+                        "po_count": 12,
+                        "quantity_ordered": 200,
+                        "quantity_received": 150,
+                        "quantity_backorder": 50,
+                        "refreshed_at": "2026-06-01T00:00:00+00:00",
+                    },
                 },
             ),
-            notes_repository=FakeNotesRepository(),
             clock=lambda: FIXED_NOW,
         )
         evidence = service.get_vendor_evidence(1234567)
@@ -307,21 +339,41 @@ class VendorEvidenceTests(unittest.TestCase):
             evidence.performance.quality_and_chargeback_status, "unavailable"
         )
 
-    def test_performance_fill_rate_unavailable_with_no_po_history(self):
+    def test_performance_fill_rate_unavailable_with_no_cached_row(self):
+        # A vendor absent from the cache (never had qualifying PO activity
+        # in the window, or the cache has never been refreshed) reports
+        # "unavailable" rather than falling back to a live query.
         service = VendorIntelligenceService(
-            repository=FakeVendorRepository(
-                vendor_row=make_vendor_row(),
-                fill_rate_summary={
-                    "po_count": 0,
-                    "quantity_ordered": 0,
-                    "quantity_received": 0,
-                    "quantity_backorder": 0,
-                },
-            ),
+            repository=FakeVendorRepository(vendor_row=make_vendor_row()),
             notes_repository=FakeNotesRepository(),
             clock=lambda: FIXED_NOW,
         )
         evidence = service.get_vendor_evidence(1234567)
+        self.assertIsNone(evidence.performance.fill_rate_percent)
+        self.assertEqual(evidence.performance.fill_rate_status, "unavailable")
+
+    def test_performance_fill_rate_unavailable_when_cache_window_differs(self):
+        # A cached row computed for a different window_days must not be
+        # silently reused as if it matched the requested window.
+        service = VendorIntelligenceService(
+            repository=FakeVendorRepository(vendor_row=make_vendor_row()),
+            notes_repository=FakeNotesRepository(
+                po_fill_rate_cache={
+                    1234567: {
+                        "vendor_number": 1234567,
+                        "window_days": 90,
+                        "po_count": 3,
+                        "quantity_ordered": 40,
+                        "quantity_received": 40,
+                        "quantity_backorder": 0,
+                        "refreshed_at": "2026-06-01T00:00:00+00:00",
+                    },
+                },
+            ),
+            clock=lambda: FIXED_NOW,
+        )
+        evidence = service.get_vendor_evidence(1234567)
+        self.assertEqual(evidence.performance.window_days, 365)
         self.assertIsNone(evidence.performance.fill_rate_percent)
         self.assertEqual(evidence.performance.fill_rate_status, "unavailable")
 
@@ -403,6 +455,59 @@ class VendorNoteTests(unittest.TestCase):
                 1234567,
                 VendorNoteCreate(author_identity="J. Buyer", note="test"),
             )
+
+
+class PoFillRateCacheRefreshTests(unittest.TestCase):
+    def test_refresh_stores_the_scanned_rows_and_they_become_readable(self):
+        notes_repository = FakeNotesRepository()
+        service = VendorIntelligenceService(
+            repository=FakeVendorRepository(vendor_row=make_vendor_row()),
+            notes_repository=notes_repository,
+            clock=lambda: FIXED_NOW,
+        )
+        scanned_rows = [
+            {
+                "vendor_number": 1234567,
+                "po_count": 12,
+                "quantity_ordered": 200,
+                "quantity_received": 150,
+                "quantity_backorder": 50,
+            },
+        ]
+        with patch.object(
+            service_module,
+            "scan_all_vendor_po_fill_rates",
+            return_value=scanned_rows,
+        ) as scan:
+            result = service.refresh_po_fill_rate_cache()
+
+        scan.assert_called_once_with(window_days=365)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["vendors_cached"], 1)
+        self.assertEqual(result["window_days"], 365)
+
+        # get_vendor_evidence() requests the same default 365-day window
+        # refresh_po_fill_rate_cache() just cached under, so it's a hit.
+        evidence = service.get_vendor_evidence(1234567)
+        self.assertEqual(evidence.performance.po_count, 12)
+        self.assertEqual(evidence.performance.fill_rate_percent, 75.0)
+        self.assertEqual(evidence.performance.fill_rate_status, "available")
+
+    def test_refresh_reports_unavailable_source_capability_on_failure(self):
+        service = VendorIntelligenceService(
+            repository=FakeVendorRepository(vendor_row=make_vendor_row()),
+            notes_repository=FakeNotesRepository(),
+            clock=lambda: FIXED_NOW,
+        )
+        with patch.object(
+            service_module,
+            "scan_all_vendor_po_fill_rates",
+            side_effect=PoFillRateCacheRefreshFailed("MaddenCo unreachable"),
+        ):
+            result = service.refresh_po_fill_rate_cache()
+
+        self.assertEqual(result["status"], "unavailable_source_capability")
+        self.assertIn("MaddenCo unreachable", result["message"])
 
 
 if __name__ == "__main__":

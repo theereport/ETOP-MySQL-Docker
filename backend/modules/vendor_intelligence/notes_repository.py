@@ -5,10 +5,15 @@ import json
 import threading
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.engine import Engine
 
-from data.mysql import get_engine, metadata, vendor_notes_table
+from data.mysql import (
+    get_engine,
+    metadata,
+    vendor_notes_table,
+    vendor_po_fill_rate_cache_table,
+)
 
 
 class VendorNoteIntegrityError(RuntimeError):
@@ -25,7 +30,9 @@ class VendorNotesRepository:
     def initialize(self) -> None:
         with self._initialization_lock:
             metadata.create_all(
-                self._engine, checkfirst=True, tables=[vendor_notes_table]
+                self._engine,
+                checkfirst=True,
+                tables=[vendor_notes_table, vendor_po_fill_rate_cache_table],
             )
 
     def create_note(self, record: dict[str, Any]) -> dict[str, Any]:
@@ -111,6 +118,51 @@ class VendorNotesRepository:
         )
         result["evidence_snapshot_sha256"] = expected_hash
         return result
+
+    def replace_po_fill_rate_cache(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        window_days: int,
+        refreshed_at: str,
+    ) -> None:
+        self.initialize()
+        with self._engine.begin() as connection:
+            connection.execute(delete(vendor_po_fill_rate_cache_table))
+            for row in rows:
+                connection.execute(
+                    vendor_po_fill_rate_cache_table.insert().values(
+                        vendor_number=row["vendor_number"],
+                        window_days=window_days,
+                        po_count=row["po_count"],
+                        quantity_ordered=row["quantity_ordered"],
+                        quantity_received=row["quantity_received"],
+                        quantity_backorder=row["quantity_backorder"],
+                        refreshed_at=refreshed_at,
+                    )
+                )
+
+    def get_po_fill_rate_cache(
+        self, vendor_number: int
+    ) -> dict[str, Any] | None:
+        self.initialize()
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                select(vendor_po_fill_rate_cache_table).where(
+                    vendor_po_fill_rate_cache_table.c.vendor_number
+                    == vendor_number
+                )
+            ).mappings().first()
+        return dict(row) if row is not None else None
+
+    def po_fill_rate_cache_refreshed_at(self) -> str | None:
+        self.initialize()
+        with self._engine.connect() as connection:
+            return connection.execute(
+                select(
+                    func.max(vendor_po_fill_rate_cache_table.c.refreshed_at)
+                )
+            ).scalar_one_or_none()
 
 
 vendor_notes_repository = VendorNotesRepository()

@@ -47,7 +47,16 @@ class InvoiceOwnerCacheRefreshFailed(RuntimeError):
 
 
 def scan_all_open_invoice_owners() -> list[dict[str, Any]]:
-    config = dict(madden_database.config)
+    # Deliberately NOT from madden_database's connection pool - see the
+    # identical note in accounts_payable/erp_ledger_scan.py._connect(): this
+    # is a single dedicated connection with its own extended SESSION
+    # MAX_EXECUTION_TIME, which pool_reset_session would not clear before a
+    # later, unrelated caller reused the same pooled connection.
+    config = {
+        key: value
+        for key, value in madden_database.config.items()
+        if key not in ("pool_name", "pool_size")
+    }
     try:
         connection = mysql.connector.connect(**config)
     except mysql.connector.Error as exc:

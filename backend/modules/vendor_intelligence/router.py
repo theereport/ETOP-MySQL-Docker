@@ -27,6 +27,15 @@ def get_health() -> dict:
     return {"status": "ok", "module": "vendor_intelligence"}
 
 
+@router.post("/po-fill-rate-cache/refresh")
+def refresh_po_fill_rate_cache() -> dict:
+    """Full TMPOHD/TMPODT scan across every vendor (minutes) - not part of
+    interactive page loads. Call this once, then periodically (e.g. daily),
+    to keep each vendor's fill-rate performance summary current."""
+
+    return vendor_intelligence_service.refresh_po_fill_rate_cache()
+
+
 @router.get("/vendors/search", response_model=VendorSearchResponse)
 def search_vendors(
     q: str = Query(default="", max_length=100),

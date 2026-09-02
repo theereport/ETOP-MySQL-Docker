@@ -5,7 +5,7 @@ from typing import Any
 
 import mysql.connector
 
-from core.database import madden_database
+from core.database import ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS, madden_database
 
 
 # PMHD retains full AP history, not just open items - confirmed live that
@@ -53,8 +53,10 @@ from core.database import madden_database
 #
 # Confirmed live: the MaddenCo server's own `max_execution_time` GLOBAL
 # variable is 0 (unlimited) - the timeout below is entirely self-imposed by
-# this app, not a server-side ceiling we're up against.
-ERP_LEDGER_SCAN_TIMEOUT_SECONDS = 600
+# this app, not a server-side ceiling we're up against. Shared with
+# cash_flow_forecasting/ap_due_date_cache_source.py's PMHD scan via
+# core.database.ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS - see that constant's
+# docstring for why.
 OPEN_LEDGER_MIN_INVOICE_AGE_DAYS = 365 * 2
 
 
@@ -63,7 +65,18 @@ class ErpLedgerScanFailed(RuntimeError):
 
 
 def _connect() -> mysql.connector.MySQLConnection:
-    config = dict(madden_database.config)
+    # Deliberately NOT from madden_database's connection pool: this is a
+    # single dedicated connection held for up to ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS
+    # with its own extended SESSION MAX_EXECUTION_TIME. Pooling it would let
+    # that extended session setting leak onto an unrelated later checkout of
+    # the same physical connection (pool_reset_session doesn't reset
+    # MAX_EXECUTION_TIME), and would tie up one of the pool's few connections
+    # for the whole scan.
+    config = {
+        key: value
+        for key, value in madden_database.config.items()
+        if key not in ("pool_name", "pool_size")
+    }
     try:
         return mysql.connector.connect(**config)
     except mysql.connector.Error as exc:
@@ -83,7 +96,7 @@ def scan_open_ap_ledger() -> list[dict[str, Any]]:
         try:
             cursor.execute(
                 "SET SESSION MAX_EXECUTION_TIME = "
-                f"{ERP_LEDGER_SCAN_TIMEOUT_SECONDS * 1000}"
+                f"{ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS * 1000}"
             )
         except mysql.connector.Error:
             pass
@@ -147,7 +160,7 @@ def scan_gl_divisions_for_open_invoices(
         try:
             cursor.execute(
                 "SET SESSION MAX_EXECUTION_TIME = "
-                f"{ERP_LEDGER_SCAN_TIMEOUT_SECONDS * 1000}"
+                f"{ERP_FULL_TABLE_SCAN_TIMEOUT_SECONDS * 1000}"
             )
         except mysql.connector.Error:
             pass

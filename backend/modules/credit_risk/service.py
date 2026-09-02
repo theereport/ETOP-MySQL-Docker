@@ -1173,13 +1173,21 @@ class CreditRiskService:
         proposal_count = 0
         review_count = 0
 
+        customer_numbers = [item.customer_number for item in priority.items]
+        latest_proposals = (
+            self._repository.list_latest_credit_line_proposals_by_customers(
+                customer_numbers
+            )
+        )
+        latest_reviews = (
+            self._repository.list_latest_portfolio_reviews_by_customers(
+                customer_numbers
+            )
+        )
+
         for item in priority.items:
-            proposal_row = self._repository.get_latest_credit_line_proposal(
-                item.customer_number
-            )
-            review_row = self._repository.get_latest_portfolio_review(
-                item.customer_number
-            )
+            proposal_row = latest_proposals.get(item.customer_number)
+            review_row = latest_reviews.get(item.customer_number)
             proposal = (
                 CreditLineProposalRecord(**proposal_row)
                 if proposal_row is not None

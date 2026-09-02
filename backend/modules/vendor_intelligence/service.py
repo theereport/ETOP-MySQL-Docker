@@ -6,6 +6,10 @@ from typing import Any
 from uuid import uuid4
 
 from .notes_repository import VendorNotesRepository, vendor_notes_repository
+from .po_fill_rate_cache_source import (
+    PoFillRateCacheRefreshFailed,
+    scan_all_vendor_po_fill_rates,
+)
 from .repository import VendorRepository, vendor_repository
 from .schemas import (
     DiscountCaptureMetric,
@@ -307,25 +311,48 @@ class VendorIntelligenceService:
             gaps=list(_GAPS),
         )
 
+    def refresh_po_fill_rate_cache(
+        self, *, window_days: int = 365
+    ) -> dict[str, Any]:
+        """Full TMPOHD/TMPODT scan (minutes, not part of interactive page
+        loads) - call this once, then periodically, to keep every vendor's
+        fill-rate summary current for _build_performance_summary()."""
+
+        try:
+            rows = scan_all_vendor_po_fill_rates(window_days=window_days)
+        except PoFillRateCacheRefreshFailed as exc:
+            return {"status": "unavailable_source_capability", "message": str(exc)}
+        refreshed_at = self._clock().astimezone(UTC).isoformat()
+        self._notes_repository.replace_po_fill_rate_cache(
+            rows, window_days=window_days, refreshed_at=refreshed_at
+        )
+        return {
+            "status": "ok",
+            "vendors_cached": len(rows),
+            "window_days": window_days,
+            "refreshed_at": refreshed_at,
+        }
+
     def _build_performance_summary(
         self,
         vendor_number: int,
         *,
         window_days: int = 365,
     ) -> VendorPerformanceSummary:
-        # Confirmed live that this join is fine for most vendors but can
-        # take anywhere from ~1s to ~40s for the highest-volume vendors
-        # (TMPOHD has no index on TPHDTECRT, and TMPODT is 6.2M+ rows) -
-        # occasionally exceeding the shared 60s MySQL statement timeout
-        # and raising HTTPException from the shared database gateway. A
-        # single slow/failed metric must never take down the rest of this
-        # vendor's evidence page, so this is bounded exactly like every
-        # other ERP query in this codebase.
-        try:
-            row = self._repository.get_po_fill_rate_summary(
-                vendor_number, window_days=window_days
-            )
-        except Exception:
+        # get_po_fill_rate_summary()'s live TMPOHD/TMPODT join is fine for
+        # most vendors but can take anywhere from ~1s to ~40s for the
+        # highest-volume vendors (TMPOHD has no index on TPHDTECRT, and
+        # TMPODT is 6.2M+ rows), occasionally exceeding the shared 60s
+        # MySQL statement timeout. This now reads refresh_po_fill_rate_cache()'s
+        # pre-aggregated local cache instead of running that join live on
+        # the interactive vendor-evidence request path - the same pattern
+        # cash_flow_forecasting already uses for its AP due-date cache. A
+        # vendor with no cached row (cache never refreshed, or genuinely no
+        # PO activity in the window) reports "unavailable", matching this
+        # summary's existing no-data behavior rather than falling back to
+        # the slow live query.
+        row = self._notes_repository.get_po_fill_rate_cache(vendor_number)
+        if row is not None and row["window_days"] != window_days:
             row = None
         quantity_ordered = _number((row or {}).get("quantity_ordered"))
         quantity_received = _number((row or {}).get("quantity_received"))
