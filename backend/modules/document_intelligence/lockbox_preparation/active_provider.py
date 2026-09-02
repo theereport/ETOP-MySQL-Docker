@@ -313,6 +313,97 @@ class ExistingReadOnlyPreparationProvider:
             for invoice in normalized
         }
 
+    def _resolve_directive_tier(
+        self,
+        *,
+        candidate_number: str,
+        valid: bool,
+        owner_sets: list[set[str]],
+        valid_invoices: tuple[str, ...],
+        matched_on: str,
+        source_reference: str,
+        selection_basis: str,
+        evidence_prefix: str,
+        conflict_warning: str,
+        unverified_warning_template: str,
+        directive_warnings: list[str],
+    ) -> tuple[CustomerResolution | None, bool]:
+        """One tier of resolve_customer()'s directive waterfall (payer-
+        supplied account, K&M statement account, check FOR-line account,
+        check phone match, learned bank-account mapping all share this
+        exact shape: validate a candidate number, check it against
+        invoice-owner evidence, load and return if clear).
+
+        `selection_basis` names the tier for `selection_basis`/
+        `selected_basis`/the matching_evidence candidate-value key (these
+        three are always identical across every tier). `evidence_prefix`
+        separately names the `{prefix}_verified`/`{prefix}_conflict`
+        matching_evidence keys - these do NOT always match
+        `selection_basis` verbatim (e.g. selection_basis
+        "payer_supplied_customer_number" pairs with evidence_prefix
+        "payer_account_directive"), so callers must pass each tier's exact
+        existing key names rather than have them derived here.
+
+        Checks for a conflict BEFORE attempting the read-only customer
+        lookup (matching the phone/mapping tiers' original behavior,
+        applied here to every tier) - a candidate already known to
+        conflict with invoice-owner evidence can never be returned either
+        way, so skipping its lookup entirely is a pure efficiency
+        improvement with no change to which customer (if any) resolves.
+
+        Returns (resolution, conflict): `resolution` is None if this tier
+        didn't resolve (the caller falls through to the next tier or the
+        final fuzzy match); `conflict` reports whether this tier's own
+        candidate was in known conflict, which the caller also needs
+        later for the final fallback's matching_evidence if every tier
+        falls through."""
+
+        if not valid or not candidate_number:
+            return None, False
+        conflict = bool(
+            any(
+                owners and owners != {candidate_number}
+                for owners in owner_sets
+            )
+        )
+        if conflict:
+            directive_warnings.append(conflict_warning)
+            return None, True
+        try:
+            customer = self.load_customer(candidate_number)
+        except Exception as error:
+            directive_warnings.append(
+                unverified_warning_template.format(type(error).__name__)
+            )
+            return None, False
+        unresolved_owner_count = sum(not owners for owners in owner_sets)
+        resolution = CustomerResolution(
+            status="resolved",
+            customer_number=candidate_number,
+            customer_snapshot=customer.fields,
+            candidates=(candidate_number,),
+            matched_on=(matched_on,),
+            source_reference=source_reference,
+            as_of_time=customer.as_of_time,
+            selection_basis=selection_basis,
+            matching_evidence={
+                "valid_invoice_count": len(valid_invoices),
+                "invoice_owner_conflict": False,
+                "unresolved_invoice_owner_count": unresolved_owner_count,
+                "partial_invoice_owner_evidence": bool(
+                    any(owner_sets) and unresolved_owner_count
+                ),
+                selection_basis: candidate_number,
+                f"{evidence_prefix}_verified": True,
+                f"{evidence_prefix}_conflict": False,
+                "selected_basis": selection_basis,
+                "rule_version": CUSTOMER_MATCH_RULE_VERSION,
+            },
+            selected_confidence=1.0,
+            confidence_basis=selection_basis,
+        )
+        return resolution, False
+
     def resolve_customer(
         self,
         transaction: SourceTransaction,
@@ -371,72 +462,37 @@ class ExistingReadOnlyPreparationProvider:
             supplied_customer_number.isdigit()
             and 4 <= len(supplied_customer_number) <= 12
         )
-        supplied_customer_number_conflict = bool(
-            supplied_customer_number_valid
-            and any(
-                owners and owners != {supplied_customer_number}
-                for owners in owner_sets
-            )
-        )
         directive_warnings: list[str] = []
-        if supplied_customer_number_valid:
-            try:
-                supplied_customer = self.load_customer(
-                    supplied_customer_number
-                )
-            except Exception as error:
-                supplied_customer = None
-                directive_warnings.append(
-                    "The payer supplied ERP customer account "
-                    f"{supplied_customer_number}, but the exact read-only "
-                    f"customer lookup did not verify it: {type(error).__name__}."
-                )
-            if supplied_customer and not supplied_customer_number_conflict:
-                unresolved_owner_count = sum(
-                    not owners for owners in owner_sets
-                )
-                return CustomerResolution(
-                    status="resolved",
-                    customer_number=supplied_customer_number,
-                    customer_snapshot=supplied_customer.fields,
-                    candidates=(supplied_customer_number,),
-                    matched_on=(
-                        "The payer explicitly directed this payment to one "
-                        "verified ERP customer account.",
-                    ),
-                    source_reference=(
-                        "PNC check payer directive and ERP customer master"
-                    ),
-                    as_of_time=supplied_customer.as_of_time,
-                    selection_basis="payer_supplied_customer_number",
-                    matching_evidence={
-                        "valid_invoice_count": len(valid_invoices),
-                        "invoice_owner_conflict": False,
-                        "unresolved_invoice_owner_count": (
-                            unresolved_owner_count
-                        ),
-                        "partial_invoice_owner_evidence": bool(
-                            any(owner_sets) and unresolved_owner_count
-                        ),
-                        "payer_supplied_customer_number": (
-                            supplied_customer_number
-                        ),
-                        "payer_account_directive_verified": True,
-                        "payer_account_directive_conflict": False,
-                        "selected_basis": (
-                            "payer_supplied_customer_number"
-                        ),
-                        "rule_version": CUSTOMER_MATCH_RULE_VERSION,
-                    },
-                    selected_confidence=1.0,
-                    confidence_basis="payer_supplied_customer_number",
-                )
-            if supplied_customer_number_conflict:
-                directive_warnings.append(
+        resolution, supplied_customer_number_conflict = (
+            self._resolve_directive_tier(
+                candidate_number=supplied_customer_number,
+                valid=supplied_customer_number_valid,
+                owner_sets=owner_sets,
+                valid_invoices=valid_invoices,
+                matched_on=(
+                    "The payer explicitly directed this payment to one "
+                    "verified ERP customer account."
+                ),
+                source_reference=(
+                    "PNC check payer directive and ERP customer master"
+                ),
+                selection_basis="payer_supplied_customer_number",
+                evidence_prefix="payer_account_directive",
+                conflict_warning=(
                     "The payer-supplied ERP customer account conflicts with "
                     "preserved invoice-owner evidence and cannot select a "
                     "customer."
-                )
+                ),
+                unverified_warning_template=(
+                    "The payer supplied ERP customer account "
+                    f"{supplied_customer_number}, but the exact read-only "
+                    "customer lookup did not verify it: {}."
+                ),
+                directive_warnings=directive_warnings,
+            )
+        )
+        if resolution is not None:
+            return resolution
 
         statement_customer_number = _customer_number(
             source.get("statement_customer_number")
@@ -445,69 +501,36 @@ class ExistingReadOnlyPreparationProvider:
             statement_customer_number.isdigit()
             and len(statement_customer_number) in (6, 7)
         )
-        statement_customer_number_conflict = bool(
-            statement_customer_number_valid
-            and any(
-                owners and owners != {statement_customer_number}
-                for owners in owner_sets
-            )
-        )
-        if statement_customer_number_valid:
-            try:
-                statement_customer = self.load_customer(
-                    statement_customer_number
-                )
-            except Exception as error:
-                statement_customer = None
-                directive_warnings.append(
-                    "The K&M statement supplied ERP customer account "
-                    f"{statement_customer_number}, but the exact read-only "
-                    f"customer lookup did not verify it: {type(error).__name__}."
-                )
-            if statement_customer and not statement_customer_number_conflict:
-                unresolved_owner_count = sum(
-                    not owners for owners in owner_sets
-                )
-                return CustomerResolution(
-                    status="resolved",
-                    customer_number=statement_customer_number,
-                    customer_snapshot=statement_customer.fields,
-                    candidates=(statement_customer_number,),
-                    matched_on=(
-                        "A K&M statement identifies one verified ERP "
-                        "customer account.",
-                    ),
-                    source_reference=(
-                        "K&M statement customer block and ERP customer master"
-                    ),
-                    as_of_time=statement_customer.as_of_time,
-                    selection_basis="km_statement_customer_number",
-                    matching_evidence={
-                        "valid_invoice_count": len(valid_invoices),
-                        "invoice_owner_conflict": False,
-                        "unresolved_invoice_owner_count": (
-                            unresolved_owner_count
-                        ),
-                        "partial_invoice_owner_evidence": bool(
-                            any(owner_sets) and unresolved_owner_count
-                        ),
-                        "km_statement_customer_number": (
-                            statement_customer_number
-                        ),
-                        "km_statement_customer_verified": True,
-                        "km_statement_customer_conflict": False,
-                        "selected_basis": "km_statement_customer_number",
-                        "rule_version": CUSTOMER_MATCH_RULE_VERSION,
-                    },
-                    selected_confidence=1.0,
-                    confidence_basis="km_statement_customer_number",
-                )
-            if statement_customer_number_conflict:
-                directive_warnings.append(
+        resolution, statement_customer_number_conflict = (
+            self._resolve_directive_tier(
+                candidate_number=statement_customer_number,
+                valid=statement_customer_number_valid,
+                owner_sets=owner_sets,
+                valid_invoices=valid_invoices,
+                matched_on=(
+                    "A K&M statement identifies one verified ERP "
+                    "customer account."
+                ),
+                source_reference=(
+                    "K&M statement customer block and ERP customer master"
+                ),
+                selection_basis="km_statement_customer_number",
+                evidence_prefix="km_statement_customer",
+                conflict_warning=(
                     "The K&M statement customer account conflicts with "
                     "preserved invoice-owner evidence and cannot select a "
                     "customer."
-                )
+                ),
+                unverified_warning_template=(
+                    "The K&M statement supplied ERP customer account "
+                    f"{statement_customer_number}, but the exact read-only "
+                    "customer lookup did not verify it: {}."
+                ),
+                directive_warnings=directive_warnings,
+            )
+        )
+        if resolution is not None:
+            return resolution
 
         for_customer_number = _customer_number(
             source.get("for_customer_number")
@@ -516,71 +539,41 @@ class ExistingReadOnlyPreparationProvider:
             for_customer_number.isdigit()
             and len(for_customer_number) in (6, 7)
         )
-        for_customer_number_conflict = bool(
-            for_customer_number_valid
-            and any(
-                owners and owners != {for_customer_number}
-                for owners in owner_sets
-            )
-        )
-        if for_customer_number_valid:
-            try:
-                for_customer = self.load_customer(for_customer_number)
-            except Exception as error:
-                for_customer = None
-                directive_warnings.append(
-                    "The check FOR line supplied ERP customer account "
-                    f"{for_customer_number}, but the exact read-only "
-                    f"customer lookup did not verify it: {type(error).__name__}."
-                )
-            if for_customer and not for_customer_number_conflict:
-                unresolved_owner_count = sum(
-                    not owners for owners in owner_sets
-                )
-                return CustomerResolution(
-                    status="resolved",
-                    customer_number=for_customer_number,
-                    customer_snapshot=for_customer.fields,
-                    candidates=(for_customer_number,),
-                    matched_on=(
-                        "The check FOR line identifies one verified ERP "
-                        "customer account after stronger account and "
-                        "statement evidence was exhausted.",
-                    ),
-                    source_reference=(
-                        "PNC check FOR line and ERP customer master"
-                    ),
-                    as_of_time=for_customer.as_of_time,
-                    selection_basis="check_for_customer_number",
-                    matching_evidence={
-                        "valid_invoice_count": len(valid_invoices),
-                        "invoice_owner_conflict": False,
-                        "unresolved_invoice_owner_count": (
-                            unresolved_owner_count
-                        ),
-                        "partial_invoice_owner_evidence": bool(
-                            any(owner_sets) and unresolved_owner_count
-                        ),
-                        "check_for_customer_number": for_customer_number,
-                        "check_for_customer_verified": True,
-                        "check_for_customer_conflict": False,
-                        "selected_basis": "check_for_customer_number",
-                        "rule_version": CUSTOMER_MATCH_RULE_VERSION,
-                    },
-                    selected_confidence=1.0,
-                    confidence_basis="check_for_customer_number",
-                )
-            if for_customer_number_conflict:
-                directive_warnings.append(
+        resolution, for_customer_number_conflict = (
+            self._resolve_directive_tier(
+                candidate_number=for_customer_number,
+                valid=for_customer_number_valid,
+                owner_sets=owner_sets,
+                valid_invoices=valid_invoices,
+                matched_on=(
+                    "The check FOR line identifies one verified ERP "
+                    "customer account after stronger account and "
+                    "statement evidence was exhausted."
+                ),
+                source_reference=(
+                    "PNC check FOR line and ERP customer master"
+                ),
+                selection_basis="check_for_customer_number",
+                evidence_prefix="check_for_customer",
+                conflict_warning=(
                     "The check FOR-line customer account conflicts with "
                     "preserved invoice-owner evidence and cannot select a "
                     "customer."
-                )
+                ),
+                unverified_warning_template=(
+                    "The check FOR line supplied ERP customer account "
+                    f"{for_customer_number}, but the exact read-only "
+                    "customer lookup did not verify it: {}."
+                ),
+                directive_warnings=directive_warnings,
+            )
+        )
+        if resolution is not None:
+            return resolution
 
         normalized_check_phone = normalize_phone(source.get("customer_phone"))
         check_phone_number_valid = len(normalized_check_phone) == 10
         check_phone_customer_number = ""
-        check_phone_number_conflict = False
         if check_phone_number_valid:
             phone_candidates, phone_query_complete = self._exact_phone_loader(
                 self._customer_columns_loader(), normalized_check_phone
@@ -590,79 +583,44 @@ class ExistingReadOnlyPreparationProvider:
                 if phone_query_complete and len(phone_candidates) == 1
                 else ""
             )
-            check_phone_number_conflict = bool(
-                check_phone_customer_number
-                and any(
-                    owners and owners != {check_phone_customer_number}
-                    for owners in owner_sets
-                )
-            )
-            if check_phone_customer_number and not check_phone_number_conflict:
-                try:
-                    check_phone_customer = self.load_customer(
-                        check_phone_customer_number
-                    )
-                except Exception as error:
-                    check_phone_customer = None
-                    directive_warnings.append(
-                        "The check's printed phone number uniquely matched "
-                        f"ERP customer account {check_phone_customer_number}, "
-                        "but the exact read-only customer lookup did not "
-                        f"verify it: {type(error).__name__}."
-                    )
-                if check_phone_customer:
-                    unresolved_owner_count = sum(
-                        not owners for owners in owner_sets
-                    )
-                    return CustomerResolution(
-                        status="resolved",
-                        customer_number=check_phone_customer_number,
-                        customer_snapshot=check_phone_customer.fields,
-                        candidates=(check_phone_customer_number,),
-                        matched_on=(
-                            "The check's printed phone number uniquely "
-                            "matches one verified ERP customer after "
-                            "stronger account and statement evidence was "
-                            "exhausted.",
-                        ),
-                        source_reference=(
-                            "PNC check phone number and ERP customer master"
-                        ),
-                        as_of_time=check_phone_customer.as_of_time,
-                        selection_basis="check_phone_number_match",
-                        matching_evidence={
-                            "valid_invoice_count": len(valid_invoices),
-                            "invoice_owner_conflict": False,
-                            "unresolved_invoice_owner_count": (
-                                unresolved_owner_count
-                            ),
-                            "partial_invoice_owner_evidence": bool(
-                                any(owner_sets) and unresolved_owner_count
-                            ),
-                            "check_phone_number_match": (
-                                check_phone_customer_number
-                            ),
-                            "check_phone_number_verified": True,
-                            "check_phone_number_conflict": False,
-                            "selected_basis": "check_phone_number_match",
-                            "rule_version": CUSTOMER_MATCH_RULE_VERSION,
-                        },
-                        selected_confidence=1.0,
-                        confidence_basis="check_phone_number_match",
-                    )
-            elif check_phone_number_conflict:
-                directive_warnings.append(
-                    "The check's printed phone number uniquely matches one "
-                    "ERP customer, but that customer conflicts with "
-                    "preserved invoice-owner evidence and cannot be "
-                    "selected."
-                )
+        resolution, check_phone_number_conflict = self._resolve_directive_tier(
+            candidate_number=check_phone_customer_number,
+            valid=check_phone_number_valid,
+            owner_sets=owner_sets,
+            valid_invoices=valid_invoices,
+            matched_on=(
+                "The check's printed phone number uniquely matches one "
+                "verified ERP customer after stronger account and "
+                "statement evidence was exhausted."
+            ),
+            source_reference=(
+                "PNC check phone number and ERP customer master"
+            ),
+            selection_basis="check_phone_number_match",
+            evidence_prefix="check_phone_number",
+            conflict_warning=(
+                "The check's printed phone number uniquely matches one "
+                "ERP customer, but that customer conflicts with "
+                "preserved invoice-owner evidence and cannot be "
+                "selected."
+            ),
+            unverified_warning_template=(
+                "The check's printed phone number uniquely matched ERP "
+                f"customer account {check_phone_customer_number}, but the "
+                "exact read-only customer lookup did not verify it: {}."
+            ),
+            directive_warnings=directive_warnings,
+        )
+        if resolution is not None:
+            return resolution
 
         routing_number = str(source.get("aba_routing") or "").strip()
         bank_account_last4 = last4(source.get("account_number"))
         learned_mapping_customer_number = ""
-        learned_mapping_conflict = False
-        if routing_number and len(bank_account_last4) == 4:
+        learned_mapping_valid = bool(
+            routing_number and len(bank_account_last4) == 4
+        )
+        if learned_mapping_valid:
             confirmed_customers = self._payer_mapping_lookup(
                 routing_number, bank_account_last4
             )
@@ -670,75 +628,38 @@ class ExistingReadOnlyPreparationProvider:
                 learned_mapping_customer_number = _customer_number(
                     confirmed_customers[0]
                 )
-            learned_mapping_conflict = bool(
-                learned_mapping_customer_number
-                and any(
-                    owners and owners != {learned_mapping_customer_number}
-                    for owners in owner_sets
-                )
-            )
-            if learned_mapping_customer_number and not learned_mapping_conflict:
-                try:
-                    learned_mapping_customer = self.load_customer(
-                        learned_mapping_customer_number
-                    )
-                except Exception as error:
-                    learned_mapping_customer = None
-                    directive_warnings.append(
-                        "This check's bank account was previously confirmed "
-                        f"for ERP customer account {learned_mapping_customer_number}, "
-                        "but the exact read-only customer lookup did not "
-                        f"verify it: {type(error).__name__}."
-                    )
-                if learned_mapping_customer:
-                    unresolved_owner_count = sum(
-                        not owners for owners in owner_sets
-                    )
-                    return CustomerResolution(
-                        status="resolved",
-                        customer_number=learned_mapping_customer_number,
-                        customer_snapshot=learned_mapping_customer.fields,
-                        candidates=(learned_mapping_customer_number,),
-                        matched_on=(
-                            "This check's bank account (routing and account "
-                            "number) was previously confirmed by a reviewer "
-                            "as belonging to one ERP customer.",
-                        ),
-                        source_reference=(
-                            "Locally learned payer bank-account mapping and "
-                            "ERP customer master"
-                        ),
-                        as_of_time=learned_mapping_customer.as_of_time,
-                        selection_basis="learned_payer_bank_account_mapping",
-                        matching_evidence={
-                            "valid_invoice_count": len(valid_invoices),
-                            "invoice_owner_conflict": False,
-                            "unresolved_invoice_owner_count": (
-                                unresolved_owner_count
-                            ),
-                            "partial_invoice_owner_evidence": bool(
-                                any(owner_sets) and unresolved_owner_count
-                            ),
-                            "learned_payer_bank_account_mapping": (
-                                learned_mapping_customer_number
-                            ),
-                            "learned_payer_bank_account_verified": True,
-                            "learned_payer_bank_account_conflict": False,
-                            "selected_basis": (
-                                "learned_payer_bank_account_mapping"
-                            ),
-                            "rule_version": CUSTOMER_MATCH_RULE_VERSION,
-                        },
-                        selected_confidence=1.0,
-                        confidence_basis="learned_payer_bank_account_mapping",
-                    )
-            elif learned_mapping_conflict:
-                directive_warnings.append(
-                    "This check's bank account was previously confirmed for "
-                    "one ERP customer, but that customer conflicts with "
-                    "preserved invoice-owner evidence and cannot be "
-                    "selected."
-                )
+        resolution, learned_mapping_conflict = self._resolve_directive_tier(
+            candidate_number=learned_mapping_customer_number,
+            valid=learned_mapping_valid,
+            owner_sets=owner_sets,
+            valid_invoices=valid_invoices,
+            matched_on=(
+                "This check's bank account (routing and account number) "
+                "was previously confirmed by a reviewer as belonging to "
+                "one ERP customer."
+            ),
+            source_reference=(
+                "Locally learned payer bank-account mapping and ERP "
+                "customer master"
+            ),
+            selection_basis="learned_payer_bank_account_mapping",
+            evidence_prefix="learned_payer_bank_account",
+            conflict_warning=(
+                "This check's bank account was previously confirmed for "
+                "one ERP customer, but that customer conflicts with "
+                "preserved invoice-owner evidence and cannot be "
+                "selected."
+            ),
+            unverified_warning_template=(
+                "This check's bank account was previously confirmed for "
+                f"ERP customer account {learned_mapping_customer_number}, "
+                "but the exact read-only customer lookup did not verify "
+                "it: {}."
+            ),
+            directive_warnings=directive_warnings,
+        )
+        if resolution is not None:
+            return resolution
 
         source_fields = {
             "phone": (source.get("customer_phone"), 80),
