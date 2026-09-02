@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 
 from modules.workflow_foundation.access_policy import required_modules_for_path
 from modules.workflow_foundation.repository import (
@@ -215,6 +215,46 @@ class WorkflowFoundationTests(unittest.TestCase):
                 )
             )
         self.assertIn("Too many failed sign-in attempts", str(raised.exception))
+
+    def test_list_users_issues_a_fixed_number_of_queries_regardless_of_count(
+        self,
+    ) -> None:
+        self.create_user("user_a", "workflow_observer")
+        self.create_user("user_b", "ap_professional")
+        self.create_user("user_c", "credit_professional")
+
+        statements: list[str] = []
+
+        def _record(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(self.engine, "before_cursor_execute", _record)
+        try:
+            users = self.repository.list_users()
+        finally:
+            event.remove(self.engine, "before_cursor_execute", _record)
+
+        self.assertEqual(len(users), 4)
+        select_statements = [
+            statement
+            for statement in statements
+            if statement.strip().upper().startswith("SELECT")
+        ]
+        # One query for the user_id list, one batched identity query, one
+        # batched roles query - independent of how many users exist. Before
+        # this was fixed, list_users() issued 1 + 2*N queries (a query per
+        # user for identity, another for roles).
+        self.assertEqual(len(select_statements), 3)
+
+        by_username = {user["username"]: user for user in users}
+        self.assertEqual(
+            {role["role_id"] for role in by_username["user_b"]["roles"]},
+            {"ap_professional"},
+        )
+        self.assertEqual(
+            {role["role_id"] for role in by_username["user_c"]["roles"]},
+            {"credit_professional"},
+        )
 
     def test_only_coordinator_can_create_local_accounts(self) -> None:
         observer = self.create_user("observer", "workflow_observer")
