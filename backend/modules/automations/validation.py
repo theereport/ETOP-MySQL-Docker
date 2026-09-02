@@ -6,10 +6,51 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from core.config import settings as platform_settings
+
 from .schemas import AutomationDefinition, AutomationSchedule
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+# Automation authors supply script_path/output_folder as free-text (only an
+# "automation_center" module grant is required, not an admin-tier role -
+# see access_policy.py), so both were previously accepted as any absolute
+# path with no containment check: script_path let an automation execute any
+# file the OS user could run, and output_folder let it write anywhere that
+# user could write. Constrained to explicit allowlisted roots - a safe
+# built-in default, plus an optional operator-configured extra root (a
+# deliberate, documented opt-in rather than open-by-default).
+_DEFAULT_SCRIPT_ROOT = BACKEND_DIR / "data" / "automation_scripts"
+_EXTRA_SCRIPT_ROOT = os.getenv("ETOP_AUTOMATION_SCRIPTS_ROOT", "").strip()
+ALLOWED_SCRIPT_ROOTS: tuple[Path, ...] = tuple(
+    root.resolve()
+    for root in (
+        [_DEFAULT_SCRIPT_ROOT]
+        + ([Path(_EXTRA_SCRIPT_ROOT)] if _EXTRA_SCRIPT_ROOT else [])
+    )
+)
+
+# backend/data - the existing, already-documented "automation run outputs"
+# default location - and the sibling repo-root data/ tree
+# (core.config.PlatformSettings.data_root) are both already-established,
+# already-writable runtime-data areas; the backend *source* tree
+# (modules/, core/, main.py, ...) is deliberately excluded.
+_DEFAULT_OUTPUT_ROOTS = (BACKEND_DIR / "data", platform_settings.data_root)
+_EXTRA_OUTPUT_ROOT = os.getenv("ETOP_AUTOMATION_OUTPUT_ROOT", "").strip()
+ALLOWED_OUTPUT_ROOTS: tuple[Path, ...] = tuple(
+    root.resolve()
+    for root in (
+        list(_DEFAULT_OUTPUT_ROOTS)
+        + ([Path(_EXTRA_OUTPUT_ROOT)] if _EXTRA_OUTPUT_ROOT else [])
+    )
+)
+
+
+def is_within_allowed_roots(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(
+        path == root or path.is_relative_to(root) for root in roots
+    )
 
 _TIME_PATTERN = re.compile(r"^(?P<hour>\d{2}):(?P<minute>\d{2})$")
 
@@ -291,6 +332,42 @@ def _source_issues(
                             ),
                         )
                     )
+                elif not is_within_allowed_roots(path, ALLOWED_SCRIPT_ROOTS):
+                    issues.append(
+                        AutomationValidationIssue(
+                            code="script_path_outside_allowed_root",
+                            field="scriptPath",
+                            message=(
+                                "Script files must live under "
+                                f"{_DEFAULT_SCRIPT_ROOT} (or an operator-"
+                                "configured ETOP_AUTOMATION_SCRIPTS_ROOT)."
+                            ),
+                        )
+                    )
+
+    configured_output_folder = automation.delivery.output_folder.strip()
+    if configured_output_folder:
+        expanded = os.path.expandvars(
+            os.path.expanduser(configured_output_folder)
+        )
+        output_path = Path(expanded)
+        if not output_path.is_absolute():
+            output_path = BACKEND_DIR / output_path
+        output_path = output_path.resolve()
+
+        if not is_within_allowed_roots(output_path, ALLOWED_OUTPUT_ROOTS):
+            issues.append(
+                AutomationValidationIssue(
+                    code="output_folder_outside_allowed_root",
+                    field="delivery.outputFolder",
+                    message=(
+                        "Output folder must live under "
+                        f"{_DEFAULT_OUTPUT_ROOTS[0]} or "
+                        f"{_DEFAULT_OUTPUT_ROOTS[1]} (or an operator-"
+                        "configured ETOP_AUTOMATION_OUTPUT_ROOT)."
+                    ),
+                )
+            )
 
     if (
         automation.delivery.method == "email"
