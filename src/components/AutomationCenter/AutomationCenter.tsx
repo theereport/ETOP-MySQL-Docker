@@ -484,6 +484,15 @@ function AutomationCenter() {
         updatedAt: now,
       }
 
+    const automationsBeforeSave =
+      automations
+
+    const activeAutomationBeforeSave =
+      activeAutomation
+
+    const viewBeforeSave =
+      view
+
     setAutomations(
       (currentAutomations) => {
         const exists =
@@ -558,6 +567,16 @@ function AutomationCenter() {
         )
       })
       .catch((error) => {
+        setAutomations(
+          automationsBeforeSave,
+        )
+
+        setActiveAutomation(
+          activeAutomationBeforeSave,
+        )
+
+        setView(viewBeforeSave)
+
         setErrorMessage(
           error instanceof Error
             ? error.message
@@ -614,16 +633,45 @@ function AutomationCenter() {
   const handleDeleteAutomation = (
     automationId: string,
   ) => {
+    const automationsBeforeDelete =
+      automations
+
+    const activeAutomationBeforeDelete =
+      activeAutomation
+
+    const viewBeforeDelete =
+      view
+
     void fetch(
       `${AUTOMATION_API_BASE}/${automationId}`,
       {
         method: 'DELETE',
       },
-    ).catch(() => {
-      setErrorMessage(
-        'Unable to delete automation from the backend.',
-      )
-    })
+    )
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(
+            'Unable to delete automation from the backend.',
+          )
+        }
+      })
+      .catch((error) => {
+        setAutomations(
+          automationsBeforeDelete,
+        )
+
+        setActiveAutomation(
+          activeAutomationBeforeDelete,
+        )
+
+        setView(viewBeforeDelete)
+
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : 'Unable to delete automation from the backend.',
+        )
+      })
     setAutomations(
       (currentAutomations) =>
         currentAutomations.filter(
