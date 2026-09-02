@@ -71,6 +71,7 @@ export default function PricingContractsWorkspace() {
   >([])
   const [searchError, setSearchError] = useState('')
   const [hasSearched, setHasSearched] = useState(false)
+  const [searchTrigger, setSearchTrigger] = useState(0)
 
   const [selectedRecordKey, setSelectedRecordKey] = useState<string | null>(null)
   const selectedDiscount = useMemo(
@@ -102,6 +103,7 @@ export default function PricingContractsWorkspace() {
   function runSearch(event?: FormEvent) {
     event?.preventDefault()
     setHasSearched(true)
+    setSearchTrigger((count) => count + 1)
   }
 
   useEffect(() => {
@@ -127,8 +129,14 @@ export default function PricingContractsWorkspace() {
         setSearchError(errorMessage(error, 'Unable to search pricing records.'))
       })
     return () => controller.abort()
+    // Filter inputs are intentionally read only when searchTrigger advances
+    // (a deliberate "search on submit" button, not search-as-you-type) -
+    // searchTrigger increments on every runSearch() call so a resubmission
+    // with changed filters always re-runs the fetch, unlike the boolean
+    // `hasSearched` this replaced, which never changed value on a second
+    // search and so never re-ran this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasSearched, viewMode])
+  }, [searchTrigger, viewMode])
 
   useEffect(() => {
     if (viewMode !== 'customer-classes') return
