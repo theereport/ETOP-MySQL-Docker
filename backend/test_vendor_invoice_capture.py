@@ -172,6 +172,47 @@ class VendorInvoiceParserEvidenceTests(unittest.TestCase):
             "ambiguous",
         )
 
+    def test_ocr_pages_skipped_only_for_budget_do_not_force_failed_status(
+        self,
+    ) -> None:
+        lines = [
+            {
+                "line_number": 1,
+                "text": "Invoice Number: INV-1",
+                "confidence": None,
+                "source_method": "native_pdf_text",
+            },
+        ]
+        parsed = self._parse_lines(
+            lines,
+            ocr_failed_pages=[],
+            ocr_skipped_pages=[2, 3],
+        )
+        self.assertNotIn(
+            "One or more pages required OCR but local OCR did not complete.",
+            parsed["validation"]["errors"],
+        )
+        self.assertEqual(parsed["validation"]["status"], "review_required")
+
+    def test_genuine_ocr_page_failure_still_forces_failed_status(self) -> None:
+        lines = [
+            {
+                "line_number": 1,
+                "text": "Invoice Number: INV-1",
+                "confidence": None,
+                "source_method": "native_pdf_text",
+            },
+        ]
+        parsed = self._parse_lines(
+            lines,
+            ocr_failed_pages=[2],
+        )
+        self.assertIn(
+            "One or more pages required OCR but local OCR did not complete.",
+            parsed["validation"]["errors"],
+        )
+        self.assertEqual(parsed["validation"]["status"], "failed")
+
     def test_native_rules_do_not_invent_numeric_confidence(self) -> None:
         parsed = vendor_parser_module.VendorInvoiceParser().parse(
             {
@@ -879,7 +920,10 @@ class TargetedOCRTests(unittest.TestCase):
         self.assertEqual(ocr.call_count, 1)
         self.assertEqual(result["ocr_attempted_pages"], [1])
         self.assertEqual(result["ocr_skipped_pages"], [2, 3])
-        self.assertEqual(result["ocr_failed_pages"], [2, 3])
+        # A budget/limit skip is not a genuine OCR failure - it must not
+        # force parsers/vendor_invoice.py's validation.status to "failed"
+        # (see ocr_failed_pages usage there).
+        self.assertEqual(result["ocr_failed_pages"], [])
         self.assertEqual(result["pages"][1]["ocr_status"], "skipped_page_limit")
 
     def test_ocr_identity_work_cannot_overrun_document_time_limit(self) -> None:
