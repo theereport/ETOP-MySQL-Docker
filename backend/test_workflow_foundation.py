@@ -256,6 +256,45 @@ class WorkflowFoundationTests(unittest.TestCase):
             {"credit_professional"},
         )
 
+    def test_authorize_module_access_uses_one_connection_and_four_queries(
+        self,
+    ) -> None:
+        # authorize_module_access() (called on every authenticated request
+        # via ModuleAccessMiddleware) previously issued 6 queries across 2
+        # separate engine checkouts: get_session()'s identity join, its
+        # last_seen_at update, and its roles query, on one connection; then
+        # get_permissions()'s access-profile join and configured-module-ids
+        # query, on a second connection. get_session_with_permissions()
+        # combines the identity and access-profile reads into one query on
+        # a single held connection - 4 statements total, 1 fewer query and
+        # 1 fewer connection checkout.
+        statements: list[str] = []
+
+        def _record(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(self.engine, "before_cursor_execute", _record)
+        try:
+            self.service.authorize_module_access(
+                self.coordinator.token, ("security_administration",)
+            )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", _record)
+
+        self.assertEqual(len(statements), 4)
+        select_statements = [
+            statement
+            for statement in statements
+            if statement.strip().upper().startswith("SELECT")
+        ]
+        update_statements = [
+            statement
+            for statement in statements
+            if statement.strip().upper().startswith("UPDATE")
+        ]
+        self.assertEqual(len(select_statements), 3)
+        self.assertEqual(len(update_statements), 1)
+
     def test_only_coordinator_can_create_local_accounts(self) -> None:
         observer = self.create_user("observer", "workflow_observer")
         observer_token = self.login("observer")
