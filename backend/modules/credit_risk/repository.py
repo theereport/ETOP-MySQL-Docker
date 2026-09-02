@@ -386,6 +386,39 @@ class CreditRiskRepository:
             ).mappings().first()
         return self._proposal_from_row(row) if row is not None else None
 
+    def list_latest_credit_line_proposals_by_customers(
+        self,
+        customer_numbers: list[int],
+    ) -> dict[int, dict[str, Any]]:
+        """Batched sibling of get_latest_credit_line_proposal() - one query
+        for however many customer_numbers are given, instead of one query
+        per customer."""
+
+        if not customer_numbers:
+            return {}
+        self.initialize()
+        table = credit_line_proposals_table
+        proposal_rank = (
+            func.row_number()
+            .over(
+                partition_by=table.c.customer_number,
+                order_by=(table.c.created_at.desc(), table.c.proposal_id.desc()),
+            )
+            .label("proposal_rank")
+        )
+        ranked = (
+            select(table, proposal_rank)
+            .where(table.c.customer_number.in_(customer_numbers))
+            .subquery()
+        )
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(ranked).where(ranked.c.proposal_rank == 1)
+            ).mappings().all()
+        return {
+            row["customer_number"]: self._proposal_from_row(row) for row in rows
+        }
+
     def create_portfolio_review(
         self,
         record: dict[str, Any],
@@ -479,6 +512,43 @@ class CreditRiskRepository:
                 .limit(1)
             ).mappings().first()
         return self._portfolio_review_from_row(row) if row is not None else None
+
+    def list_latest_portfolio_reviews_by_customers(
+        self,
+        customer_numbers: list[int],
+    ) -> dict[int, dict[str, Any]]:
+        """Batched sibling of get_latest_portfolio_review() - one query for
+        however many customer_numbers are given, instead of one query per
+        customer."""
+
+        if not customer_numbers:
+            return {}
+        self.initialize()
+        table = credit_portfolio_reviews_table
+        review_rank = (
+            func.row_number()
+            .over(
+                partition_by=table.c.customer_number,
+                order_by=(
+                    table.c.created_at.desc(),
+                    table.c.portfolio_review_id.desc(),
+                ),
+            )
+            .label("review_rank")
+        )
+        ranked = (
+            select(table, review_rank)
+            .where(table.c.customer_number.in_(customer_numbers))
+            .subquery()
+        )
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(ranked).where(ranked.c.review_rank == 1)
+            ).mappings().all()
+        return {
+            row["customer_number"]: self._portfolio_review_from_row(row)
+            for row in rows
+        }
 
     def create_order_recommendation(
         self,
