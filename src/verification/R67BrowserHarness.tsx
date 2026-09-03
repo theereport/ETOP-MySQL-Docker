@@ -126,6 +126,7 @@ const rawReview: LockboxReviewResult = {
   approved_count: 7,
   corrected_count: 0,
   held_count: 0,
+  carryover_count: 0,
   transactions: [reviewedTransaction],
 }
 

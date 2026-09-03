@@ -10,10 +10,12 @@ from .schemas import (
 )
 from .service import (
     append_transaction_customer_note,
+    create_carryover_export,
     create_review_queue_export,
     create_reviewed_export,
     get_lockbox_review,
     get_transaction_customer_notes,
+    list_carryover_transactions,
     save_transaction_review,
 )
 
@@ -107,6 +109,27 @@ def export_lockbox_review_queue(
         payload.queue_label,
         payload.reason_code,
     )
+    return FileResponse(
+        path=output,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        filename=output.name,
+    )
+
+
+@router.get("/lockbox/carryover")
+def read_carryover_transactions() -> dict:
+    return {"transactions": list_carryover_transactions()}
+
+
+@router.get(
+    "/lockbox/carryover/export",
+    response_class=FileResponse,
+)
+def export_carryover_transactions() -> FileResponse:
+    output = create_carryover_export()
     return FileResponse(
         path=output,
         media_type=(

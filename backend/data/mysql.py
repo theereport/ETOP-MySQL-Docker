@@ -16,6 +16,7 @@ import os
 from dotenv import load_dotenv
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     Computed,
@@ -2465,7 +2466,19 @@ lockbox_transaction_reviews_table = Table(
     Column("misc_gl_json", Text, nullable=False),
     Column("created_at", String(64), nullable=False),
     Column("updated_at", String(64), nullable=False),
+    # Sticky: set True the first time a transaction is saved with
+    # status="carryover", and never cleared afterward - even once a
+    # carryover transaction is later approved, this stays True so the
+    # Carryover Dashboard's export can find "approved after being
+    # carried over" transactions across every job.
+    Column(
+        "carryover_origin",
+        Boolean,
+        nullable=False,
+        server_default="0",
+    ),
     Index("idx_lockbox_transaction_reviews_job", "job_id"),
+    Index("idx_lockbox_transaction_reviews_status", "status"),
 )
 
 lockbox_customer_notes_table = Table(

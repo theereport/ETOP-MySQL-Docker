@@ -233,7 +233,8 @@ class CustomerRepository:
                 TRIM(CUFETEXMPT) AS CUFETEXMPT,
                 TRIM(CUSTMNTHLD) AS CUSTMNTHLD,
                 TRIM(CUEXFLAG8) AS CUEXFLAG8,
-                TRIM(CUEXFLAG9) AS CUEXFLAG9
+                TRIM(CUEXFLAG9) AS CUEXFLAG9,
+                CUCONTRACT
             FROM TMCUST
             WHERE CUNUMBER = %s
             LIMIT 1

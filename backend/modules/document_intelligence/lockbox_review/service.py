@@ -17,6 +17,8 @@ from .database import (
     append_customer_note as append_customer_note_record,
     get_customer_notes as get_customer_note_records,
     get_reviews,
+    list_approved_carryover_origin_transaction_ids,
+    list_carryover_job_ids,
     migrate_legacy_reviews,
     save_review,
 )
@@ -38,11 +40,17 @@ REVIEW_STATUSES = {
     "no_remittance",
     "corrected",
     "held",
+    "carryover",
     "approved",
 }
-PROTECTED_HUMAN_DRAFT_STATUSES = {"corrected", "held", "approved"}
+# Carryover is a durable human disposition like held/corrected/approved (a
+# reviewer deliberately deferred this transaction), but unlike held it is
+# never re-surfaced as an unresolved "review exception" and never blocks
+# export - see _status_counts and build_reviewed_result.
+PROTECTED_HUMAN_DRAFT_STATUSES = {"corrected", "held", "carryover", "approved"}
 MISC_GL_REASON_CODES: dict[str, str] = {
     "Service Charge ADJ": "3880",
+    "AR Variance": "3950",
 }
 GovernedPreparationLoader = Callable[[str], dict[str, Any]]
 CurrentOpenARLoader = Callable[[str, date], dict[str, Any]]
@@ -133,10 +141,19 @@ def _status_counts(transactions: list[dict[str, Any]]) -> dict[str, int]:
             1
             for item in transactions
             if item.get("status")
-            not in {"balanced", "corrected", "held", "approved"}
+            not in {
+                "balanced",
+                "corrected",
+                "held",
+                "carryover",
+                "approved",
+            }
         ),
         "held_count": sum(
             1 for item in transactions if item.get("status") == "held"
+        ),
+        "carryover_count": sum(
+            1 for item in transactions if item.get("status") == "carryover"
         ),
         "approved_count": sum(
             1 for item in transactions if item.get("status") == "approved"
@@ -421,7 +438,9 @@ def save_transaction_review(
         raise HTTPException(status_code=400, detail="Unknown Lockbox review status.")
 
     allocations = [_normalize_allocation(item) for item in payload.get("allocations", [])]
-    if status != "held" and any(not item["invoice_number"] for item in allocations):
+    if status not in {"held", "carryover"} and any(
+        not item["invoice_number"] for item in allocations
+    ):
         raise HTTPException(status_code=400, detail="Every allocation requires an invoice number.")
 
     customer_number = str(
@@ -429,10 +448,11 @@ def save_transaction_review(
         or transaction.get("customer_number")
         or ""
     ).strip()
-    # Hold is a durable parking action, not an allocation disposition. Keep
-    # partial draft rows exactly available for later work; full identifier and
-    # current-ERP checks still run for every save/approval disposition.
-    if status != "held":
+    # Hold and Carryover are durable parking actions, not allocation
+    # dispositions. Keep partial draft rows exactly available for later work;
+    # full identifier and current-ERP checks still run for every other
+    # save/approval disposition.
+    if status not in {"held", "carryover"}:
         _validate_allocation_identifiers(
             job_id,
             transaction_id,
@@ -515,7 +535,7 @@ def save_transaction_review(
         override_reason=override_reason,
         misc_gl=misc_gl,
     )
-    if status != "held":
+    if status not in {"held", "carryover"}:
         _record_confirmed_payer_mapping(
             transaction,
             customer_number,
@@ -751,30 +771,48 @@ def _validate_allocation_identifiers(
 
 def build_reviewed_result(job_id: str) -> dict[str, Any]:
     review = get_lockbox_review(job_id)
+    # Carryover transactions are deliberately excluded from export - they're
+    # parked for a later session (working something out, waiting on a
+    # customer), not ready to post. Recompute every aggregate below from the
+    # exported subset so the workbook's own header totals/counts match what
+    # actually landed in it, rather than the full review's totals.
+    exported_transactions = [
+        {
+            key: value
+            for key, value in transaction.items()
+            if key not in {
+                "original_allocations", "reviewer", "notes",
+                "override_reason", "reviewed_at",
+            }
+        }
+        for transaction in review["transactions"]
+        if transaction.get("status") != "carryover"
+    ]
+    total_check_amount = _money(
+        sum(_money(item.get("check_amount")) for item in exported_transactions)
+    )
+    total_allocation_amount = _money(
+        sum(item["allocation_total"] for item in exported_transactions)
+    )
     return {
         "job_id": review["job_id"],
         "source_file_name": review["source_file_name"],
         "lockbox": review["lockbox"],
         "transaction_date": review["transaction_date"],
-        "transaction_count": review["transaction_count"],
-        "allocation_count": review["allocation_count"],
-        "total_check_amount": review["total_check_amount"],
-        "total_allocation_amount": review["total_allocation_amount"],
-        "total_difference": review["total_difference"],
+        "transaction_count": len(exported_transactions),
+        "allocation_count": sum(
+            len(item["allocations"]) for item in exported_transactions
+        ),
+        "total_check_amount": total_check_amount,
+        "total_allocation_amount": total_allocation_amount,
+        "total_difference": _money(
+            total_check_amount - total_allocation_amount
+        ),
         "balanced_count": review["balanced_count"],
         "review_count": review["review_count"],
         "held_count": review["held_count"],
-        "transactions": [
-            {
-                key: value
-                for key, value in transaction.items()
-                if key not in {
-                    "original_allocations", "reviewer", "notes",
-                    "override_reason", "reviewed_at",
-                }
-            }
-            for transaction in review["transactions"]
-        ],
+        "carryover_count": review["carryover_count"],
+        "transactions": exported_transactions,
         "warnings": review["warnings"],
     }
 
@@ -825,6 +863,80 @@ def create_reviewed_export(job_id: str) -> Path:
         / f"{_safe_file_part(job_id, 'lockbox')}_PNC_Lockbox_Reviewed.xlsx"
     )
     return export_pnc_workbook(build_reviewed_result(job_id), output)
+
+
+def list_carryover_transactions() -> list[dict[str, Any]]:
+    """Every transaction currently carried over, across every lockbox job.
+
+    Each entry is a transaction dict (same shape the per-job review
+    workspace uses) with job_id/source_file_name attached, so the Carryover
+    Dashboard can list them and open the right job's review workspace to
+    work one.
+    """
+
+    transactions: list[dict[str, Any]] = []
+    for job_id in list_carryover_job_ids():
+        try:
+            review = get_lockbox_review(job_id)
+        except (KeyError, FileNotFoundError):
+            # A job's saved reviews reference a source result that no
+            # longer exists (e.g. deleted upload) - skip it rather than
+            # failing the whole cross-job listing.
+            continue
+        for transaction in review.get("transactions", []):
+            if transaction.get("status") != "carryover":
+                continue
+            transactions.append({
+                **transaction,
+                "job_id": job_id,
+                "source_file_name": review.get("source_file_name", ""),
+            })
+    return transactions
+
+
+def create_carryover_export() -> Path:
+    """Export every transaction that originated from a carryover
+    disposition and is now approved, across every lockbox job.
+
+    Separate from create_reviewed_export - that export is scoped to one
+    job and explicitly excludes carryover transactions; this one is scoped
+    to the carryover-approved set across all jobs, regardless of job.
+    """
+
+    pairs = list_approved_carryover_origin_transaction_ids()
+    by_job: dict[str, set[str]] = {}
+    for job_id, transaction_id in pairs:
+        by_job.setdefault(job_id, set()).add(transaction_id)
+
+    transactions: list[dict[str, Any]] = []
+    for job_id, transaction_ids in by_job.items():
+        try:
+            review = get_lockbox_review(job_id)
+        except (KeyError, FileNotFoundError):
+            continue
+        for transaction in review.get("transactions", []):
+            if transaction.get("transaction_id") not in transaction_ids:
+                continue
+            transactions.append({
+                key: value
+                for key, value in transaction.items()
+                if key not in {
+                    "original_allocations", "reviewer", "notes",
+                    "override_reason", "reviewed_at",
+                }
+            })
+
+    result = {
+        "job_id": "carryover-dashboard",
+        "source_file_name": "Multiple lockbox jobs",
+        "lockbox": "Multiple",
+        "transaction_date": date.today().isoformat(),
+        "transaction_count": len(transactions),
+        "transactions": transactions,
+        "warnings": [],
+    }
+    output = EXPORT_DIR / "Carryover_Approved_PNC_Lockbox.xlsx"
+    return export_pnc_workbook(result, output)
 
 
 def create_review_queue_export(

@@ -385,6 +385,11 @@ class CustomerService:
                 "backorders_allowed": _yes(
                     row.get("CUEXFLAG9")
                 ),
+                # CUCONTRACT ("discount structure") is a nonzero/blank
+                # DECIMAL flag on TMCUST, not a Y/N column - any nonzero,
+                # non-null value means this customer is on a discount
+                # structure and needs review accordingly.
+                "discount_customer": bool(row.get("CUCONTRACT")),
                 "tax_exempt_expiration": _parse_erp_date(
                     row.get("CUDTETXEXP")
                 ),

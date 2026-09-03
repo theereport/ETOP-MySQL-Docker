@@ -105,6 +105,9 @@ const SecurityAccessWorkspace = lazy(
 const EnterpriseDocuments = lazy(
   () => import('./modules/document-intelligence/DocumentIntelligence'),
 )
+const CarryoverDashboard = lazy(
+  () => import('./modules/document-intelligence/components/CarryoverDashboard'),
+)
 
 type AssistantMode = 'knowledge' | 'general'
 type CustomerWorkspaceView = 'search' | 'risk-review'
@@ -1153,6 +1156,10 @@ function App() {
 
           {selectedModule === 'Lockbox Automation' && (
             <EnterpriseDocuments workspace="lockbox" />
+          )}
+
+          {selectedModule === 'Carryover Dashboard' && (
+            <CarryoverDashboard />
           )}
 
           {selectedModule === 'Document AI Studio' && (

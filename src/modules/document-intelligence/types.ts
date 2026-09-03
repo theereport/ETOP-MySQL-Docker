@@ -347,6 +347,7 @@ export type LockboxReviewStatus =
   | 'no_remittance'
   | 'corrected'
   | 'held'
+  | 'carryover'
   | 'approved'
 
 export type ReviewedLockboxAllocation = LockboxAllocation
@@ -377,6 +378,7 @@ export type LockboxReviewResult = Omit<
   approved_count: number
   corrected_count: number
   held_count: number
+  carryover_count: number
   transactions: ReviewedLockboxTransaction[]
 }
 

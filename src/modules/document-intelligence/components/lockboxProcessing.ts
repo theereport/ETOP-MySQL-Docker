@@ -469,6 +469,7 @@ function nextStatus(
   if (transaction.status === 'approved') return 'approved'
   if (transaction.status === 'corrected') return 'corrected'
   if (transaction.status === 'held') return 'held'
+  if (transaction.status === 'carryover') return 'carryover'
   if (isPreparedAllocationBalanced(transaction, prepared)) return 'balanced'
   if (transaction.status === 'no_remittance') return 'no_remittance'
   return 'review_required'

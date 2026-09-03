@@ -126,6 +126,13 @@ class WorkflowFoundationRepository:
             "Workspaces",
         ),
         (
+            "carryover_dashboard",
+            "Carryover Dashboard",
+            "Cross-job view of lockbox transactions parked as carryover, "
+            "with its own approved-carryover export.",
+            "Workspaces",
+        ),
+        (
             "document_intelligence",
             "Document Intelligence",
             "Document intake, extraction, review, and operational queues.",
