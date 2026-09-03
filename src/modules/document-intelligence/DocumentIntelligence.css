@@ -264,6 +264,14 @@
   color: #9ce9c4;
 }
 
+.ed-banner.discount-customer {
+  border: 1px solid #b38f00;
+  background: #ffd400;
+  color: #1a1400;
+  font-weight: 700;
+  font-size: 12px;
+}
+
 .ed-metrics {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1183,7 +1191,7 @@
 }
 
 .lockbox-hero-status strong { color: #f4f7fc; }
-.lockbox-hero-status small { margin-top: 3px; color: #8fa0b9; }
+.lockbox-hero-status small { margin-top: 3px; color: #aebdd2; }
 
 .lockbox-stepper {
   display: grid;
@@ -1294,7 +1302,7 @@
 .lockbox-drop-zone strong,
 .lockbox-drop-zone span { display: block; }
 .lockbox-drop-zone b { margin-bottom: 6px; color: #79acfa; font-size: 25px; }
-.lockbox-drop-zone span { margin-top: 5px; color: #8190a6; font-size: 12px; }
+.lockbox-drop-zone span { margin-top: 5px; color: #aebdd2; font-size: 12px; }
 
 .lockbox-existing-select {
   display: grid;
@@ -1324,9 +1332,9 @@
 .lockbox-selected-file span,
 .lockbox-selected-file strong,
 .lockbox-selected-file small { display: block; }
-.lockbox-selected-file span { color: #7f8fa8; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.lockbox-selected-file span { color: #aebdd2; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
 .lockbox-selected-file strong { margin-top: 7px; color: #f0f5fc; }
-.lockbox-selected-file small { margin-top: 5px; color: #8290a5; }
+.lockbox-selected-file small { margin-top: 5px; color: #aebdd2; }
 
 .lockbox-large-action {
   min-height: 42px;
@@ -1368,9 +1376,10 @@
 .lockbox-mini-metrics strong,
 .lockbox-mini-metrics span { display: block; }
 .lockbox-mini-metrics strong { color: #f2f6fc; font-size: 24px; }
-.lockbox-mini-metrics span { margin-top: 4px; color: #8796ac; font-size: 12px; }
+.lockbox-mini-metrics span { margin-top: 4px; color: #aebdd2; font-size: 12px; }
 .lockbox-mini-metrics .warning strong { color: #f2bb68; }
 .lockbox-mini-metrics .hold strong { color: #c4a7ff; }
+.lockbox-mini-metrics .carryover strong { color: #5fd3e6; }
 
 @media (max-width: 1400px) {
   .lockbox-mini-metrics {
@@ -1460,7 +1469,7 @@
 }
 .lockbox-training-upload div strong,
 .lockbox-training-upload div span { display: block; }
-.lockbox-training-upload div span { margin-top: 4px; color: #8493a8; font-size: 12px; }
+.lockbox-training-upload div span { margin-top: 4px; color: #aebdd2; font-size: 12px; }
 
 .lockbox-accuracy-grid {
   grid-template-columns: repeat(4, 1fr);
@@ -1618,9 +1627,21 @@
   color: #c8adff;
 }
 
+.ed-lockbox-status.carryover {
+  border-color: rgba(45, 189, 210, .45);
+  background: rgba(20, 108, 122, .18);
+  color: #6fd8ea;
+}
+
 .lockbox-export-actions {
   display: grid;
   gap: 9px;
+}
+
+.lockbox-carryover-export-note {
+  color: #5fd3e6;
+  font-size: 12px;
+  text-align: center;
 }
 
 .lockbox-queue-toolbar {
@@ -1888,7 +1909,7 @@
 }
 
 .lockbox-review-queue-heading strong { color: #eff5fc; }
-.lockbox-review-queue-heading span { margin-top: 3px; color: #74849b; font-size: 11px; }
+.lockbox-review-queue-heading span { margin-top: 3px; color: #aebdd2; font-size: 12px; }
 
 .lockbox-review-queue-toggle {
   display: flex;
@@ -1942,7 +1963,7 @@
 }
 
 .lockbox-review-transaction strong { color: #e8eef8; }
-.lockbox-review-transaction > div span { color: #97a8be; font-size: 11px; }
+.lockbox-review-transaction > div span { color: #aebdd2; font-size: 12px; }
 
 .lockbox-review-pdf,
 .lockbox-review-editor,
@@ -1986,7 +2007,7 @@
 }
 
 .lockbox-review-pane-heading strong { color: #edf3fb; }
-.lockbox-review-pane-heading span { margin-top: 3px; color: #77879e; font-size: 11px; }
+.lockbox-review-pane-heading span { margin-top: 3px; color: #aebdd2; font-size: 12px; }
 .lockbox-review-pane-heading a { color: #8ebaff; font-size: 12px; }
 
 .lockbox-review-editor {
@@ -2463,7 +2484,7 @@
   display: block;
 }
 
-.lockbox-validation-card span { color: #7f90a7; font-size: 10px; }
+.lockbox-validation-card span { color: #aebdd2; font-size: 12px; }
 .lockbox-validation-card strong { margin-top: 4px; color: #edf4fc; font-size: 16px; }
 .lockbox-validation-card.success { border-color: rgba(65, 190, 131, .34); }
 .lockbox-validation-card.success strong { color: #76dcae; }
@@ -2484,7 +2505,7 @@
 .lockbox-balance-state strong,
 .lockbox-balance-state span { display: block; }
 .lockbox-balance-state strong { font-size: 12px; }
-.lockbox-balance-state span { margin-top: 2px; color: #8c9bb0; font-size: 10px; }
+.lockbox-balance-state span { margin-top: 2px; color: #aebdd2; font-size: 12px; }
 
 .lockbox-original-summary {
   margin: 10px;
@@ -2495,7 +2516,7 @@
 
 .lockbox-original-summary span,
 .lockbox-original-summary strong { display: block; }
-.lockbox-original-summary span { color: #74849b; font-size: 10px; }
+.lockbox-original-summary span { color: #aebdd2; font-size: 12px; }
 .lockbox-original-summary strong { margin-top: 3px; color: #d7e0ed; font-size: 12px; }
 
 .lockbox-review-actions {
@@ -2515,6 +2536,12 @@
   border-color: rgba(231, 165, 71, .45);
   color: #efbb6b;
   background: rgba(211, 142, 45, .1);
+}
+
+.lockbox-review-actions .carryover {
+  border-color: rgba(45, 189, 210, .45);
+  color: #6fd8ea;
+  background: rgba(20, 108, 122, .12);
 }
 
 .lockbox-action-modal-overlay {

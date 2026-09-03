@@ -25,6 +25,7 @@ QUEUE_HEADERS = (
 STATUS_LABELS = {
     "approved": "Approved",
     "held": "Held",
+    "carryover": "Carryover",
     "corrected": "Corrected",
     "balanced": "Prepared",
     "no_remittance": "No Remittance",

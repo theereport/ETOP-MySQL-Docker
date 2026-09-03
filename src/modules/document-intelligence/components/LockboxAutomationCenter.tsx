@@ -51,6 +51,7 @@ type ReviewQueueFilter =
   | 'exceptions'
   | 'corrected'
   | 'held'
+  | 'carryover'
   | 'approved'
 
 function transactionMatchesPrimaryReason(
@@ -488,6 +489,9 @@ export default function LockboxAutomationCenter({
   const heldTransactions = reviewTransactions.filter(
     (transaction) => transaction.status === 'held',
   )
+  const carryoverTransactions = reviewTransactions.filter(
+    (transaction) => transaction.status === 'carryover',
+  )
   const correctedTransactions = reviewTransactions.filter(
     (transaction) => transaction.status === 'corrected',
   )
@@ -535,12 +539,16 @@ export default function LockboxAutomationCenter({
     if (reviewFilter === 'held') {
       return transaction.status === 'held'
     }
+    if (reviewFilter === 'carryover') {
+      return transaction.status === 'carryover'
+    }
     return unresolvedTransactions.some(
       (item) => item.transaction_id === transaction.transaction_id,
     )
   })
   const effectiveReviewCount = unresolvedTransactions.length
   const heldCount = review?.held_count ?? heldTransactions.length
+  const carryoverCount = review?.carryover_count ?? carryoverTransactions.length
   const correctedCount = (
     review?.corrected_count ?? correctedTransactions.length
   )
@@ -562,7 +570,9 @@ export default function LockboxAutomationCenter({
             ? 'Saved Corrections'
             : reviewFilter === 'held'
               ? 'Held'
-              : 'Needs Review'
+              : reviewFilter === 'carryover'
+                ? 'Carryover'
+                : 'Needs Review'
 
   const openTransactionQueue = (
     filter: ReviewQueueFilter,
@@ -805,6 +815,9 @@ export default function LockboxAutomationCenter({
                 <button type="button" disabled={preparationIncomplete} className={heldCount > 0 ? 'hold' : ''} onClick={() => openTransactionQueue('held')}>
                   <strong>{preparationIncomplete ? '—' : heldCount}</strong><span>Held</span>
                 </button>
+                <button type="button" disabled={preparationIncomplete} className={carryoverCount > 0 ? 'carryover' : ''} onClick={() => openTransactionQueue('carryover')}>
+                  <strong>{preparationIncomplete ? '—' : carryoverCount}</strong><span>Carryover</span>
+                </button>
                 <button type="button" disabled={preparationIncomplete} onClick={() => openTransactionQueue('corrected')}>
                   <strong>{preparationIncomplete ? '—' : correctedCount}</strong><span>Saved Corrections</span>
                 </button>
@@ -904,14 +917,21 @@ export default function LockboxAutomationCenter({
                       : `Resolve ${effectiveReviewCount} Review Exception${effectiveReviewCount === 1 ? '' : 's'} Before Export`}
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    className="ed-button-link lockbox-large-action primary"
-                    onClick={() => void exportReviewedResult()}
-                    disabled={isExportingReviewed}
-                  >
-                    {isExportingReviewed ? 'Exporting…' : 'Reviewed PNC Excel'}
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="ed-button-link lockbox-large-action primary"
+                      onClick={() => void exportReviewedResult()}
+                      disabled={isExportingReviewed}
+                    >
+                      {isExportingReviewed ? 'Exporting…' : 'Reviewed PNC Excel'}
+                    </button>
+                    {carryoverCount > 0 && (
+                      <small className="lockbox-carryover-export-note">
+                        {carryoverCount} carryover transaction{carryoverCount === 1 ? '' : 's'} will be omitted from this export.
+                      </small>
+                    )}
+                  </>
                 )}
               </div>
             ) : <button type="button" className="secondary lockbox-large-action" disabled>Download PNC Excel</button>}
@@ -974,6 +994,7 @@ export default function LockboxAutomationCenter({
                 <option value="exceptions">Exceptions only</option>
                 <option value="corrected">Saved corrections only</option>
                 <option value="held">Held only</option>
+                <option value="carryover">Carryover only</option>
                 <option value="approved">Approved only</option>
                 {activeReason && (
                   <option value="reason">Reason: {activeReason.label}</option>
@@ -1017,7 +1038,7 @@ export default function LockboxAutomationCenter({
             </div>
           )}
           {!preparationIncomplete && (
-            <div className="ed-table-wrap"><table className="ed-table"><thead><tr><th>Status</th><th>Transaction</th><th>Customer</th><th>Check</th><th>Check Amount</th><th>Invoices</th><th>Allocated</th><th>Difference</th><th /></tr></thead><tbody>{visibleTransactions.map((transaction) => <tr key={transaction.transaction_id} className="lockbox-review-row" onDoubleClick={() => void openReview(transaction.transaction_id)}><td><span className={`ed-lockbox-status ${transaction.status}`}>{transaction.status === 'approved' ? 'Approved' : transaction.status === 'held' ? 'Held' : transaction.status === 'corrected' ? 'Corrected' : transaction.status === 'balanced' ? 'Prepared' : transaction.status === 'no_remittance' ? 'No Remittance' : 'Review'}</span></td><td><strong>{transaction.transaction_id}</strong><small>Batch {transaction.batch} / Item {transaction.batch_item}</small></td><td>{transaction.customer_name}</td><td>{transaction.check_number}</td><td>{money(transaction.check_amount)}</td><td>{transaction.allocations.length}</td><td>{money(transaction.allocation_total)}</td><td>{money(transaction.difference)}</td><td><button type="button" className="secondary" disabled={Boolean(preparingTransactionId)} onClick={() => void openReview(transaction.transaction_id)}>{preparingTransactionId === transaction.transaction_id ? 'Preparing…' : 'Review'}</button></td></tr>)}</tbody></table></div>
+            <div className="ed-table-wrap"><table className="ed-table"><thead><tr><th>Status</th><th>Transaction</th><th>Customer</th><th>Check</th><th>Check Amount</th><th>Invoices</th><th>Allocated</th><th>Difference</th><th /></tr></thead><tbody>{visibleTransactions.map((transaction) => <tr key={transaction.transaction_id} className="lockbox-review-row" onDoubleClick={() => void openReview(transaction.transaction_id)}><td><span className={`ed-lockbox-status ${transaction.status}`}>{transaction.status === 'approved' ? 'Approved' : transaction.status === 'held' ? 'Held' : transaction.status === 'carryover' ? 'Carryover' : transaction.status === 'corrected' ? 'Corrected' : transaction.status === 'balanced' ? 'Prepared' : transaction.status === 'no_remittance' ? 'No Remittance' : 'Review'}</span></td><td><strong>{transaction.transaction_id}</strong><small>Batch {transaction.batch} / Item {transaction.batch_item}</small></td><td>{transaction.customer_name}</td><td>{transaction.check_number}</td><td>{money(transaction.check_amount)}</td><td>{transaction.allocations.length}</td><td>{money(transaction.allocation_total)}</td><td>{money(transaction.difference)}</td><td><button type="button" className="secondary" disabled={Boolean(preparingTransactionId)} onClick={() => void openReview(transaction.transaction_id)}>{preparingTransactionId === transaction.transaction_id ? 'Preparing…' : 'Review'}</button></td></tr>)}</tbody></table></div>
           )}
         </section>
       )}

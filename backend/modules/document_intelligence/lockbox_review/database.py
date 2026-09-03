@@ -63,6 +63,7 @@ def migrate_legacy_reviews(
                     "customer_postal_code",
                 )
             }
+            migrated_status = str(payload.get("status") or "corrected")
             connection.execute(
                 target.insert().values(
                     job_id=job_id,
@@ -75,13 +76,14 @@ def migrate_legacy_reviews(
                         payload.get("allocations", []), ensure_ascii=False
                     ),
                     customer_json=json.dumps(customer, ensure_ascii=False),
-                    status=str(payload.get("status") or "corrected"),
+                    status=migrated_status,
                     reviewer=str(payload.get("reviewer") or ""),
                     notes=str(payload.get("notes") or ""),
                     override_reason=str(payload.get("override_reason") or ""),
                     misc_gl_json="{}",
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
+                    carryover_origin=migrated_status == "carryover",
                 )
             )
             migrated += 1
@@ -106,9 +108,45 @@ def get_reviews(job_id: str) -> dict[str, dict[str, Any]]:
             "override_reason": row["override_reason"],
             "misc_gl": json.loads(row["misc_gl_json"] or "{}"),
             "reviewed_at": row["updated_at"],
+            "carryover_origin": bool(row["carryover_origin"]),
         }
         for row in rows
     }
+
+
+def list_carryover_job_ids() -> list[str]:
+    """Every job_id with at least one transaction currently in carryover.
+
+    Cheap and indexed - lets a cross-job carryover listing avoid loading
+    every lockbox job's full review just to check for carryover rows.
+    """
+
+    initialize_database()
+    table = lockbox_transaction_reviews_table
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            select(table.c.job_id)
+            .where(table.c.status == "carryover")
+            .distinct()
+        ).all()
+    return [row[0] for row in rows]
+
+
+def list_approved_carryover_origin_transaction_ids() -> list[tuple[str, str]]:
+    """Every (job_id, transaction_id) currently approved that originated
+    from a carryover disposition - the Carryover Dashboard's export set."""
+
+    initialize_database()
+    table = lockbox_transaction_reviews_table
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            select(table.c.job_id, table.c.transaction_id)
+            .where(
+                table.c.status == "approved",
+                table.c.carryover_origin.is_(True),
+            )
+        ).all()
+    return [(row[0], row[1]) for row in rows]
 
 
 def save_review(
@@ -127,22 +165,26 @@ def save_review(
     initialize_database()
     now = datetime.now(timezone.utc).isoformat()
     table = lockbox_transaction_reviews_table
-    values = dict(
-        allocations_json=json.dumps(allocations, ensure_ascii=False),
-        customer_json=json.dumps(customer, ensure_ascii=False),
-        status=status,
-        reviewer=reviewer,
-        notes=notes,
-        override_reason=override_reason,
-        misc_gl_json=json.dumps(misc_gl or {}, ensure_ascii=False),
-        updated_at=now,
-    )
     with get_engine().begin() as connection:
         existing = connection.execute(
-            select(table.c.job_id).where(
+            select(table.c.job_id, table.c.carryover_origin).where(
                 table.c.job_id == job_id, table.c.transaction_id == transaction_id
             )
         ).first()
+        carryover_origin = status == "carryover" or bool(
+            existing is not None and existing.carryover_origin
+        )
+        values = dict(
+            allocations_json=json.dumps(allocations, ensure_ascii=False),
+            customer_json=json.dumps(customer, ensure_ascii=False),
+            status=status,
+            reviewer=reviewer,
+            notes=notes,
+            override_reason=override_reason,
+            misc_gl_json=json.dumps(misc_gl or {}, ensure_ascii=False),
+            updated_at=now,
+            carryover_origin=carryover_origin,
+        )
         if existing is None:
             connection.execute(
                 table.insert().values(

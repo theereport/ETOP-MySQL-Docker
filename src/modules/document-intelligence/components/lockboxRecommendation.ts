@@ -272,6 +272,54 @@ export async function getLockboxOpenInvoices(
   }
 }
 
+export async function getLockboxZeroBalanceOpenInvoices(
+  customerNumber: string,
+  paymentDate: string,
+  signal?: AbortSignal,
+): Promise<LegacyInvoiceDetail[]> {
+  const params = new URLSearchParams()
+  if (paymentDate) params.set('aging_as_of_date', paymentDate)
+  const query = params.size > 0 ? `?${params.toString()}` : ''
+  const response = await fetch(
+    `${legacyApiRoot()}/api/test/zero-balance-open-invoices/`
+    + `${encodeURIComponent(customerNumber)}${query}`,
+    { signal },
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    throw new Error(
+      payload?.detail
+      || `ERP zero-balance open-invoice retrieval failed with HTTP ${response.status}.`,
+    )
+  }
+  const envelope = await response.json() as OpenInvoicesEnvelope
+  return envelope.invoices ?? []
+}
+
+export async function getLockboxRecentlyClosedInvoices(
+  customerNumber: string,
+  asOfDate: string,
+  signal?: AbortSignal,
+): Promise<LegacyInvoiceDetail[]> {
+  const params = new URLSearchParams()
+  if (asOfDate) params.set('as_of_date', asOfDate)
+  const query = params.size > 0 ? `?${params.toString()}` : ''
+  const response = await fetch(
+    `${legacyApiRoot()}/api/test/recently-closed-invoices/`
+    + `${encodeURIComponent(customerNumber)}${query}`,
+    { signal },
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    throw new Error(
+      payload?.detail
+      || `ERP recently-closed-invoice retrieval failed with HTTP ${response.status}.`,
+    )
+  }
+  const envelope = await response.json() as OpenInvoicesEnvelope
+  return envelope.invoices ?? []
+}
+
 export function reconcileRecommendationWithOpenInvoices(
   current: LockboxRecommendation,
   openInvoices: LegacyInvoiceDetail[],

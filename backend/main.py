@@ -715,6 +715,56 @@ def test_open_invoices(
         ],
     }
 
+@app.get("/api/test/zero-balance-open-invoices/{customer_number}")
+def test_zero_balance_open_invoices(
+    customer_number: str,
+    aging_as_of_date: date | None = None,
+    days: int = 5,
+) -> dict:
+    effective_aging_date = aging_as_of_date or date.today()
+
+    invoices = receivables_repository.get_zero_balance_open_invoices(
+        customer_number=customer_number,
+        aging_as_of_date=effective_aging_date,
+        days=days,
+    )
+
+    return {
+        "customer_number": customer_number,
+        "aging_as_of_date": effective_aging_date,
+        "days": days,
+        "invoice_count": len(invoices),
+        "invoices": [
+            invoice.model_dump()
+            for invoice in invoices
+        ],
+    }
+
+@app.get("/api/test/recently-closed-invoices/{customer_number}")
+def test_recently_closed_invoices(
+    customer_number: str,
+    as_of_date: date | None = None,
+    days: int = 60,
+) -> dict:
+    effective_as_of_date = as_of_date or date.today()
+
+    invoices = receivables_repository.get_recently_closed_invoices(
+        customer_number=customer_number,
+        as_of_date=effective_as_of_date,
+        days=days,
+    )
+
+    return {
+        "customer_number": customer_number,
+        "as_of_date": effective_as_of_date,
+        "days": days,
+        "invoice_count": len(invoices),
+        "invoices": [
+            invoice.model_dump()
+            for invoice in invoices
+        ],
+    }
+
 @app.get("/api/test/invoice-match/{customer_number}")
 def test_invoice_match(
     customer_number: str,

@@ -485,6 +485,7 @@ export function projectGovernedLockboxReview(
     if (
       transaction.status === 'corrected'
       || transaction.status === 'held'
+      || transaction.status === 'carryover'
       || transaction.status === 'approved'
     ) {
       return transaction
@@ -522,6 +523,7 @@ export function projectGovernedLockboxReview(
   const approvedCount = transactions.filter((item) => item.status === 'approved').length
   const correctedCount = transactions.filter((item) => item.status === 'corrected').length
   const heldCount = transactions.filter((item) => item.status === 'held').length
+  const carryoverCount = transactions.filter((item) => item.status === 'carryover').length
   const balancedCount = transactions.filter((item) => item.status === 'balanced').length
   const reviewCount = (
     transactions.length
@@ -529,6 +531,7 @@ export function projectGovernedLockboxReview(
     - approvedCount
     - correctedCount
     - heldCount
+    - carryoverCount
   )
   return {
     preparedTransactions,
@@ -539,6 +542,7 @@ export function projectGovernedLockboxReview(
       approved_count: approvedCount,
       corrected_count: correctedCount,
       held_count: heldCount,
+      carryover_count: carryoverCount,
       transactions,
     },
   }

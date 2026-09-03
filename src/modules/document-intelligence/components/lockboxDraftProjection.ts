@@ -43,6 +43,7 @@ export function shouldProjectRecommendationDraft(
     && !allocationDraftDirty
     && transactionStatus !== 'corrected'
     && transactionStatus !== 'held'
+    && transactionStatus !== 'carryover'
     && transactionStatus !== 'approved'
     && transactionStatus !== 'balanced',
   )

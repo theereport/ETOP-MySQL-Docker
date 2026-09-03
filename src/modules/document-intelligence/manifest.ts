@@ -38,6 +38,22 @@ export const manifests: ModuleManifestEntry[] = [
     },
   },
   {
+    moduleId: 'carryover_dashboard',
+    title: 'Carryover Dashboard',
+    shortTitle: 'Carryover',
+    description: 'Work every lockbox transaction parked as carryover, across every job, and export what gets approved from it.',
+    hint: 'Cross-job carryover queue',
+    icon: '◨',
+    status: 'Ready',
+    group: 'Workspaces',
+    category: 'AR / Receivables',
+    search: {
+      id: 'carryover-dashboard',
+      subtitle: 'Cross-job carryover queue and export',
+      keywords: ['carryover', 'lockbox', 'parked', 'deferred', 'dashboard'],
+    },
+  },
+  {
     moduleId: 'document_ai_studio',
     title: 'Document AI Studio',
     shortTitle: 'AI Studio',

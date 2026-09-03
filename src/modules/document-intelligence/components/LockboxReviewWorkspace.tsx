@@ -36,6 +36,8 @@ import type {
 
 import {
   getLockboxOpenInvoices,
+  getLockboxZeroBalanceOpenInvoices,
+  getLockboxRecentlyClosedInvoices,
   getValidErpInvoiceNumbers,
   getLockboxRecommendation,
   normalizeErpInvoiceNumber,
@@ -305,6 +307,7 @@ function money(value: number) {
 
 const MISC_GL_REASONS: { value: string; glCode: string }[] = [
   { value: 'Service Charge ADJ', glCode: '3880' },
+  { value: 'AR Variance', glCode: '3950' },
 ]
 
 function displayDate(value?: string | null) {
@@ -312,6 +315,11 @@ function displayDate(value?: string | null) {
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
   if (!match) return value
   return `${Number(match[2])}/${Number(match[3])}/${match[1]}`
+}
+
+function firstOfCurrentMonthDisplay() {
+  const now = new Date()
+  return `${now.getMonth() + 1}/1/${now.getFullYear()}`
 }
 
 function displayTimestamp(value: string) {
@@ -421,6 +429,19 @@ export default function LockboxReviewWorkspace({
   const [openInvoices, setOpenInvoices] = useState<LegacyInvoiceDetail[]>([])
   const [isLoadingOpenInvoices, setIsLoadingOpenInvoices] = useState(false)
   const [openInvoiceError, setOpenInvoiceError] = useState('')
+  const [zeroBalanceInvoices, setZeroBalanceInvoices] =
+    useState<LegacyInvoiceDetail[]>([])
+  const [showZeroBalanceInvoices, setShowZeroBalanceInvoices] =
+    useState(false)
+  const [isLoadingZeroBalanceInvoices, setIsLoadingZeroBalanceInvoices] =
+    useState(false)
+  const [zeroBalanceInvoiceError, setZeroBalanceInvoiceError] = useState('')
+  const [closedInvoices, setClosedInvoices] =
+    useState<LegacyInvoiceDetail[]>([])
+  const [showClosedInvoices, setShowClosedInvoices] = useState(false)
+  const [isLoadingClosedInvoices, setIsLoadingClosedInvoices] =
+    useState(false)
+  const [closedInvoiceError, setClosedInvoiceError] = useState('')
   const [selectedDueDates, setSelectedDueDates] = useState<string[]>([])
   const dueDateSelectionBaselineRef = useRef<{
     allocations: ReviewedLockboxAllocation[]
@@ -705,6 +726,7 @@ export default function LockboxReviewWorkspace({
       preparedTransaction?.customer
       && transaction.status !== 'corrected'
       && transaction.status !== 'held'
+      && transaction.status !== 'carryover'
       && transaction.status !== 'approved'
     ) {
       const preparedCustomer = preparedTransaction.customer
@@ -730,6 +752,12 @@ export default function LockboxReviewWorkspace({
   useEffect(() => {
     setSelectedDueDates([])
     dueDateSelectionBaselineRef.current = null
+    setZeroBalanceInvoices([])
+    setShowZeroBalanceInvoices(false)
+    setZeroBalanceInvoiceError('')
+    setClosedInvoices([])
+    setShowClosedInvoices(false)
+    setClosedInvoiceError('')
 
     if (!transaction || !customerNumber.trim()) {
       setOpenInvoices([])
@@ -755,6 +783,7 @@ export default function LockboxReviewWorkspace({
         transaction.status !== 'approved'
         && transaction.status !== 'corrected'
         && transaction.status !== 'held'
+      && transaction.status !== 'carryover'
         && transaction.status !== 'balanced'
       ) {
         setShowOpenInvoicePicker(true)
@@ -772,6 +801,7 @@ export default function LockboxReviewWorkspace({
         transaction.status !== 'approved'
         && transaction.status !== 'corrected'
         && transaction.status !== 'held'
+      && transaction.status !== 'carryover'
       ) {
         const invoiceLookup = new Map(
           resolvedInvoices.flatMap((invoice) => {
@@ -811,6 +841,7 @@ export default function LockboxReviewWorkspace({
         transaction.status !== 'approved'
         && transaction.status !== 'corrected'
         && transaction.status !== 'held'
+      && transaction.status !== 'carryover'
         && transaction.status !== 'balanced'
       ) {
         setShowOpenInvoicePicker(true)
@@ -822,6 +853,54 @@ export default function LockboxReviewWorkspace({
     return () => controller.abort()
   }, [customerNumber, transaction])
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  const toggleZeroBalanceInvoices = () => {
+    const next = !showZeroBalanceInvoices
+    setShowZeroBalanceInvoices(next)
+    if (!next || zeroBalanceInvoices.length > 0 || !customerNumber.trim()) {
+      return
+    }
+    setIsLoadingZeroBalanceInvoices(true)
+    setZeroBalanceInvoiceError('')
+    getLockboxZeroBalanceOpenInvoices(
+      customerNumber.trim(),
+      normalizeLockboxPaymentDate(transaction?.date),
+    ).then((invoices) => {
+      setZeroBalanceInvoices(invoices)
+    }).catch((error) => {
+      setZeroBalanceInvoiceError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to load $0 open invoices.',
+      )
+    }).finally(() => {
+      setIsLoadingZeroBalanceInvoices(false)
+    })
+  }
+
+  const toggleClosedInvoices = () => {
+    const next = !showClosedInvoices
+    setShowClosedInvoices(next)
+    if (!next || closedInvoices.length > 0 || !customerNumber.trim()) {
+      return
+    }
+    setIsLoadingClosedInvoices(true)
+    setClosedInvoiceError('')
+    getLockboxRecentlyClosedInvoices(
+      customerNumber.trim(),
+      normalizeLockboxPaymentDate(transaction?.date),
+    ).then((invoices) => {
+      setClosedInvoices(invoices)
+    }).catch((error) => {
+      setClosedInvoiceError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to load recently closed invoices.',
+      )
+    }).finally(() => {
+      setIsLoadingClosedInvoices(false)
+    })
+  }
 
   useEffect(() => {
     setLinkedAccountIndex(0)
@@ -1229,6 +1308,91 @@ export default function LockboxReviewWorkspace({
     openInvoiceSearch,
     openInvoices,
   ])
+
+  const filterInvoiceCandidates = (
+    invoices: LegacyInvoiceDetail[],
+    search: string,
+  ) => invoices.filter((invoice) => {
+    const identity = getLegacyOpenItemIdentity(invoice)
+    if (!identity || allocatedInvoiceNumbers.has(identity.key)) {
+      return false
+    }
+    if (!search) return true
+    const effect = getInvoiceBusinessEffect(invoice)
+    return [
+      identity.displayNumber,
+      identity.allocationKind,
+      identity.openItemKey,
+      invoice.reference_number,
+      invoice.due_date,
+      invoice.aging_bucket,
+      invoice.due_date_bucket,
+      effect.businessType,
+      effect.rawTransactionType,
+      effect.amount,
+    ].some((value) => String(value ?? '').toLowerCase().includes(search))
+  })
+
+  const availableZeroBalanceInvoices = useMemo(
+    () => filterInvoiceCandidates(
+      zeroBalanceInvoices,
+      openInvoiceSearch.trim().toLowerCase(),
+    ),
+    [allocatedInvoiceNumbers, openInvoiceSearch, zeroBalanceInvoices],
+  )
+
+  const availableClosedInvoices = useMemo(
+    () => filterInvoiceCandidates(
+      closedInvoices,
+      openInvoiceSearch.trim().toLowerCase(),
+    ),
+    [allocatedInvoiceNumbers, openInvoiceSearch, closedInvoices],
+  )
+
+  const renderInvoiceCandidateButtons = (invoices: LegacyInvoiceDetail[]) =>
+    invoices.slice(0, 80).map((invoice) => {
+      const identity = getLegacyOpenItemIdentity(invoice)
+      if (!identity) return null
+      const effect = getInvoiceBusinessEffect(invoice)
+      return (
+        <button
+          type="button"
+          className="cash-ai-open-invoice"
+          key={identity.key}
+          onClick={() => addOpenInvoice(invoice)}
+        >
+          <strong>
+            {identity.allocationKind === 'service_charge'
+              ? `SC · ${identity.displayNumber}`
+              : identity.displayNumber}
+          </strong>
+          <span>
+            {effect.amount === null
+              ? '—'
+              : money(effect.amount)}
+          </span>
+          <small>
+            {effect.businessType === 'credit'
+              ? 'Credit'
+              : identity.allocationKind === 'service_charge'
+                ? 'Service charge'
+                : 'Debit'}
+            {' · Due '}
+            {displayDate(invoice.due_date)}
+            {' · '}
+            {invoice.due_date_bucket
+              || invoice.aging_bucket
+              || 'No aging bucket'}
+            {invoice.reference_number
+              ? ` · Ref ${invoice.reference_number}`
+              : ''}
+            {identity.invoiceCount !== null
+              ? ` · Count ${identity.invoiceCount}`
+              : ''}
+          </small>
+        </button>
+      )
+    })
 
   const addOpenInvoice = (invoice: LegacyInvoiceDetail) => {
     const identity = getLegacyOpenItemIdentity(invoice)
@@ -1693,7 +1857,7 @@ export default function LockboxReviewWorkspace({
 
   const save = async (nextStatus: LockboxReviewStatus) => {
     if (!transaction) return
-    const isHolding = nextStatus === 'held'
+    const isHolding = nextStatus === 'held' || nextStatus === 'carryover'
     if (
       !isHolding
       && allocations.some((allocation) => !allocation.invoice_number.trim())
@@ -1749,7 +1913,11 @@ export default function LockboxReviewWorkspace({
       )
       onUpdated(updated, transaction.transaction_id)
       setStatus(nextStatus)
-      if (nextStatus === 'approved' || nextStatus === 'held') {
+      if (
+        nextStatus === 'approved'
+        || nextStatus === 'held'
+        || nextStatus === 'carryover'
+      ) {
         const nextTransactionId = nextLockboxQueueTransactionId(
           queueTransactions,
           transaction.transaction_id,
@@ -2053,8 +2221,8 @@ export default function LockboxReviewWorkspace({
         }
         .cash-ai-metric span {
           display: block;
-          color: #8496ae;
-          font-size: 11px;
+          color: #a9bcd6;
+          font-size: 12px;
           margin-bottom: 4px;
         }
         .cash-ai-metric strong {
@@ -2081,8 +2249,8 @@ export default function LockboxReviewWorkspace({
           color: #f1f6fd;
         }
         .cash-ai-allocation-heading span {
-          color: #8da2bc;
-          font-size: 11px;
+          color: #a9bcd6;
+          font-size: 12px;
         }
         .cash-ai-allocation-heading-actions {
           display: flex;
@@ -2125,7 +2293,7 @@ export default function LockboxReviewWorkspace({
           top: 0;
           color: #91a7c1;
           background: #111d2e;
-          font-size: 11px;
+          font-size: 12px;
           text-transform: uppercase;
           letter-spacing: .05em;
         }
@@ -2152,7 +2320,7 @@ export default function LockboxReviewWorkspace({
           display: inline-flex;
           padding: 3px 6px;
           border-radius: 999px;
-          font-size: 10px;
+          font-size: 11px;
           font-weight: 800;
           text-transform: uppercase;
           letter-spacing: .04em;
@@ -2168,8 +2336,8 @@ export default function LockboxReviewWorkspace({
         .cash-ai-type-note {
           display: block;
           margin-top: 4px;
-          color: #8497b0;
-          font-size: 10px;
+          color: #a9bcd6;
+          font-size: 12px;
           white-space: normal;
         }
         .cash-ai-delete-row {
@@ -2230,15 +2398,38 @@ export default function LockboxReviewWorkspace({
         }
         .cash-ai-open-invoice small {
           grid-column: 1 / -1;
-          color: #8497b0;
+          color: #a9bcd6;
         }
         .cash-ai-editor-note,
         .cash-ai-open-invoice-state {
           padding: 8px 12px;
           border-top: 1px solid #263952;
-          color: #8fa2ba;
+          color: #a9bcd6;
           background: #101b2b;
-          font-size: 11px;
+          font-size: 12px;
+        }
+        .cash-ai-secondary-invoice-picker {
+          margin-top: 10px;
+          border: 1px solid #3b526f;
+          border-radius: 8px;
+        }
+        .cash-ai-secondary-invoice-heading {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          padding: 9px 12px 0;
+          color: #dbe8f8;
+          font-weight: 700;
+          font-size: 12px;
+        }
+        .cash-ai-secondary-invoice-heading small {
+          color: #a9bcd6;
+          font-weight: 400;
+        }
+        .cash-ai-actions button.active {
+          border-color: #6fd8ea;
+          color: #6fd8ea;
+          background: rgba(20, 108, 122, .18);
         }
         .cash-ai-credit-warning {
           margin: 10px 0;
@@ -2247,7 +2438,7 @@ export default function LockboxReviewWorkspace({
           border-radius: 8px;
           color: #ffc2c2;
           background: rgba(127, 29, 29, .16);
-          font-size: 11px;
+          font-size: 12px;
         }
         .cash-ai-allocation-empty {
           display: grid;
@@ -2272,8 +2463,8 @@ export default function LockboxReviewWorkspace({
           position: relative;
           display: flex;
           flex-direction: column;
-          color: #8595ab;
-          font-size: 11px;
+          color: #a9bcd6;
+          font-size: 12px;
           font-weight: 700;
         }
         .erp-customer-search-field input {
@@ -2283,8 +2474,8 @@ export default function LockboxReviewWorkspace({
         .erp-customer-search-state {
           min-height: 16px;
           margin-top: 5px;
-          color: #7f90a7;
-          font-size: 10px;
+          color: #a9bcd6;
+          font-size: 12px;
           font-weight: 500;
         }
         .erp-customer-results {
@@ -2329,12 +2520,12 @@ export default function LockboxReviewWorkspace({
         .erp-customer-result span {
           margin-top: 3px;
           color: #8db8f4;
-          font-size: 11px;
+          font-size: 12px;
         }
         .erp-customer-result small {
           margin-top: 3px;
-          color: #7f90a7;
-          font-size: 10px;
+          color: #a9bcd6;
+          font-size: 12px;
         }
         .erp-customer-selection,
         .erp-invoice-match-message,
@@ -2351,14 +2542,14 @@ export default function LockboxReviewWorkspace({
           border-radius: 8px;
           color: #76dcae;
           background: rgba(65, 190, 131, .08);
-          font-size: 11px;
+          font-size: 12px;
         }
         .erp-customer-selection button {
           padding: 4px 8px;
         }
         .erp-customer-search-error {
           color: #ef9b9b;
-          font-size: 11px;
+          font-size: 12px;
         }
         .erp-invoice-match-message {
           padding: 9px 11px;
@@ -2366,7 +2557,7 @@ export default function LockboxReviewWorkspace({
           border-radius: 8px;
           color: #a9c8f7;
           background: rgba(57, 105, 171, .11);
-          font-size: 11px;
+          font-size: 12px;
           line-height: 1.45;
         }
         .erp-invoice-match-message.success {
@@ -2385,7 +2576,7 @@ export default function LockboxReviewWorkspace({
           border-radius: 999px;
           color: #315f46;
           background: #dcfce7;
-          font-size: 11px;
+          font-size: 12px;
         }
         @media (max-width: 900px) {
           .cash-ai-metrics {
@@ -2412,7 +2603,7 @@ export default function LockboxReviewWorkspace({
               <div className="lockbox-statement-summary-col">
                 <span>Statement Date</span>
                 <strong>
-                  {displayDate(customerSummary.activity.last_statement_date as string | null)}
+                  {firstOfCurrentMonthDisplay()}
                 </strong>
               </div>
               <div className="lockbox-statement-summary-col">
@@ -2978,6 +3169,13 @@ export default function LockboxReviewWorkspace({
                 </div>
               </div>
 
+              {customerSummary?.flags?.discount_customer && (
+                <div className="ed-banner discount-customer">
+                  Discount Customer — review this customer&apos;s pricing
+                  agreement before applying this payment.
+                </div>
+              )}
+
               {recommendationError && (
                 <div className="ed-banner error">{recommendationError}</div>
               )}
@@ -3038,29 +3236,6 @@ export default function LockboxReviewWorkspace({
                           {allocations.length} draft row(s) · {openInvoices.length}
                           {' '}current ERP open item(s) · ERP total {money(openInvoiceTotal)}
                         </span>
-                      </div>
-                      <div className="cash-ai-allocation-heading-actions">
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={!customerNumber || isLoadingOpenInvoices}
-                          onClick={() => setShowOpenInvoicePicker(
-                            (current) => !current,
-                          )}
-                        >
-                          {isLoadingOpenInvoices
-                            ? 'Loading ERP Open A/R…'
-                            : showOpenInvoicePicker
-                              ? 'Close ERP Open A/R'
-                              : '+ Add ERP Invoice / SC'}
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={addAllocation}
-                        >
-                          + Add Blank Row
-                        </button>
                       </div>
                     </div>
                     <div className="cash-ai-table-wrap">
@@ -3183,7 +3358,7 @@ export default function LockboxReviewWorkspace({
                               )
 
                               rows.push(
-                                <tr key={`${index}-${allocation.invoice_number}`}>
+                                <tr key={index}>
                                   <td>
                                     <input
                                       aria-label={`Invoice number for allocation row ${index + 1}`}
@@ -3324,59 +3499,65 @@ export default function LockboxReviewWorkspace({
                           </div>
                         ) : availableOpenInvoices.length > 0 ? (
                           <div className="cash-ai-open-invoice-list">
-                            {availableOpenInvoices.slice(0, 80).map(
-                              (invoice) => {
-                                const identity =
-                                  getLegacyOpenItemIdentity(invoice)
-                                if (!identity) return null
-                                const effect =
-                                  getInvoiceBusinessEffect(invoice)
-                                return (
-                                  <button
-                                    type="button"
-                                    className="cash-ai-open-invoice"
-                                    key={identity.key}
-                                    onClick={() => addOpenInvoice(invoice)}
-                                  >
-                                    <strong>
-                                      {identity.allocationKind === 'service_charge'
-                                        ? `SC · ${identity.displayNumber}`
-                                        : identity.displayNumber}
-                                    </strong>
-                                    <span>
-                                      {effect.amount === null
-                                        ? '—'
-                                        : money(effect.amount)}
-                                    </span>
-                                    <small>
-                                      {effect.businessType === 'credit'
-                                        ? 'Credit'
-                                        : identity.allocationKind === 'service_charge'
-                                          ? 'Service charge'
-                                          : 'Debit'}
-                                      {' · Due '}
-                                      {displayDate(invoice.due_date)}
-                                      {' · '}
-                                      {invoice.due_date_bucket
-                                        || invoice.aging_bucket
-                                        || 'No aging bucket'}
-                                      {invoice.reference_number
-                                        ? ` · Ref ${invoice.reference_number}`
-                                        : ''}
-                                      {identity.invoiceCount !== null
-                                        ? ` · Count ${identity.invoiceCount}`
-                                        : ''}
-                                    </small>
-                                  </button>
-                                )
-                              },
-                            )}
+                            {renderInvoiceCandidateButtons(availableOpenInvoices)}
                           </div>
                         ) : (
                           <div className="cash-ai-open-invoice-state">
                             {isLoadingOpenInvoices
                               ? 'Loading current ERP Open A/R…'
                               : 'No additional ERP open items match this search.'}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {showZeroBalanceInvoices && (
+                      <div className="cash-ai-open-invoice-picker cash-ai-secondary-invoice-picker">
+                        <div className="cash-ai-secondary-invoice-heading">
+                          Open $0 Invoices
+                          <small>
+                            Last changed within 5 days · reopen in MaddenCo
+                            before applying a payment here.
+                          </small>
+                        </div>
+                        {zeroBalanceInvoiceError ? (
+                          <div className="cash-ai-open-invoice-state">
+                            {zeroBalanceInvoiceError}
+                          </div>
+                        ) : availableZeroBalanceInvoices.length > 0 ? (
+                          <div className="cash-ai-open-invoice-list">
+                            {renderInvoiceCandidateButtons(availableZeroBalanceInvoices)}
+                          </div>
+                        ) : (
+                          <div className="cash-ai-open-invoice-state">
+                            {isLoadingZeroBalanceInvoices
+                              ? 'Loading $0 open invoices…'
+                              : 'No $0 open invoices in the last 5 days.'}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {showClosedInvoices && (
+                      <div className="cash-ai-open-invoice-picker cash-ai-secondary-invoice-picker">
+                        <div className="cash-ai-secondary-invoice-heading">
+                          Closed Invoices (Last 60 Days)
+                          <small>
+                            From ERP invoice history, excluding anything
+                            still carried on current open A/R.
+                          </small>
+                        </div>
+                        {closedInvoiceError ? (
+                          <div className="cash-ai-open-invoice-state">
+                            {closedInvoiceError}
+                          </div>
+                        ) : availableClosedInvoices.length > 0 ? (
+                          <div className="cash-ai-open-invoice-list">
+                            {renderInvoiceCandidateButtons(availableClosedInvoices)}
+                          </div>
+                        ) : (
+                          <div className="cash-ai-open-invoice-state">
+                            {isLoadingClosedInvoices
+                              ? 'Loading closed invoices…'
+                              : 'No closed invoices in the last 60 days.'}
                           </div>
                         )}
                       </div>
@@ -3430,6 +3611,51 @@ export default function LockboxReviewWorkspace({
                       onClick={clearAllocationDraft}
                     >
                       Clear
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={!customerNumber || isLoadingOpenInvoices}
+                      onClick={() => setShowOpenInvoicePicker(
+                        (current) => !current,
+                      )}
+                    >
+                      {isLoadingOpenInvoices
+                        ? 'Loading ERP Open A/R…'
+                        : showOpenInvoicePicker
+                          ? 'Close ERP Open A/R'
+                          : '+ Add ERP Invoice / SC'}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={addAllocation}
+                    >
+                      + Add Blank Row
+                    </button>
+                    <button
+                      type="button"
+                      className={`secondary ${showZeroBalanceInvoices ? 'active' : ''}`}
+                      disabled={!customerNumber || isLoadingZeroBalanceInvoices}
+                      onClick={toggleZeroBalanceInvoices}
+                    >
+                      {isLoadingZeroBalanceInvoices
+                        ? 'Loading $0 Invoices…'
+                        : showZeroBalanceInvoices
+                          ? 'Hide Open $0 Invoices'
+                          : 'Show Open $0 Invoices'}
+                    </button>
+                    <button
+                      type="button"
+                      className={`secondary ${showClosedInvoices ? 'active' : ''}`}
+                      disabled={!customerNumber || isLoadingClosedInvoices}
+                      onClick={toggleClosedInvoices}
+                    >
+                      {isLoadingClosedInvoices
+                        ? 'Loading Closed Invoices…'
+                        : showClosedInvoices
+                          ? 'Hide Closed Invoices (60 Days)'
+                          : 'Show Closed Invoices (60 Days)'}
                     </button>
                   </div>
                 </>
@@ -3791,6 +4017,15 @@ export default function LockboxReviewWorkspace({
                 onClick={() => void save('held')}
               >
                 {isSaving ? 'Saving…' : 'Hold'}
+              </button>
+              <button
+                type="button"
+                className="secondary carryover"
+                disabled={isSaving || isPreparingSelection}
+                title="Park this transaction for a later session - it will be excluded from this job's Excel export."
+                onClick={() => void save('carryover')}
+              >
+                {isSaving ? 'Saving…' : 'Carryover'}
               </button>
               <button type="button" className="secondary" disabled={isSaving} onClick={() => void save('corrected')}>{isSaving ? 'Saving…' : 'Save Correction'}</button>
               <button type="button" className="primary" disabled={isSaving} onClick={() => void save('approved')}>{isSaving ? 'Saving…' : 'Approve Transaction'}</button>

@@ -38,6 +38,7 @@ export function transactionNeedsProfessionalReview(
     && transaction.status !== 'corrected'
     && transaction.status !== 'balanced'
     && transaction.status !== 'held'
+    && transaction.status !== 'carryover'
   )
 }
 
@@ -45,6 +46,12 @@ export function transactionIsHeld(
   transaction: Pick<LockboxQueueTransaction, 'status'>,
 ): boolean {
   return transaction.status === 'held'
+}
+
+export function transactionIsCarryover(
+  transaction: Pick<LockboxQueueTransaction, 'status'>,
+): boolean {
+  return transaction.status === 'carryover'
 }
 
 export function nextProfessionalReviewTransactionId(

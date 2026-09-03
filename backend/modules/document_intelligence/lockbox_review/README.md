@@ -44,9 +44,10 @@ Enterprise-customer linkage used by this workspace is served from the
     customer with a divider whenever more than one is present, pulling
     each row's Open Amount/Invoice Date/Due Date/Aging from whichever
     account's open-item evidence it actually belongs to.
-- **Misc G/L Entry** — a bounded write-off (currently the single reason
-  `Service Charge ADJ`, GL `3880`, server-derived and validated - never
-  client-trusted) with reviewer-entered location, department, and amount.
+- **Misc G/L Entry** — a bounded write-off (`Service Charge ADJ`, GL
+  `3880`, or `AR Variance`, GL `3950` - both server-derived and
+  validated, never client-trusted) with reviewer-entered location,
+  department, and amount.
   The amount is subtracted from `check_amount - allocation_total` when
   computing `difference`/`balanced`, so a waived service charge can close
   the remaining gap on a check without a matching invoice allocation row.
@@ -63,8 +64,8 @@ Enterprise-customer linkage used by this workspace is served from the
 
 - No ERP write. A save is a local review disposition; applying it in
   MaddenCo remains a separate, human, out-of-band action.
-- No automatic reason/GL mapping beyond the single explicit
-  `MISC_GL_REASON_CODES` entry maintained in `service.py` — a client-
+- No automatic reason/GL mapping beyond the explicit
+  `MISC_GL_REASON_CODES` entries maintained in `service.py` — a client-
   submitted GL code is never trusted or persisted as-is.
 - No implicit trust that a manually-linked pair of customers is
   financially related beyond "a reviewer said so" — the manual-link

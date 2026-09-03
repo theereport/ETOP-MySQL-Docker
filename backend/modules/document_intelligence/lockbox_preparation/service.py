@@ -353,7 +353,7 @@ class DurableLockboxPreparationService:
                     ),
                     "reviewed_at": item.get("reviewed_at"),
                 }
-                if status in {"corrected", "held", "approved"}
+                if status in {"corrected", "held", "carryover", "approved"}
                 else None
             )
             source_reference = str(

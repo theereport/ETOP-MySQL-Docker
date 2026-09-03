@@ -13,6 +13,7 @@ import type {
   TrainingSession,
   TrainingSummary,
   LockboxReviewResult,
+  ReviewedLockboxTransaction,
   SaveLockboxTransactionReviewRequest,
   AppendLockboxCustomerNoteRequest,
   LockboxCustomerNoteList,
@@ -436,6 +437,21 @@ export async function getCurrentDurableLockboxPreparation(
   )
   if (!response.ok) throw new Error(await readError(response))
   return response.json()
+}
+
+export async function getCarryoverTransactions(
+  signal?: AbortSignal,
+): Promise<{ transactions: (ReviewedLockboxTransaction & {
+  job_id: string
+  source_file_name: string
+})[] }> {
+  const response = await fetch(`${API_BASE}/lockbox/carryover`, { signal })
+  if (!response.ok) throw new Error(await readError(response))
+  return response.json()
+}
+
+export function carryoverExportUrl(): string {
+  return `${API_BASE}/lockbox/carryover/export`
 }
 
 export async function saveLockboxTransactionReview(

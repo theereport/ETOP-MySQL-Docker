@@ -9,6 +9,7 @@ ReviewStatus = Literal[
     "no_remittance",
     "corrected",
     "held",
+    "carryover",
     "approved",
 ]
 
@@ -156,6 +157,7 @@ class LockboxReviewResponse(BaseModel):
     balanced_count: int
     review_count: int
     held_count: int = 0
+    carryover_count: int = 0
     approved_count: int
     corrected_count: int
     transactions: list[ReviewedTransaction]

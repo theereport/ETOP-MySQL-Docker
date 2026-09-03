@@ -13,6 +13,7 @@ export type ETOPModuleId =
   | 'cash_application'
   | 'payment_notes'
   | 'lockbox'
+  | 'carryover_dashboard'
   | 'document_intelligence'
   | 'automation_center'
   | 'work_management'
