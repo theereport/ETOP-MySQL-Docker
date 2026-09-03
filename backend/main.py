@@ -140,17 +140,16 @@ app = FastAPI(
 initialize_database()
 
 app.add_middleware(ModuleAccessMiddleware)
+cors_origins = [
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+]
 configured_app_url = os.getenv("ETOP_APP_URL")
 if configured_app_url:
     parsed_app_url = urlsplit(configured_app_url)
     if parsed_app_url.scheme not in {"http", "https"} or not parsed_app_url.netloc:
         raise RuntimeError("ETOP_APP_URL must be a valid http(s) application URL.")
-    cors_origins = [f"{parsed_app_url.scheme}://{parsed_app_url.netloc}"]
-else:
-    cors_origins = [
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-    ]
+    cors_origins.append(f"{parsed_app_url.scheme}://{parsed_app_url.netloc}")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,

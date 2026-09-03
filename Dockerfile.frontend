@@ -1,0 +1,23 @@
+# Build from the REPO ROOT, not src/:
+#   docker build -f Dockerfile.frontend -t etop-frontend .
+#
+# Produces a static production build of the React app and serves it with
+# nginx. This image only serves static files - nginx.conf, entrypoint.sh,
+# and the TLS certs stay bind-mounted onto it from docker-compose.yml,
+# unchanged by this build. Rebuild this image (docker compose build
+# reverse-proxy) to pick up frontend code changes; there is no dev-server
+# hot-reload in this container.
+
+FROM node:22-alpine AS build
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY tsconfig.json tsconfig.app.json tsconfig.node.json vite.config.ts index.html ./
+COPY public/ ./public/
+COPY src/ ./src/
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html

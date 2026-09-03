@@ -11,16 +11,12 @@ archive/
 backend/.venv/
 backend/.pytest_cache/
 
-# Frontend (built/deployed separately from the backend image)
+# Frontend source (src/, public/, index.html, package*.json, vite/tsconfig)
+# is NOT excluded here - Dockerfile.frontend builds it into the reverse-proxy
+# image. Only its own build output/deps are excluded, since Dockerfile.
+# frontend runs `npm ci` and `npm run build` inside the container itself.
 node_modules/
 dist/
-src/
-public/
-index.html
-package.json
-package-lock.json
-vite.config.ts
-tsconfig*.json
 eslint.config.js
 
 # VCS / editor / misc project scaffolding not needed at runtime

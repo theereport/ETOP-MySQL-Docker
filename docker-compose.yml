@@ -17,11 +17,18 @@ services:
     # out as the cause of the AP ERP ledger refresh's "Interrupted by
     # backend restart" failures (2026-09-01): the same failure reproduced
     # with these limits fully removed.
+    #
+    # Raised from 2 CPU/2GB on 2026-09-02: a real lockbox PDF's OCR pass
+    # sustained ~200% CPU and climbed to 96% of the 2GB memory ceiling,
+    # and tesseract's own 30s per-region subprocess timeout
+    # (ocr_engine.py's `timeout_seconds`) was blown twice in a row under
+    # that contention - the job never completed. 4 CPU/4GB is still a
+    # placeholder, not a measured real-server figure.
     deploy:
       resources:
         limits:
-          cpus: "2"
-          memory: 2g
+          cpus: "4"
+          memory: 4g
     logging:
       driver: json-file
       options:
@@ -148,11 +155,16 @@ services:
     restart: unless-stopped
 
   reverse-proxy:
-    # TLS termination in front of the backend. Generates a self-signed
+    # TLS termination in front of the backend, and static hosting for the
+    # built React frontend (Dockerfile.frontend). Generates a self-signed
     # placeholder certificate on first run (see nginx/entrypoint.sh) -
     # replace it with a real one once a domain is assigned; see
-    # DEPLOYMENT.md.
-    image: nginx:alpine
+    # DEPLOYMENT.md. Rebuild this service (docker compose build
+    # reverse-proxy) to pick up frontend code changes - there is no
+    # dev-server hot-reload here.
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
     logging:
       driver: json-file
       options:
