@@ -44,6 +44,69 @@ trip to a specific MaddenCo route_code (a vehicle isn't tied to one fixed
 route_code in this schema - needs more MaddenCo data modeling than should
 be guessed at here).
 
+## RI-2: workload & capacity dashboard, read-only (added 2026-09-04)
+
+`GET /workload-summary` and `GET /vehicle-performance` (both take
+`date_from`/`date_to`) are computed live, no snapshot - same style as the
+Data Quality Center.
+
+The program plan calls this increment "Route performance, workload model
+and capacity dashboard." Literally, that implies comparing a route's
+workload against the vehicle capacity assigned to it - but **no schema
+anywhere links a MaddenCo `route_code` to a specific vehicle or driver**
+(the same gap RI-1 already flagged: "a vehicle isn't tied to one fixed
+route_code in this schema"). Inventing that link here would mean guessing
+at a real operational fact that isn't recorded anywhere, so this slice is
+built on the one join key that genuinely exists today: **warehouse
+number** (`route_vehicles.home_warehouse_number` /
+`route_drivers.home_warehouse_number` vs. freight_logistics's
+`warehouse_number`).
+
+- **`/workload-summary`**: per warehouse, sums the *current* capacity
+  (weight/cube/tire/max_stops) of active vehicles home-based there against
+  real MaddenCo load demand for the date range
+  (`freight_logistics_service.get_load_lines_for_warehouse()` - real
+  `WEIGHT`/`QUANTITY` off `INWHLOAD`, not previously called from this
+  module). Produces a weight-utilization percentage and an
+  `ok`/`warning`/`critical`/`unknown` status, classified against
+  configurable thresholds (`workload_warning_threshold_pct`,
+  `workload_critical_threshold_pct`) read from `route_business_rules`
+  (defaulting to 80%/100% - the table has no seed rows). `unknown` (not a
+  divide-by-zero) when a warehouse has no vehicles with capacity data.
+  "Current" capacity means the vehicle's most-recently-entered capacity
+  row - `effective_date` is a free-text column with no enforced format
+  today (no rows exist yet to validate a format against), so this is not
+  a true point-in-time "as of" lookup.
+- **`/vehicle-performance`**: per vehicle, aggregates real ingested
+  `route_actual_runs` (Samsara trip data) for the date range - run count,
+  total/average distance. This is the honest read-only proxy for "route
+  performance," since there's no route_code to report against directly.
+  **`distance_meters` is null on every real ingested trip today** -
+  confirmed live 2026-09-04 by fetching a raw `/trips/stream` payload: it
+  carries no distance field under any name at all (only
+  tripStartTime/tripEndTime/startLocation/endLocation/asset/
+  completionStatus). This is a permanent Samsara API limitation, not a
+  wrong field name in RI-1's mapping - see the comment at `service.py`'s
+  `sync_samsara_trips()`. Distance in this view will read 0 until a
+  different data source is used (e.g. a straight-line estimate from
+  start/end lat-lon via `travel_matrix_provider.py`'s
+  `HaversineTravelMatrixProvider` - a real design decision, not made
+  here).
+
+Also live-verified 2026-09-04: every warehouse currently reports status
+`unknown`, not because of a bug but because **zero** of the 1,472
+Samsara-imported vehicles have `home_warehouse_number` or a capacity row
+set (`import_samsara_vehicles()` never sets either - matches the
+pre-existing `vehicle_missing_capacity` Data Quality Center check). The
+dashboard needs real capacity/warehouse data entered before it reports
+anything but "unknown."
+
+Still explicitly deferred: any route_code-to-vehicle/driver assignment
+(true per-route performance/capacity stays blocked on this); predictive
+"Capacity Forecast" using `forecast_provider.py`'s
+`SimpleDayOfWeekForecastProvider` (this slice is current/historical only);
+treating `effective_date` as a real point-in-time filter.
+
 ## Samsara integration status (added 2026-09-04)
 
 Real, confirmed against developers.samsara.com the day this was built:

@@ -234,6 +234,46 @@ class SyncState(BaseModel):
     last_run_message: str = ""
 
 
+# --- workload / capacity dashboard (RI-2, read-only) ----------------------
+
+class WarehouseWorkloadSummary(BaseModel):
+    warehouse_number: int
+    warehouse_location_name: str = ""
+    vehicle_count: int
+    total_weight_capacity: float
+    total_cube_capacity: float
+    total_tire_capacity: float
+    total_max_stops: int
+    total_weight_demand: float
+    total_quantity_demand: float
+    route_count_with_activity: int
+    weight_utilization_pct: float | None = None
+    status: Literal["ok", "warning", "critical", "unknown"]
+
+
+class WorkloadSummaryResponse(BaseModel):
+    generated_at: str
+    date_from: str
+    date_to: str
+    warehouses: list[WarehouseWorkloadSummary]
+
+
+class VehicleRunPerformance(BaseModel):
+    vehicle_id: int
+    unit_number: str
+    home_warehouse_number: int | None = None
+    run_count: int
+    total_distance_meters: float
+    average_distance_meters: float
+
+
+class RoutePerformanceResponse(BaseModel):
+    generated_at: str
+    date_from: str
+    date_to: str
+    vehicles: list[VehicleRunPerformance]
+
+
 # --- data quality --------------------------------------------------------
 
 class DataQualityIssue(BaseModel):

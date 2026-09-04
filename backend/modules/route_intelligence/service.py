@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 
@@ -21,11 +21,15 @@ from .schemas import (
     DataQualityReport,
     Driver,
     DriverAvailability,
+    RoutePerformanceResponse,
     SamsaraAddress,
     SamsaraImportResult,
     SyncState,
     Vehicle,
     VehicleCapacity,
+    VehicleRunPerformance,
+    WarehouseWorkloadSummary,
+    WorkloadSummaryResponse,
 )
 
 MAX_REPORTED_ISSUES = 200
@@ -561,6 +565,20 @@ def sync_samsara_trips(
                 "start_longitude": start_location.get("longitude"),
                 "end_latitude": end_location.get("latitude"),
                 "end_longitude": end_location.get("longitude"),
+                # Confirmed live 2026-09-04 (RI-2 verification): a real
+                # /trips/stream trip payload carries no distance field at
+                # all under any name - not "finalDistanceMeters" or
+                # anything else, alongside tripStartTime/tripEndTime/
+                # startLocation/endLocation/asset/completionStatus. This
+                # is a permanent API limitation (same shape as the
+                # always-absent driver field above), not a wrong field
+                # name to fix - distance_meters will stay null for every
+                # trip ingested from this endpoint until a different data
+                # source is used (e.g. estimating from start/end lat-lon
+                # via travel_matrix_provider.py's straight-line Haversine
+                # provider, which would be an approximation, not actual
+                # driven distance - a real design decision, not done
+                # here).
                 "distance_meters": trip.get("finalDistanceMeters"),
                 "completion_status": trip.get("completionStatus") or "",
                 "ingested_at": now,
@@ -578,6 +596,188 @@ def sync_samsara_trips(
         },
     )
     return runs, get_trip_sync_state()
+
+
+# --- workload / capacity dashboard (RI-2, read-only) -----------------------
+
+_DEFAULT_WORKLOAD_WARNING_PCT = 80.0
+_DEFAULT_WORKLOAD_CRITICAL_PCT = 100.0
+
+
+def _get_threshold(rule_key: str, default: float) -> float:
+    """Reads a configurable threshold from route_business_rules, falling
+    back to `default` when the rule is missing or not a valid number -
+    the table is a generic, currently-empty KV store (no seed rows), so a
+    working default is required for the dashboard to function before any
+    admin has configured one."""
+
+    rule = repository.get_business_rule(rule_key)
+    if rule is None:
+        return default
+    try:
+        return float(rule["rule_value"])
+    except (TypeError, ValueError):
+        return default
+
+
+def _classify_workload_status(
+    utilization_pct: float | None, *, warning_pct: float, critical_pct: float
+) -> Literal["ok", "warning", "critical", "unknown"]:
+    if utilization_pct is None:
+        return "unknown"
+    if utilization_pct >= critical_pct:
+        return "critical"
+    if utilization_pct >= warning_pct:
+        return "warning"
+    return "ok"
+
+
+def compute_workload_summary(
+    date_from: date,
+    date_to: date,
+    *,
+    freight_service: FreightLogisticsService = freight_logistics_service,
+) -> WorkloadSummaryResponse:
+    """Warehouse-level demand (real MaddenCo load weight/quantity) vs.
+    this module's own fleet capacity records, for a date range - computed
+    live, no snapshot, same style as the Data Quality Center.
+
+    Deliberately warehouse-level, not route-level: no schema anywhere
+    links a MaddenCo route_code to a specific vehicle/driver (see the
+    module README's "matching a trip to a route_code" deferral), so a
+    per-route capacity comparison would have to guess at an assignment
+    that doesn't exist. warehouse_number (home_warehouse_number on
+    route_vehicles, warehouse_number from freight_logistics) is the one
+    join key both sides genuinely share today.
+    """
+
+    warning_pct = _get_threshold(
+        "workload_warning_threshold_pct", _DEFAULT_WORKLOAD_WARNING_PCT
+    )
+    critical_pct = _get_threshold(
+        "workload_critical_threshold_pct", _DEFAULT_WORKLOAD_CRITICAL_PCT
+    )
+
+    vehicles_by_warehouse: dict[int, list[dict[str, Any]]] = {}
+    for vehicle in repository.list_vehicles():
+        if not vehicle.get("active", True):
+            continue
+        warehouse_number = vehicle.get("home_warehouse_number")
+        if warehouse_number is None:
+            continue
+        vehicles_by_warehouse.setdefault(warehouse_number, []).append(vehicle)
+
+    known_warehouses = freight_service.list_warehouses()
+    warehouse_names = {
+        warehouse.warehouse_number: warehouse.warehouse_location_name
+        for warehouse in known_warehouses.warehouses
+    }
+    # Union with every warehouse number that actually has a vehicle home-
+    # based there, even one freight_logistics's own warehouse master
+    # doesn't list - confirmed live 2026-09-04 that WH_DASHBOARD_LOCATIONS
+    # (what list_warehouses() reads) only covers a subset of K&M's real
+    # warehouses (17 of 51), while get_load_lines_for_warehouse() still
+    # returns real MaddenCo demand for the other warehouse numbers just
+    # fine (they're valid KMROUTES.RTEWHSE values, just missing a
+    # dashboard-location row). Driving this loop by list_warehouses()
+    # alone would silently drop most of the real fleet from the report.
+    all_warehouse_numbers = set(warehouse_names) | set(vehicles_by_warehouse)
+
+    summaries: list[WarehouseWorkloadSummary] = []
+    for warehouse_number in sorted(all_warehouse_numbers):
+        vehicles = vehicles_by_warehouse.get(warehouse_number, [])
+        total_weight_capacity = 0.0
+        total_cube_capacity = 0.0
+        total_tire_capacity = 0.0
+        total_max_stops = 0
+        for vehicle in vehicles:
+            capacity = repository.get_current_vehicle_capacity(vehicle["vehicle_id"])
+            if capacity is None:
+                continue
+            total_weight_capacity += capacity.get("weight_capacity") or 0.0
+            total_cube_capacity += capacity.get("cube_capacity") or 0.0
+            total_tire_capacity += capacity.get("tire_equivalent_capacity") or 0.0
+            total_max_stops += capacity.get("max_stops") or 0
+
+        load_lines = freight_service.get_load_lines_for_warehouse(
+            warehouse_number, date_from=date_from, date_to=date_to,
+        )
+        total_weight_demand = sum(line.weight or 0.0 for line in load_lines.lines)
+        total_quantity_demand = sum(line.quantity or 0.0 for line in load_lines.lines)
+        route_count_with_activity = len(
+            {line.route for line in load_lines.lines if line.route}
+        )
+
+        utilization_pct = (
+            round(total_weight_demand / total_weight_capacity * 100, 1)
+            if total_weight_capacity > 0
+            else None
+        )
+        status = _classify_workload_status(
+            utilization_pct, warning_pct=warning_pct, critical_pct=critical_pct
+        )
+
+        summaries.append(
+            WarehouseWorkloadSummary(
+                warehouse_number=warehouse_number,
+                warehouse_location_name=warehouse_names.get(warehouse_number, ""),
+                vehicle_count=len(vehicles),
+                total_weight_capacity=total_weight_capacity,
+                total_cube_capacity=total_cube_capacity,
+                total_tire_capacity=total_tire_capacity,
+                total_max_stops=total_max_stops,
+                total_weight_demand=total_weight_demand,
+                total_quantity_demand=total_quantity_demand,
+                route_count_with_activity=route_count_with_activity,
+                weight_utilization_pct=utilization_pct,
+                status=status,
+            )
+        )
+
+    return WorkloadSummaryResponse(
+        generated_at=_now(),
+        date_from=date_from.isoformat(),
+        date_to=date_to.isoformat(),
+        warehouses=summaries,
+    )
+
+
+def compute_vehicle_performance(
+    date_from: date, date_to: date
+) -> RoutePerformanceResponse:
+    """Actual per-vehicle Samsara trip performance for a date range - the
+    honest read-only proxy for "route performance" since no MaddenCo
+    route_code is linked to a vehicle anywhere in this schema (see the
+    module README)."""
+
+    vehicles_by_id = {
+        vehicle["vehicle_id"]: vehicle for vehicle in repository.list_vehicles()
+    }
+    rows = repository.aggregate_actual_runs_by_vehicle(
+        date_from=date_from.isoformat(), date_to=date_to.isoformat()
+    )
+    performance: list[VehicleRunPerformance] = []
+    for row in rows:
+        vehicle = vehicles_by_id.get(row["vehicle_id"])
+        if vehicle is None:
+            continue
+        performance.append(
+            VehicleRunPerformance(
+                vehicle_id=vehicle["vehicle_id"],
+                unit_number=vehicle["unit_number"],
+                home_warehouse_number=vehicle.get("home_warehouse_number"),
+                run_count=row["run_count"] or 0,
+                total_distance_meters=row.get("total_distance_meters") or 0.0,
+                average_distance_meters=row.get("average_distance_meters") or 0.0,
+            )
+        )
+    performance.sort(key=lambda item: item.unit_number)
+    return RoutePerformanceResponse(
+        generated_at=_now(),
+        date_from=date_from.isoformat(),
+        date_to=date_to.isoformat(),
+        vehicles=performance,
+    )
 
 
 def compute_data_quality_report(

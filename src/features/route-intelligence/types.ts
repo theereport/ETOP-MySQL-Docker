@@ -249,6 +249,48 @@ export interface SyncSamsaraTripsResult {
   sync_state: SyncState
 }
 
+// --- workload / capacity dashboard (RI-2, read-only) -----------------------
+
+export type WorkloadStatus = 'ok' | 'warning' | 'critical' | 'unknown'
+
+export interface WarehouseWorkloadSummary {
+  warehouse_number: number
+  warehouse_location_name: string
+  vehicle_count: number
+  total_weight_capacity: number
+  total_cube_capacity: number
+  total_tire_capacity: number
+  total_max_stops: number
+  total_weight_demand: number
+  total_quantity_demand: number
+  route_count_with_activity: number
+  weight_utilization_pct: number | null
+  status: WorkloadStatus
+}
+
+export interface WorkloadSummaryResponse {
+  generated_at: string
+  date_from: string
+  date_to: string
+  warehouses: WarehouseWorkloadSummary[]
+}
+
+export interface VehicleRunPerformance {
+  vehicle_id: number
+  unit_number: string
+  home_warehouse_number: number | null
+  run_count: number
+  total_distance_meters: number
+  average_distance_meters: number
+}
+
+export interface RoutePerformanceResponse {
+  generated_at: string
+  date_from: string
+  date_to: string
+  vehicles: VehicleRunPerformance[]
+}
+
 // --- data quality ----------------------------------------------------------
 
 export interface DataQualityIssue {

@@ -268,6 +268,25 @@ def list_vehicle_capacities(vehicle_id: int) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def get_current_vehicle_capacity(vehicle_id: int) -> dict[str, Any] | None:
+    """The vehicle's most-recently-entered capacity row (highest
+    effective_date, tied broken by capacity_id) - not a true point-in-time
+    "as of" lookup, since effective_date is a free-text column with no
+    enforced format today (no rows exist yet to validate a format
+    against). Used by the workload/capacity dashboard (RI-2)."""
+
+    initialize_database()
+    table = route_vehicle_capacities_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table)
+            .where(table.c.vehicle_id == vehicle_id)
+            .order_by(table.c.effective_date.desc(), table.c.capacity_id.desc())
+            .limit(1)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
 def add_vehicle_capacity(vehicle_id: int, values: dict[str, Any]) -> dict[str, Any]:
     initialize_database()
     table = route_vehicle_capacities_table
@@ -533,6 +552,37 @@ def count_actual_runs_with_unresolved_links() -> int:
             .select_from(table)
             .where(table.c.vehicle_id.is_(None))
         ) or 0
+
+
+def aggregate_actual_runs_by_vehicle(
+    *, date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    """Grouped in SQL rather than pulling raw rows into Python - real live
+    volume is on the order of thousands of trips per day (RI-1's live
+    verification: 13,168 trips for a single 2-day window). Used by the
+    vehicle-performance dashboard (RI-2). Rows with no vehicle_id are
+    excluded - those are already surfaced separately by
+    count_actual_runs_with_unresolved_links()."""
+
+    initialize_database()
+    table = route_actual_runs_table
+    query = (
+        select(
+            table.c.vehicle_id,
+            func.count().label("run_count"),
+            func.sum(table.c.distance_meters).label("total_distance_meters"),
+            func.avg(table.c.distance_meters).label("average_distance_meters"),
+        )
+        .where(table.c.vehicle_id.isnot(None))
+    )
+    if date_from:
+        query = query.where(table.c.start_time >= date_from)
+    if date_to:
+        query = query.where(table.c.start_time < date_to)
+    query = query.group_by(table.c.vehicle_id)
+    with get_engine().connect() as connection:
+        rows = connection.execute(query).mappings().all()
+    return [dict(row) for row in rows]
 
 
 # --- samsara_sync_state ---------------------------------------------------

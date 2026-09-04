@@ -24,6 +24,7 @@ from .schemas import (
     Driver,
     DriverListResponse,
     LinkCustomerSamsaraAddressRequest,
+    RoutePerformanceResponse,
     SamsaraAddressSearchResponse,
     SamsaraImportResult,
     SaveBusinessRuleRequest,
@@ -35,6 +36,7 @@ from .schemas import (
     UpdateVehicleRequest,
     Vehicle,
     VehicleListResponse,
+    WorkloadSummaryResponse,
 )
 
 router = APIRouter(
@@ -251,6 +253,24 @@ def list_actual_runs(
 ) -> ActualRunListResponse:
     runs = service.list_actual_runs(date_from=date_from, date_to=date_to)
     return ActualRunListResponse(count=len(runs), runs=runs)
+
+
+# --- workload / capacity dashboard (RI-2, read-only) -----------------------
+
+@router.get("/workload-summary", response_model=WorkloadSummaryResponse)
+def get_workload_summary(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+) -> WorkloadSummaryResponse:
+    return service.compute_workload_summary(date_from, date_to)
+
+
+@router.get("/vehicle-performance", response_model=RoutePerformanceResponse)
+def get_vehicle_performance(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+) -> RoutePerformanceResponse:
+    return service.compute_vehicle_performance(date_from, date_to)
 
 
 # --- data quality ----------------------------------------------------------

@@ -11,6 +11,7 @@ import type {
   Driver,
   DriverListResponse,
   LinkCustomerSamsaraAddressRequest,
+  RoutePerformanceResponse,
   SamsaraAddressSearchResponse,
   SamsaraImportResult,
   SaveBusinessRuleRequest,
@@ -22,6 +23,7 @@ import type {
   VehicleListResponse,
   WarehouseListResponse,
   WarehouseRouteListResponse,
+  WorkloadSummaryResponse,
 } from './types'
 
 const BASE = '/route-intelligence'
@@ -207,6 +209,32 @@ export function listActualRuns(
   const query = search.toString()
   return requestJson<ActualRunListResponse>(
     `${BASE}/actual-runs${query ? `?${query}` : ''}`,
+    { signal },
+  )
+}
+
+export function getWorkloadSummary(
+  params: { dateFrom: string; dateTo: string },
+  signal?: AbortSignal,
+): Promise<WorkloadSummaryResponse> {
+  const search = new URLSearchParams()
+  search.set('date_from', params.dateFrom)
+  search.set('date_to', params.dateTo)
+  return requestJson<WorkloadSummaryResponse>(
+    `${BASE}/workload-summary?${search.toString()}`,
+    { signal },
+  )
+}
+
+export function getVehiclePerformance(
+  params: { dateFrom: string; dateTo: string },
+  signal?: AbortSignal,
+): Promise<RoutePerformanceResponse> {
+  const search = new URLSearchParams()
+  search.set('date_from', params.dateFrom)
+  search.set('date_to', params.dateTo)
+  return requestJson<RoutePerformanceResponse>(
+    `${BASE}/vehicle-performance?${search.toString()}`,
     { signal },
   )
 }

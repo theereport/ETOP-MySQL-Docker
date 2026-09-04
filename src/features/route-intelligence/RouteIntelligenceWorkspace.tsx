@@ -6,6 +6,8 @@ import {
   createVehicle,
   getCustomerProfile,
   getDataQualityReport,
+  getVehiclePerformance,
+  getWorkloadSummary,
   importSamsaraDrivers,
   importSamsaraVehicles,
   linkCustomerSamsaraAddress,
@@ -31,8 +33,11 @@ import type {
   RouteSummary,
   SamsaraAddress,
   Vehicle,
+  VehicleRunPerformance,
   WarehouseSummary,
+  WarehouseWorkloadSummary,
   WeekdayName,
+  WorkloadStatus,
 } from './types'
 import './RouteIntelligenceWorkspace.css'
 
@@ -43,6 +48,7 @@ type Tab =
   | 'drivers'
   | 'customer-profiles'
   | 'trip-history'
+  | 'capacity-performance'
   | 'business-rules'
 
 const TABS: { id: Tab; label: string }[] = [
@@ -52,6 +58,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'drivers', label: 'Drivers' },
   { id: 'customer-profiles', label: 'Customer Profiles' },
   { id: 'trip-history', label: 'Trip History' },
+  { id: 'capacity-performance', label: 'Capacity & Performance' },
   { id: 'business-rules', label: 'Business Rules' },
 ]
 
@@ -813,6 +820,151 @@ function TripHistoryTab() {
   )
 }
 
+// --- Capacity & Performance ---------------------------------------------
+
+function WorkloadStatusTag({ status }: { status: WorkloadStatus }) {
+  return <span className={`ri-status-tag ri-status-tag--${status}`}>{status}</span>
+}
+
+function formatNumber(value: number): string {
+  return value.toLocaleString(undefined, { maximumFractionDigits: 1 })
+}
+
+function CapacityPerformanceTab() {
+  const [warehouses, setWarehouses] = useState<WarehouseWorkloadSummary[]>([])
+  const [vehicles, setVehicles] = useState<VehicleRunPerformance[]>([])
+  const [error, setError] = useState('')
+  const [isLoading, setIsLoading] = useState(true)
+  const [dateFrom, setDateFrom] = useState(daysAgoIsoDate(7))
+  const [dateTo, setDateTo] = useState(todayIsoDate())
+
+  const load = () => {
+    setIsLoading(true)
+    setError('')
+    Promise.all([
+      getWorkloadSummary({ dateFrom, dateTo }),
+      getVehiclePerformance({ dateFrom, dateTo }),
+    ])
+      .then(([workload, performance]) => {
+        setWarehouses(workload.warehouses)
+        setVehicles(performance.vehicles)
+      })
+      .catch((err) => setError(errorMessage(err, 'Unable to load capacity & performance data.')))
+      .finally(() => setIsLoading(false))
+  }
+
+  useEffect(load, [])
+
+  return (
+    <div className="ri-panel">
+      <div className="ri-panel-header">
+        <div>
+          <h3>Capacity &amp; Performance</h3>
+          <p>
+            Warehouse-level fleet capacity vs. real MaddenCo load demand, and
+            real per-vehicle trip performance from Samsara. No MaddenCo route
+            is linked to a specific vehicle/driver anywhere in this schema
+            yet, so these are computed at the warehouse and vehicle level -
+            the honest grain this data actually supports.
+          </p>
+        </div>
+      </div>
+      {error && <div className="ri-error">{error}</div>}
+
+      <div className="ri-inline-form">
+        <label>
+          From
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(event) => setDateFrom(event.target.value)}
+          />
+        </label>
+        <label>
+          To
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(event) => setDateTo(event.target.value)}
+          />
+        </label>
+        <button type="button" onClick={load} disabled={isLoading}>
+          {isLoading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+
+      <div className="ri-sections">
+        <div>
+          <h4 className="ri-section-title">Warehouse Workload vs. Capacity</h4>
+          <div className="ri-table-wrap">
+            {warehouses.length === 0 ? (
+              <div className="ri-empty">No warehouses found.</div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Warehouse</th><th>Vehicles</th><th>Weight Capacity (lb)</th>
+                    <th>Weight Demand (lb)</th><th>Routes w/ Activity</th>
+                    <th>Utilization</th><th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {warehouses.map((warehouse) => (
+                    <tr key={warehouse.warehouse_number}>
+                      <td>
+                        {warehouse.warehouse_number} - {warehouse.warehouse_location_name}
+                      </td>
+                      <td>{warehouse.vehicle_count}</td>
+                      <td>{formatNumber(warehouse.total_weight_capacity)}</td>
+                      <td>{formatNumber(warehouse.total_weight_demand)}</td>
+                      <td>{warehouse.route_count_with_activity}</td>
+                      <td>
+                        {warehouse.weight_utilization_pct == null
+                          ? '—'
+                          : `${warehouse.weight_utilization_pct.toFixed(1)}%`}
+                      </td>
+                      <td><WorkloadStatusTag status={warehouse.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <h4 className="ri-section-title">Vehicle Run Performance</h4>
+          <div className="ri-table-wrap">
+            {vehicles.length === 0 ? (
+              <div className="ri-empty">No resolved trips for this range yet.</div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Unit #</th><th>Home Warehouse</th><th>Runs</th>
+                    <th>Total Distance (m)</th><th>Avg. Distance (m)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {vehicles.map((vehicle) => (
+                    <tr key={vehicle.vehicle_id}>
+                      <td>{vehicle.unit_number}</td>
+                      <td>{vehicle.home_warehouse_number ?? '—'}</td>
+                      <td>{vehicle.run_count}</td>
+                      <td>{formatNumber(vehicle.total_distance_meters)}</td>
+                      <td>{formatNumber(vehicle.average_distance_meters)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // --- Business Rules ---------------------------------------------------
 
 function BusinessRulesTab() {
@@ -900,9 +1052,9 @@ export default function RouteIntelligenceWorkspace() {
         <span className="ri-kicker">Route Intelligence</span>
         <h2>Delivery Route Capacity Foundation</h2>
         <p>
-          Data quality, master data, and (later) capacity forecasting for
-          K&amp;M's delivery routes. Samsara integration is not connected yet -
-          this workspace covers what's buildable against MaddenCo alone.
+          Data quality, master data, live Samsara fleet/trip data, and
+          warehouse-level capacity &amp; performance reporting for K&amp;M's
+          delivery routes.
         </p>
       </div>
 
@@ -925,6 +1077,7 @@ export default function RouteIntelligenceWorkspace() {
       {tab === 'drivers' && <DriversTab />}
       {tab === 'customer-profiles' && <CustomerProfilesTab />}
       {tab === 'trip-history' && <TripHistoryTab />}
+      {tab === 'capacity-performance' && <CapacityPerformanceTab />}
       {tab === 'business-rules' && <BusinessRulesTab />}
     </div>
   )
