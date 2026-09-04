@@ -183,6 +183,7 @@ for module_path in (
     "modules.vendor_intelligence",
     "modules.ar_collections",
     "modules.freight_logistics",
+    "modules.route_intelligence",
     "modules.inventory_purchasing",
     "modules.tax_compliance",
     "modules.sales_order_visibility",

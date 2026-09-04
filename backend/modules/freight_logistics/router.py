@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, HTTPException, Path, Query, status
 
 from .schemas import (
@@ -8,6 +10,9 @@ from .schemas import (
     RouteNoteHistoryResponse,
     RouteNoteRecord,
     RouteSearchResponse,
+    WarehouseListResponse,
+    WarehouseLoadLinesResponse,
+    WarehouseRouteListResponse,
 )
 from .service import (
     FreightLogisticsService,
@@ -43,6 +48,38 @@ def search_routes(
         active_only=active_only,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/warehouses", response_model=WarehouseListResponse)
+def list_warehouses() -> WarehouseListResponse:
+    return freight_logistics_service.list_warehouses()
+
+
+@router.get(
+    "/warehouses/{warehouse_number}/routes",
+    response_model=WarehouseRouteListResponse,
+)
+def list_routes_for_warehouse(
+    warehouse_number: int,
+    active_only: bool = Query(default=True),
+) -> WarehouseRouteListResponse:
+    return freight_logistics_service.list_routes_for_warehouse(
+        warehouse_number, active_only=active_only,
+    )
+
+
+@router.get(
+    "/warehouses/{warehouse_number}/load-lines",
+    response_model=WarehouseLoadLinesResponse,
+)
+def get_load_lines_for_warehouse(
+    warehouse_number: int,
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+) -> WarehouseLoadLinesResponse:
+    return freight_logistics_service.get_load_lines_for_warehouse(
+        warehouse_number, date_from=date_from, date_to=date_to,
     )
 
 

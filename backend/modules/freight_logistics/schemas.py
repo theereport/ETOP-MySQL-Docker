@@ -31,6 +31,24 @@ class RouteSearchResponse(BaseModel):
     routes: list[RouteSearchResult]
 
 
+class WarehouseSummary(BaseModel):
+    warehouse_number: int
+    warehouse_location_name: str = ""
+
+
+class WarehouseListResponse(BaseModel):
+    source: SourceEvidence
+    count: int
+    warehouses: list[WarehouseSummary]
+
+
+class WarehouseRouteListResponse(BaseModel):
+    source: SourceEvidence
+    warehouse_number: int
+    count: int
+    routes: list[RouteSearchResult]
+
+
 class RouteScheduleDay(BaseModel):
     day: Literal[
         "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
@@ -117,6 +135,15 @@ class RouteLoadEvidence(BaseModel):
         "only. None of this is an on-time-delivery percentage or a "
         "performance score."
     )
+
+
+class WarehouseLoadLinesResponse(BaseModel):
+    source: SourceEvidence
+    warehouse_number: int
+    date_from: str
+    date_to: str
+    line_count: int
+    lines: list[RouteLoadLine]
 
 
 class CodPaymentCorrection(BaseModel):
@@ -353,6 +380,10 @@ __all__ = [
     "SourceEvidence",
     "RouteSearchResult",
     "RouteSearchResponse",
+    "WarehouseSummary",
+    "WarehouseListResponse",
+    "WarehouseRouteListResponse",
+    "WarehouseLoadLinesResponse",
     "RouteScheduleDay",
     "WarehouseDirectionLabel",
     "WarehouseLabelEvidence",

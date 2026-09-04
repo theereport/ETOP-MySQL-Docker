@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Query
+
+from modules.freight_logistics.schemas import (
+    WarehouseListResponse,
+    WarehouseRouteListResponse,
+)
+from modules.freight_logistics.service import freight_logistics_service
+
+from . import service
+from .schemas import (
+    AddVehicleCapacityRequest,
+    BusinessRule,
+    BusinessRuleListResponse,
+    CreateDriverRequest,
+    CreateVehicleRequest,
+    CustomerProfile,
+    CustomerProfileListResponse,
+    DataQualityReport,
+    Driver,
+    DriverListResponse,
+    SaveBusinessRuleRequest,
+    SaveCustomerProfileRequest,
+    SetDriverAvailabilityRequest,
+    UpdateDriverRequest,
+    UpdateVehicleRequest,
+    Vehicle,
+    VehicleListResponse,
+)
+
+router = APIRouter(
+    prefix="/api/v1/route-intelligence",
+    tags=["Route Intelligence"],
+)
+
+
+@router.get("/health")
+def get_health() -> dict:
+    return {"status": "ok", "module": "route_intelligence"}
+
+
+# --- warehouses & routes (read-only passthrough to freight_logistics) -----
+
+@router.get("/warehouses", response_model=WarehouseListResponse)
+def list_warehouses() -> WarehouseListResponse:
+    return freight_logistics_service.list_warehouses()
+
+
+@router.get(
+    "/warehouses/{warehouse_number}/routes",
+    response_model=WarehouseRouteListResponse,
+)
+def list_routes_for_warehouse(
+    warehouse_number: int,
+    active_only: bool = Query(default=True),
+) -> WarehouseRouteListResponse:
+    return freight_logistics_service.list_routes_for_warehouse(
+        warehouse_number, active_only=active_only,
+    )
+
+
+# --- customer profiles ---------------------------------------------------
+
+@router.get("/customer-profiles", response_model=CustomerProfileListResponse)
+def list_customer_profiles() -> CustomerProfileListResponse:
+    profiles = service.list_customer_profiles()
+    return CustomerProfileListResponse(count=len(profiles), profiles=profiles)
+
+
+@router.get(
+    "/customer-profiles/{customer_number}",
+    response_model=CustomerProfile,
+)
+def get_customer_profile(customer_number: str) -> CustomerProfile:
+    return service.get_customer_profile(customer_number)
+
+
+@router.put(
+    "/customer-profiles/{customer_number}",
+    response_model=CustomerProfile,
+)
+def save_customer_profile(
+    customer_number: str,
+    payload: SaveCustomerProfileRequest,
+) -> CustomerProfile:
+    return service.save_customer_profile(customer_number, payload.model_dump())
+
+
+# --- vehicles / capacities -----------------------------------------------
+
+@router.get("/vehicles", response_model=VehicleListResponse)
+def list_vehicles() -> VehicleListResponse:
+    vehicles = service.list_vehicles()
+    return VehicleListResponse(count=len(vehicles), vehicles=vehicles)
+
+
+@router.post("/vehicles", response_model=Vehicle, status_code=201)
+def create_vehicle(payload: CreateVehicleRequest) -> Vehicle:
+    return service.create_vehicle(payload.model_dump())
+
+
+@router.put("/vehicles/{vehicle_id}", response_model=Vehicle)
+def update_vehicle(vehicle_id: int, payload: UpdateVehicleRequest) -> Vehicle:
+    return service.update_vehicle(vehicle_id, payload.model_dump())
+
+
+@router.post(
+    "/vehicles/{vehicle_id}/capacities",
+    response_model=Vehicle,
+    status_code=201,
+)
+def add_vehicle_capacity(
+    vehicle_id: int,
+    payload: AddVehicleCapacityRequest,
+) -> Vehicle:
+    return service.add_vehicle_capacity(vehicle_id, payload.model_dump())
+
+
+# --- drivers / availability -----------------------------------------------
+
+@router.get("/drivers", response_model=DriverListResponse)
+def list_drivers() -> DriverListResponse:
+    drivers = service.list_drivers()
+    return DriverListResponse(count=len(drivers), drivers=drivers)
+
+
+@router.post("/drivers", response_model=Driver, status_code=201)
+def create_driver(payload: CreateDriverRequest) -> Driver:
+    return service.create_driver(payload.model_dump())
+
+
+@router.put("/drivers/{driver_id}", response_model=Driver)
+def update_driver(driver_id: int, payload: UpdateDriverRequest) -> Driver:
+    return service.update_driver(driver_id, payload.model_dump())
+
+
+@router.put(
+    "/drivers/{driver_id}/availability",
+    response_model=Driver,
+)
+def set_driver_availability(
+    driver_id: int,
+    payload: SetDriverAvailabilityRequest,
+) -> Driver:
+    return service.set_driver_availability(driver_id, payload.model_dump())
+
+
+# --- business rules ---------------------------------------------------
+
+@router.get("/business-rules", response_model=BusinessRuleListResponse)
+def list_business_rules() -> BusinessRuleListResponse:
+    rules = service.list_business_rules()
+    return BusinessRuleListResponse(count=len(rules), rules=rules)
+
+
+@router.put("/business-rules/{rule_key}", response_model=BusinessRule)
+def save_business_rule(
+    rule_key: str, payload: SaveBusinessRuleRequest
+) -> BusinessRule:
+    return service.save_business_rule(rule_key, payload.model_dump())
+
+
+# --- data quality ----------------------------------------------------------
+
+@router.get("/data-quality", response_model=DataQualityReport)
+def get_data_quality_report() -> DataQualityReport:
+    return service.compute_data_quality_report()

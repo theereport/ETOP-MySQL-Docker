@@ -40,6 +40,7 @@ ModuleId = Literal[
     "pricing_contracts",
     "general_ledger",
     "cash_flow_forecasting",
+    "route_intelligence",
 ]
 TaskPriority = Literal["low", "medium", "high", "critical"]
 TaskState = Literal[

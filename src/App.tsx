@@ -66,6 +66,9 @@ const ARCollectionsWorkspace = lazy(
 const FreightLogisticsWorkspace = lazy(
   () => import('./features/freight-logistics/FreightLogisticsWorkspace'),
 )
+const RouteIntelligenceWorkspace = lazy(
+  () => import('./features/route-intelligence/RouteIntelligenceWorkspace'),
+)
 const InventoryPurchasingWorkspace = lazy(
   () =>
     import('./features/inventory-purchasing/InventoryPurchasingWorkspace'),
@@ -1083,6 +1086,10 @@ function App() {
 
           {selectedModule === 'Freight & Logistics' && (
             <FreightLogisticsWorkspace />
+          )}
+
+          {selectedModule === 'Route Intelligence' && (
+            <RouteIntelligenceWorkspace />
           )}
 
           {selectedModule === 'Inventory & Purchasing' && (

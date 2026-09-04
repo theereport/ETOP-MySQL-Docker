@@ -205,6 +205,12 @@ class WorkflowFoundationRepository:
             "Workspaces",
         ),
         (
+            "route_intelligence",
+            "Route Intelligence",
+            "Predictive delivery-route capacity, data quality, and master-data management across MaddenCo demand and (later) Samsara execution data.",
+            "Workspaces",
+        ),
+        (
             "inventory_purchasing",
             "Inventory & Purchasing",
             "Item identity, month-end inventory valuation, open purchase-order exposure, and receiving evidence from MaddenCo.",
