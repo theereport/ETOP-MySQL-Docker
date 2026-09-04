@@ -161,6 +161,33 @@ def save_business_rule(
     return service.save_business_rule(rule_key, payload.model_dump())
 
 
+# --- Samsara (read-only) ---------------------------------------------
+
+@router.get("/samsara/vehicles")
+def list_samsara_vehicles() -> dict:
+    return {"vehicles": service.list_samsara_vehicles()}
+
+
+@router.get("/samsara/drivers")
+def list_samsara_drivers() -> dict:
+    return {"drivers": service.list_samsara_drivers()}
+
+
+@router.get("/samsara/driver-vehicle-assignments")
+def list_samsara_driver_vehicle_assignments() -> dict:
+    return {"assignments": service.list_samsara_driver_vehicle_assignments()}
+
+
+@router.get("/samsara/customer-geofence/{customer_number}")
+def get_samsara_customer_geofence(customer_number: str) -> dict:
+    return {"geofence": service.get_samsara_customer_geofence(customer_number)}
+
+
+@router.get("/samsara/vehicles/{vehicle_id}/live-gps")
+def get_samsara_live_gps(vehicle_id: str) -> dict:
+    return {"location": service.get_samsara_live_gps(vehicle_id)}
+
+
 # --- data quality ----------------------------------------------------------
 
 @router.get("/data-quality", response_model=DataQualityReport)

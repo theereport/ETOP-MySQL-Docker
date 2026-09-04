@@ -2,11 +2,81 @@
 
 A predictive, capacity-aware, human-governed delivery-routing platform,
 built incrementally against the "ETOP Route Intelligence" program plan
-(RI-0 through RI-9). This module is the **first slice**: the correct
-structural foundation plus one genuinely working feature, built entirely
-against live MaddenCo data with no Samsara dependency (Samsara API access
-does not exist yet, but the provider architecture below is built so that
-access can be dropped in later with no changes to any caller).
+(RI-0 through RI-9). Built as an RI-0 first slice with no Samsara
+dependency; a real Samsara API token became available shortly after
+(2026-09-04), so `providers/samsara_provider.py`'s `SamsaraApiProvider`
+and a handful of read-only endpoints were added on top without changing
+anything else in this module.
+
+## Samsara integration status (added 2026-09-04)
+
+Real, confirmed against developers.samsara.com the day this was built:
+
+- `GET /samsara/vehicles` - `/assets?type=vehicle`
+- `GET /samsara/drivers` - `/fleet/drivers`
+- `GET /samsara/driver-vehicle-assignments` - `/fleet/driver-vehicle-assignments`
+- `GET /samsara/customer-geofence/{customer_number}` - `/addresses`,
+  filtered client-side by `externalIds`. **K&M has not yet established a
+  convention for tagging a Samsara address with the ETOP/MaddenCo
+  customer number as an externalId** - this returns nothing useful until
+  that tagging exists in Samsara itself. Worth a conversation with
+  whoever administers the Samsara account.
+- `GET /samsara/vehicles/{vehicle_id}/live-gps` - `/v1/fleet/locations`
+  (note the different response envelope from every other endpoint here -
+  see the method's docstring)
+
+`get_samsara_provider()` switches automatically between the real
+`SamsaraApiProvider` and `UnconfiguredSamsaraProvider` based on whether
+`SAMSARA_API_TOKEN` is set (see `.env.docker.example`) - no code change
+needed once a token exists.
+
+**Not implemented - genuinely can't be, not just deferred**:
+`list_actual_stops()` (route-stop arrival/departure). Samsara delivers
+this as webhook events (`RouteStopArrival`/`RouteStopDeparture`,
+currently Beta), not a pollable REST list - there is no GET endpoint to
+call. Reading this needs a webhook receiver in this backend (an endpoint,
+signature verification, and somewhere to store incoming events) - real,
+separate infrastructure work, not a provider swap. This blocks the
+Samsara-based "customer service-time intelligence" (program plan section
+D) and historical-route "actual stops" reconstruction (RI-1) until that
+receiver exists.
+
+**Blocked on a public HTTPS endpoint, not on code** (confirmed 2026-09-04):
+Samsara's cloud has to be able to reach the webhook URL over the public
+internet - this backend is currently a local/on-prem Docker deployment
+(`https://localhost`, self-signed cert), which Samsara's servers cannot
+reach. Deliberately not building the receiver until either a real public
+domain exists for ETOP, or a tunnel (ngrok/Cloudflare Tunnel) is stood up
+for testing - user's explicit call, not a technical dead end.
+
+Confirmed webhook mechanics for whenever this is picked up (via
+`developers.samsara.com/docs/webhooks`):
+- **Delivery**: `POST`, `Content-Type: application/json`, from Samsara's
+  static IPs. Must return a 2XX promptly; non-2XX retries 5x with
+  exponential backoff.
+- **Signature verification**: `X-Samsara-Signature: v1=<hex>` header,
+  HMAC-SHA256. The webhook's secret (shown once in the Samsara dashboard
+  at creation) is base64-encoded and must be decoded before use. Message
+  to sign is `v1:<X-Samsara-Timestamp header value>:<raw request body>`.
+  **Never skip this check** - an unauthenticated webhook receiver is a
+  real attack surface (anyone who finds the URL could inject fake
+  RouteStopArrival events).
+- **Payload**: `eventId`, `eventMs`, `eventType` (`"Alert"` or `"Ping"`),
+  plus event-specific data - RouteStopArrival's fields are
+  `data.route.id`, `data.routeStopDetails.id`, `data.vehicle.id`,
+  `data.driver.id`, `data.routeStopDetails.actualArrivalTime`,
+  coordinates in `data.route.stops[].singleUseLocation`.
+- When built, the endpoint should live at
+  `/api/v1/route-intelligence/samsara/webhook` and a new
+  `samsara_webhook_events` table (append-only, per this codebase's
+  established convention for evidence logs) should store every verified
+  event before any processing - this is the deferred `samsara_event_log`
+  table from the original program plan's section 7.
+
+`list_historical_routes()` maps to `/trips/stream` (GPS-derived actual
+trips), not Samsara's "Routes" feature (which is for dispatching planned
+routes - the RI-6+ write-back target, not a read source for historical
+execution).
 
 ## What this slice actually does
 
@@ -38,12 +108,12 @@ alongside its real backing logic in its own increment, not stubbed out now:
   recommendations, and their corresponding UI workspaces (Command Center,
   Daily Planning, Route Detail, Backup Split, Capacity Forecast, Network
   Design).
-- Everything Samsara-dependent: vehicle/driver/GPS reads, geofence-based
-  service-time intelligence, historical-route reconstruction, and any
-  Samsara write-back. `providers/samsara_provider.py` defines the exact
-  interface (`SamsaraProvider`) this module will call once access exists;
-  today it's wired to `UnconfiguredSamsaraProvider`, which raises a clear
-  error instead of silently returning empty data.
+- Any Samsara write-back (RI-6+). Raw Samsara reads (vehicles, drivers,
+  assignments, live GPS, geofences) are now real - see "Samsara
+  integration status" above - but geofence-based service-time
+  intelligence and historical-route "actual stops" reconstruction are
+  still blocked on a webhook receiver that doesn't exist yet (also
+  above).
 - `providers/routing_solver_provider.py` (planned: OR-Tools) and
   `providers/weather_provider.py` are likewise real interfaces with
   Unconfigured stubs - genuine future engineering work, not something to
