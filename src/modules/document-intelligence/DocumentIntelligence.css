@@ -2446,6 +2446,16 @@
   color: #a9bcd6;
 }
 
+.lockbox-misc-gl-warning {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid #b38f00;
+  background: rgba(179, 143, 0, 0.12);
+  color: #e8c766;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
 @media (max-width: 900px) {
   .lockbox-misc-gl-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));

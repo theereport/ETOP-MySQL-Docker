@@ -4074,6 +4074,14 @@ export default function LockboxReviewWorkspace({
                   )}
                 </label>
               </div>
+              {isCustomerDiscountReason
+                && (!isDiscountCustomer || (Number(discountPercent) || 0) <= 0) && (
+                <div className="lockbox-misc-gl-warning">
+                  No discount % is on file for this customer, so this
+                  credit calculates to $0.00. Set "Discount Customer?" and
+                  a Discount % above before approving.
+                </div>
+              )}
             </div>
           </section>
 

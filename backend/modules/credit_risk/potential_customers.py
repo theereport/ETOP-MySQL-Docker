@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 import uuid
@@ -51,6 +52,30 @@ TMCUST_MAPPING: dict[str, dict[str, Any]] = {
     "credit_limit": {"column": "CUCRLIMIT", "source": "km_setup"},
     "bill_to_customer": {"column": "CUBILTOCST", "source": "km_setup"},
 }
+
+
+def default_km_setup_values() -> dict[str, str]:
+    """K&M's standard MaddenCo setup values for a new customer.
+
+    Applied to every incoming application so reviewers only have to fill
+    in the fields that genuinely vary per customer (Customer #, Route,
+    Customer Type, Site, Bill-To Customer). Reviewers can still overwrite
+    any of these via Save Review - this only seeds the initial value.
+
+    Each is env-overridable (ETOP_R72_DEFAULT_*) so a policy change (e.g.
+    a new standard starting credit limit) is a config change, not a code
+    change + redeploy - same convention as _ocr_worker_count() in
+    pnc_lockbox_parser.py.
+    """
+
+    return {
+        "price_code": os.getenv("ETOP_R72_DEFAULT_PRICE_CODE", "2"),
+        "terms_code": os.getenv("ETOP_R72_DEFAULT_TERMS_CODE", "7"),
+        "customer_class": os.getenv("ETOP_R72_DEFAULT_CUSTOMER_CLASS", "2"),
+        "store_number": os.getenv("ETOP_R72_DEFAULT_STORE_NUMBER", "1"),
+        "salesman_number": os.getenv("ETOP_R72_DEFAULT_SALESMAN_NUMBER", "10"),
+        "credit_limit": os.getenv("ETOP_R72_DEFAULT_CREDIT_LIMIT", "10000"),
+    }
 
 
 def _clean(value: str | None) -> str:
@@ -432,7 +457,9 @@ class PotentialCustomerRepository:
                     updated_at=record["updated_at"],
                     fields_json=json.dumps(record["fields"], sort_keys=True),
                     evidence_json=json.dumps(record["evidence"], sort_keys=True),
-                    km_setup_json="{}",
+                    km_setup_json=json.dumps(
+                        default_km_setup_values(), sort_keys=True
+                    ),
                     review_notes="",
                     erp_write=0,
                 )

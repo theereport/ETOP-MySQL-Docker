@@ -942,15 +942,18 @@ def list_carryover_transactions() -> list[dict[str, Any]]:
     return transactions
 
 
-def create_carryover_export() -> Path:
+def create_carryover_export(customer_number: str = "") -> Path:
     """Export every transaction that originated from a carryover
     disposition and is now approved, across every lockbox job.
 
     Separate from create_reviewed_export - that export is scoped to one
     job and explicitly excludes carryover transactions; this one is scoped
     to the carryover-approved set across all jobs, regardless of job.
+    Pass customer_number to scope the export to one ERP customer, once the
+    carryover queue is large enough that "everyone" isn't the useful unit.
     """
 
+    customer_number = customer_number.strip()
     pairs = list_approved_carryover_origin_transaction_ids()
     by_job: dict[str, set[str]] = {}
     for job_id, transaction_id in pairs:
@@ -964,6 +967,12 @@ def create_carryover_export() -> Path:
             continue
         for transaction in review.get("transactions", []):
             if transaction.get("transaction_id") not in transaction_ids:
+                continue
+            if (
+                customer_number
+                and str(transaction.get("customer_number") or "")
+                != customer_number
+            ):
                 continue
             transactions.append({
                 key: value
@@ -983,7 +992,15 @@ def create_carryover_export() -> Path:
         "transactions": transactions,
         "warnings": [],
     }
-    output = EXPORT_DIR / "Carryover_Approved_PNC_Lockbox.xlsx"
+    output_name = (
+        "Carryover_Approved_PNC_Lockbox.xlsx"
+        if not customer_number
+        else (
+            f"Carryover_Approved_PNC_Lockbox_"
+            f"{_safe_file_part(customer_number, 'customer')}.xlsx"
+        )
+    )
+    output = EXPORT_DIR / output_name
     return export_pnc_workbook(result, output)
 
 
