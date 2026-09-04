@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -14,12 +14,16 @@ from modules.freight_logistics.service import (
 from . import repository
 from .providers.samsara_provider import SamsaraProvider, get_samsara_provider
 from .schemas import (
+    ActualRun,
     BusinessRule,
     CustomerProfile,
     DataQualityIssue,
     DataQualityReport,
     Driver,
     DriverAvailability,
+    SamsaraAddress,
+    SamsaraImportResult,
+    SyncState,
     Vehicle,
     VehicleCapacity,
 )
@@ -49,6 +53,7 @@ def _map_customer_profile(row: dict[str, Any]) -> CustomerProfile:
         notes=row.get("notes") or "",
         updated_at=row.get("updated_at") or "",
         updated_by=row.get("updated_by") or "",
+        samsara_address_id=row.get("samsara_address_id"),
     )
 
 
@@ -77,6 +82,8 @@ def _map_vehicle(row: dict[str, Any]) -> Vehicle:
         active=bool(row.get("active", True)),
         notes=row.get("notes") or "",
         updated_at=row.get("updated_at") or "",
+        vin=row.get("vin"),
+        samsara_vehicle_id=row.get("samsara_vehicle_id"),
         capacities=capacities,
     )
 
@@ -105,6 +112,7 @@ def _map_driver(row: dict[str, Any]) -> Driver:
         qualifications=row.get("qualifications") or "",
         notes=row.get("notes") or "",
         updated_at=row.get("updated_at") or "",
+        samsara_driver_id=row.get("samsara_driver_id"),
         availability=availability,
     )
 
@@ -288,7 +296,7 @@ def save_business_rule(rule_key: str, payload: dict[str, Any]) -> BusinessRule:
     return _map_business_rule(row)
 
 
-# --- data quality ----------------------------------------------------------
+# --- Samsara passthrough (read-only) ---------------------------------
 
 def _call_samsara(
     action: str,
@@ -351,19 +359,245 @@ def get_samsara_live_gps(
     )
 
 
+# --- Samsara import / linking / historical sync ---------------------------
+
+def import_samsara_vehicles(
+    *, samsara: SamsaraProvider | None = None
+) -> SamsaraImportResult:
+    """Create/update route_vehicles from the real Samsara fleet, keyed by
+    samsara_vehicle_id. Samsara is the source of truth for these fields -
+    this is an import, not a two-way reconciliation."""
+
+    vehicles = list_samsara_vehicles(samsara=samsara)
+    created = 0
+    updated = 0
+    for vehicle in vehicles:
+        samsara_vehicle_id = str(vehicle.get("id") or "").strip()
+        if not samsara_vehicle_id:
+            continue
+        _row, was_created = repository.upsert_vehicle_from_samsara(
+            samsara_vehicle_id,
+            {
+                "unit_number": str(vehicle.get("name") or samsara_vehicle_id),
+                "vehicle_type": str(vehicle.get("type") or ""),
+                "vin": vehicle.get("vin"),
+                "active": True,
+            },
+        )
+        if was_created:
+            created += 1
+        else:
+            updated += 1
+    return SamsaraImportResult(
+        samsara_count=len(vehicles), created_count=created, updated_count=updated
+    )
+
+
+def import_samsara_drivers(
+    *, samsara: SamsaraProvider | None = None
+) -> SamsaraImportResult:
+    """Create/update route_drivers from the real Samsara driver list,
+    keyed by samsara_driver_id - see import_samsara_vehicles()."""
+
+    drivers = list_samsara_drivers(samsara=samsara)
+    created = 0
+    updated = 0
+    for driver in drivers:
+        samsara_driver_id = str(driver.get("id") or "").strip()
+        if not samsara_driver_id:
+            continue
+        _row, was_created = repository.upsert_driver_from_samsara(
+            samsara_driver_id,
+            {
+                "name": str(driver.get("name") or samsara_driver_id),
+                "active": True,
+            },
+        )
+        if was_created:
+            created += 1
+        else:
+            updated += 1
+    return SamsaraImportResult(
+        samsara_count=len(drivers), created_count=created, updated_count=updated
+    )
+
+
+def search_samsara_addresses(
+    query: str, *, samsara: SamsaraProvider | None = None
+) -> list[SamsaraAddress]:
+    addresses = _call_samsara(
+        "search Samsara addresses", "list_addresses", samsara=samsara
+    )
+    normalized_query = query.strip().lower()
+    results = [
+        SamsaraAddress(
+            id=str(address.get("id") or ""),
+            name=str(address.get("name") or ""),
+            formatted_address=str(address.get("formattedAddress") or ""),
+            latitude=address.get("latitude"),
+            longitude=address.get("longitude"),
+        )
+        for address in addresses
+        if not normalized_query
+        or normalized_query in str(address.get("name") or "").lower()
+        or normalized_query in str(address.get("formattedAddress") or "").lower()
+    ]
+    return results[:50]
+
+
+def link_customer_samsara_address(
+    customer_number: str, samsara_address_id: str | None
+) -> CustomerProfile:
+    customer_number = customer_number.strip()
+    if not customer_number:
+        raise HTTPException(status_code=400, detail="A customer number is required.")
+    row = repository.set_customer_samsara_address_id(
+        customer_number, samsara_address_id
+    )
+    return _map_customer_profile(row)
+
+
+def _map_actual_run(row: dict[str, Any]) -> ActualRun:
+    return ActualRun(
+        run_id=row["run_id"],
+        samsara_trip_id=row["samsara_trip_id"],
+        vehicle_id=row.get("vehicle_id"),
+        driver_id=row.get("driver_id"),
+        start_time=row.get("start_time"),
+        end_time=row.get("end_time"),
+        start_latitude=row.get("start_latitude"),
+        start_longitude=row.get("start_longitude"),
+        end_latitude=row.get("end_latitude"),
+        end_longitude=row.get("end_longitude"),
+        distance_meters=row.get("distance_meters"),
+        completion_status=row.get("completion_status") or "",
+        ingested_at=row.get("ingested_at") or "",
+    )
+
+
+def _map_sync_state(row: dict[str, Any]) -> SyncState:
+    return SyncState(
+        sync_key=row["sync_key"],
+        last_synced_through=row.get("last_synced_through"),
+        last_run_at=row.get("last_run_at"),
+        last_run_status=row.get("last_run_status") or "",
+        last_run_message=row.get("last_run_message") or "",
+    )
+
+
+def get_trip_sync_state() -> SyncState:
+    row = repository.get_sync_state("trips")
+    if row is None:
+        return SyncState(sync_key="trips")
+    return _map_sync_state(row)
+
+
+def list_actual_runs(
+    *, date_from: str | None = None, date_to: str | None = None
+) -> list[ActualRun]:
+    return [
+        _map_actual_run(row)
+        for row in repository.list_actual_runs(date_from=date_from, date_to=date_to)
+    ]
+
+
+def sync_samsara_trips(
+    date_from: date, date_to: date, *, samsara: SamsaraProvider | None = None
+) -> tuple[list[ActualRun], SyncState]:
+    """Pull Samsara trip history for a date range and upsert it into
+    route_actual_runs. A trip whose vehicle/driver hasn't been imported
+    yet is still stored (vehicle_id/driver_id left null) rather than
+    silently dropped - compute_data_quality_report() surfaces those.
+    """
+
+    now = _now()
+    try:
+        trips = _call_samsara(
+            "sync Samsara trip history",
+            "list_historical_routes",
+            date_from=date_from,
+            date_to=date_to,
+            samsara=samsara,
+        )
+    except HTTPException as exc:
+        repository.save_sync_state(
+            "trips",
+            {
+                "last_run_at": now,
+                "last_run_status": "failed",
+                "last_run_message": str(exc.detail),
+            },
+        )
+        raise
+
+    runs: list[ActualRun] = []
+    for trip in trips:
+        samsara_trip_id = str(
+            trip.get("id")
+            or f"{trip.get('asset', {}).get('id', '')}:{trip.get('tripStartTime', '')}"
+        )
+        asset = trip.get("asset") or {}
+        samsara_vehicle_id = str(asset.get("id") or "").strip()
+        vehicle = (
+            repository.get_vehicle_by_samsara_id(samsara_vehicle_id)
+            if samsara_vehicle_id
+            else None
+        )
+        start_location = trip.get("startLocation") or {}
+        end_location = trip.get("endLocation") or {}
+        row = repository.upsert_actual_run(
+            samsara_trip_id,
+            {
+                "vehicle_id": vehicle["vehicle_id"] if vehicle else None,
+                # /trips/stream's response schema has no driver ID field
+                # (confirmed against developers.samsara.com) - a trip
+                # can't be linked to a driver from this endpoint alone.
+                # Left null and surfaced by the Data Quality Center's
+                # "unresolved link" check rather than guessed at.
+                "driver_id": None,
+                "start_time": trip.get("tripStartTime"),
+                "end_time": trip.get("tripEndTime"),
+                "start_latitude": start_location.get("latitude"),
+                "start_longitude": start_location.get("longitude"),
+                "end_latitude": end_location.get("latitude"),
+                "end_longitude": end_location.get("longitude"),
+                "distance_meters": trip.get("finalDistanceMeters"),
+                "completion_status": trip.get("completionStatus") or "",
+                "ingested_at": now,
+            },
+        )
+        runs.append(_map_actual_run(row))
+
+    repository.save_sync_state(
+        "trips",
+        {
+            "last_synced_through": date_to.isoformat(),
+            "last_run_at": now,
+            "last_run_status": "success",
+            "last_run_message": f"Synced {len(runs)} trip(s).",
+        },
+    )
+    return runs, get_trip_sync_state()
+
+
 def compute_data_quality_report(
     *,
     freight_service: FreightLogisticsService = freight_logistics_service,
+    samsara: SamsaraProvider | None = None,
 ) -> DataQualityReport:
-    """Live, always-fresh MaddenCo-vs-ETOP-master-data consistency check -
-    no stored snapshot, so there is no staleness to reason about.
+    """Live, always-fresh MaddenCo/Samsara-vs-ETOP-master-data consistency
+    check - no stored snapshot, so there is no staleness to reason about.
 
-    Deliberately scoped to what's checkable WITHOUT Samsara: route-code and
-    store-number validity against freight_logistics's MaddenCo reads, and
-    ETOP's own master-data completeness (customer coordinates, vehicle
-    capacities, driver availability). "Samsara/MaddenCo mapping failures"
-    from the program plan's Data Quality Center section is intentionally
-    absent here - there is nothing to map yet.
+    Checks route-code/store-number validity against freight_logistics's
+    MaddenCo reads, ETOP's own master-data completeness (customer
+    coordinates, vehicle capacities, driver availability), and (RI-1)
+    which real Samsara vehicles/drivers haven't been imported yet plus any
+    ingested trip that couldn't be linked to an imported vehicle/driver.
+
+    `samsara` defaults to get_samsara_provider() (real API if configured)
+    - tests should always pass a fake explicitly rather than relying on
+    that default, since a real SAMSARA_API_TOKEN may legitimately be
+    present in the environment (this repo's own .env has one).
     """
 
     customers = repository.list_customer_route_assignments()
@@ -450,6 +684,65 @@ def compute_data_quality_report(
                     message="This driver has no availability schedule on file.",
                 )
             )
+
+    # Samsara-based checks are skipped (not failed) when Samsara isn't
+    # connected, so a deployment without a token still gets the full
+    # MaddenCo-side report rather than a 502 for the whole thing.
+    try:
+        provider = samsara or get_samsara_provider()
+        samsara_vehicles = provider.list_vehicles()
+        samsara_drivers = provider.list_drivers()
+    except RuntimeError:
+        samsara_vehicles = None
+        samsara_drivers = None
+
+    if samsara_vehicles is not None:
+        imported_vehicle_ids = {
+            vehicle["samsara_vehicle_id"]
+            for vehicle in repository.list_vehicles()
+            if vehicle.get("samsara_vehicle_id")
+        }
+        for vehicle in samsara_vehicles:
+            samsara_id = str(vehicle.get("id") or "")
+            if samsara_id and samsara_id not in imported_vehicle_ids:
+                issues.append(
+                    DataQualityIssue(
+                        category="samsara_vehicle_not_imported",
+                        subject=str(vehicle.get("name") or samsara_id),
+                        message="This Samsara vehicle has not been imported yet.",
+                    )
+                )
+
+    if samsara_drivers is not None:
+        imported_driver_ids = {
+            driver["samsara_driver_id"]
+            for driver in repository.list_drivers()
+            if driver.get("samsara_driver_id")
+        }
+        for driver in samsara_drivers:
+            samsara_id = str(driver.get("id") or "")
+            if samsara_id and samsara_id not in imported_driver_ids:
+                issues.append(
+                    DataQualityIssue(
+                        category="samsara_driver_not_imported",
+                        subject=str(driver.get("name") or samsara_id),
+                        message="This Samsara driver has not been imported yet.",
+                    )
+                )
+
+    unresolved_run_count = repository.count_actual_runs_with_unresolved_links()
+    if unresolved_run_count:
+        issues.append(
+            DataQualityIssue(
+                category="actual_run_unresolved_link",
+                subject=f"{unresolved_run_count} ingested trip(s)",
+                message=(
+                    "These ingested Samsara trips reference a vehicle that "
+                    "hasn't been imported yet - import vehicles from "
+                    "Samsara, then re-sync to resolve them."
+                ),
+            )
+        )
 
     customers_checked = len(customers)
     return DataQualityReport(

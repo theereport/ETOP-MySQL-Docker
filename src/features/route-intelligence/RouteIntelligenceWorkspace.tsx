@@ -6,6 +6,10 @@ import {
   createVehicle,
   getCustomerProfile,
   getDataQualityReport,
+  importSamsaraDrivers,
+  importSamsaraVehicles,
+  linkCustomerSamsaraAddress,
+  listActualRuns,
   listBusinessRules,
   listCustomerProfiles,
   listDrivers,
@@ -14,14 +18,18 @@ import {
   listWarehouses,
   saveBusinessRule,
   saveCustomerProfile,
+  searchSamsaraAddresses,
   setDriverAvailability,
+  syncSamsaraTrips,
 } from './api'
 import type {
+  ActualRun,
   BusinessRule,
   CustomerProfile,
   DataQualityReport,
   Driver,
   RouteSummary,
+  SamsaraAddress,
   Vehicle,
   WarehouseSummary,
   WeekdayName,
@@ -34,6 +42,7 @@ type Tab =
   | 'vehicles'
   | 'drivers'
   | 'customer-profiles'
+  | 'trip-history'
   | 'business-rules'
 
 const TABS: { id: Tab; label: string }[] = [
@@ -42,6 +51,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'vehicles', label: 'Vehicles' },
   { id: 'drivers', label: 'Drivers' },
   { id: 'customer-profiles', label: 'Customer Profiles' },
+  { id: 'trip-history', label: 'Trip History' },
   { id: 'business-rules', label: 'Business Rules' },
 ]
 
@@ -238,6 +248,8 @@ function VehiclesTab() {
   const [unitNumber, setUnitNumber] = useState('')
   const [vehicleType, setVehicleType] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
+  const [importMessage, setImportMessage] = useState('')
   const [capacityDrafts, setCapacityDrafts] = useState<Record<number, string>>({})
 
   const load = () => {
@@ -271,6 +283,22 @@ function VehiclesTab() {
       .catch((err) => setError(errorMessage(err, 'Unable to add capacity.')))
   }
 
+  const runImport = () => {
+    setIsImporting(true)
+    setError('')
+    setImportMessage('')
+    importSamsaraVehicles()
+      .then((result) => {
+        setImportMessage(
+          `Imported ${result.samsara_count} Samsara vehicles - `
+          + `${result.created_count} new, ${result.updated_count} updated.`,
+        )
+        load()
+      })
+      .catch((err) => setError(errorMessage(err, 'Unable to import from Samsara.')))
+      .finally(() => setIsImporting(false))
+  }
+
   return (
     <div className="ri-panel">
       <div className="ri-panel-header">
@@ -278,8 +306,12 @@ function VehiclesTab() {
           <h3>Vehicles</h3>
           <p>Master vehicle list and weight-capacity profiles for route planning.</p>
         </div>
+        <button type="button" onClick={runImport} disabled={isImporting}>
+          {isImporting ? 'Importing…' : 'Import from Samsara'}
+        </button>
       </div>
       {error && <div className="ri-error">{error}</div>}
+      {importMessage && <div className="ri-note">{importMessage}</div>}
 
       <form className="ri-inline-form" onSubmit={submitVehicle}>
         <input
@@ -302,7 +334,7 @@ function VehiclesTab() {
           <table>
             <thead>
               <tr>
-                <th>Unit #</th><th>Type</th><th>Active</th>
+                <th>Unit #</th><th>Type</th><th>VIN</th><th>Samsara</th><th>Active</th>
                 <th>Weight Capacity</th><th>Add Capacity (lb)</th>
               </tr>
             </thead>
@@ -311,6 +343,8 @@ function VehiclesTab() {
                 <tr key={vehicle.vehicle_id}>
                   <td>{vehicle.unit_number}</td>
                   <td>{vehicle.vehicle_type || '—'}</td>
+                  <td>{vehicle.vin || '—'}</td>
+                  <td>{vehicle.samsara_vehicle_id ? 'Linked' : '—'}</td>
                   <td>{vehicle.active ? 'Yes' : 'No'}</td>
                   <td>
                     {vehicle.capacities.length === 0
@@ -348,6 +382,8 @@ function DriversTab() {
   const [error, setError] = useState('')
   const [name, setName] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
+  const [importMessage, setImportMessage] = useState('')
 
   const load = () => {
     listDrivers()
@@ -378,6 +414,22 @@ function DriversTab() {
       .catch((err) => setError(errorMessage(err, 'Unable to update availability.')))
   }
 
+  const runImport = () => {
+    setIsImporting(true)
+    setError('')
+    setImportMessage('')
+    importSamsaraDrivers()
+      .then((result) => {
+        setImportMessage(
+          `Imported ${result.samsara_count} Samsara drivers - `
+          + `${result.created_count} new, ${result.updated_count} updated.`,
+        )
+        load()
+      })
+      .catch((err) => setError(errorMessage(err, 'Unable to import from Samsara.')))
+      .finally(() => setIsImporting(false))
+  }
+
   return (
     <div className="ri-panel">
       <div className="ri-panel-header">
@@ -385,8 +437,12 @@ function DriversTab() {
           <h3>Drivers</h3>
           <p>Master driver list and recurring weekly availability.</p>
         </div>
+        <button type="button" onClick={runImport} disabled={isImporting}>
+          {isImporting ? 'Importing…' : 'Import from Samsara'}
+        </button>
       </div>
       {error && <div className="ri-error">{error}</div>}
+      {importMessage && <div className="ri-note">{importMessage}</div>}
 
       <form className="ri-inline-form" onSubmit={submitDriver}>
         <input
@@ -404,7 +460,7 @@ function DriversTab() {
           <table>
             <thead>
               <tr>
-                <th>Name</th>
+                <th>Name</th><th>Samsara</th>
                 {WEEKDAYS.map((day) => <th key={day}>{day.slice(0, 3)}</th>)}
               </tr>
             </thead>
@@ -412,6 +468,7 @@ function DriversTab() {
               {drivers.map((driver) => (
                 <tr key={driver.driver_id}>
                   <td>{driver.name}</td>
+                  <td>{driver.samsara_driver_id ? 'Linked' : '—'}</td>
                   {WEEKDAYS.map((day) => {
                     const entry = driver.availability.find((item) => item.day_of_week === day)
                     return (
@@ -444,6 +501,9 @@ function CustomerProfilesTab() {
   const [customerNumber, setCustomerNumber] = useState('')
   const [draft, setDraft] = useState<CustomerProfile | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+  const [addressQuery, setAddressQuery] = useState('')
+  const [addressResults, setAddressResults] = useState<SamsaraAddress[]>([])
+  const [isSearchingAddresses, setIsSearchingAddresses] = useState(false)
 
   const load = () => {
     listCustomerProfiles()
@@ -455,9 +515,27 @@ function CustomerProfilesTab() {
 
   const openCustomer = (number: string) => {
     setCustomerNumber(number)
+    setAddressQuery('')
+    setAddressResults([])
     getCustomerProfile(number)
       .then(setDraft)
       .catch((err) => setError(errorMessage(err, 'Unable to load this customer profile.')))
+  }
+
+  const searchAddresses = () => {
+    setIsSearchingAddresses(true)
+    setError('')
+    searchSamsaraAddresses(addressQuery)
+      .then((response) => setAddressResults(response.addresses))
+      .catch((err) => setError(errorMessage(err, 'Unable to search Samsara addresses.')))
+      .finally(() => setIsSearchingAddresses(false))
+  }
+
+  const linkAddress = (samsaraAddressId: string | null) => {
+    if (!customerNumber.trim()) return
+    linkCustomerSamsaraAddress(customerNumber.trim(), { samsara_address_id: samsaraAddressId })
+      .then((saved) => { setDraft(saved); setAddressResults([]); load() })
+      .catch((err) => setError(errorMessage(err, 'Unable to link this Samsara address.')))
   }
 
   const save = () => {
@@ -559,6 +637,38 @@ function CustomerProfilesTab() {
           <button type="button" onClick={save} disabled={isSaving}>
             {isSaving ? 'Saving…' : 'Save Profile'}
           </button>
+
+          <div className="ri-span-2">
+            <strong>Samsara address: </strong>
+            {draft.samsara_address_id ? (
+              <>
+                <span>{draft.samsara_address_id}</span>{' '}
+                <button type="button" onClick={() => linkAddress(null)}>Unlink</button>
+              </>
+            ) : (
+              <span>Not linked</span>
+            )}
+            <div className="ri-inline-form" style={{ marginTop: 8 }}>
+              <input
+                placeholder="Search Samsara addresses by name"
+                value={addressQuery}
+                onChange={(event) => setAddressQuery(event.target.value)}
+              />
+              <button type="button" onClick={searchAddresses} disabled={isSearchingAddresses}>
+                {isSearchingAddresses ? 'Searching…' : 'Search'}
+              </button>
+            </div>
+            {addressResults.length > 0 && (
+              <ul>
+                {addressResults.map((address) => (
+                  <li key={address.id}>
+                    {address.name} - {address.formatted_address}{' '}
+                    <button type="button" onClick={() => linkAddress(address.id)}>Link</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       )}
 
@@ -567,7 +677,9 @@ function CustomerProfilesTab() {
           <div className="ri-empty">No customer profiles saved yet.</div>
         ) : (
           <table>
-            <thead><tr><th>Customer #</th><th>Coordinates</th><th>Priority</th></tr></thead>
+            <thead>
+              <tr><th>Customer #</th><th>Coordinates</th><th>Priority</th><th>Samsara Address</th></tr>
+            </thead>
             <tbody>
               {profiles.map((profile) => (
                 <tr key={profile.customer_number} onClick={() => openCustomer(profile.customer_number)}>
@@ -578,6 +690,119 @@ function CustomerProfilesTab() {
                       : 'Missing'}
                   </td>
                   <td>{profile.priority || '—'}</td>
+                  <td>{profile.samsara_address_id ? 'Linked' : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// --- Trip History ---------------------------------------------------
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function daysAgoIsoDate(days: number): string {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return date.toISOString().slice(0, 10)
+}
+
+function TripHistoryTab() {
+  const [runs, setRuns] = useState<ActualRun[]>([])
+  const [error, setError] = useState('')
+  const [dateFrom, setDateFrom] = useState(daysAgoIsoDate(7))
+  const [dateTo, setDateTo] = useState(todayIsoDate())
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [syncMessage, setSyncMessage] = useState('')
+
+  const load = () => {
+    listActualRuns({ dateFrom, dateTo })
+      .then((response) => setRuns(response.runs))
+      .catch((err) => setError(errorMessage(err, 'Unable to load trip history.')))
+  }
+
+  useEffect(load, [])
+
+  const runSync = () => {
+    setIsSyncing(true)
+    setError('')
+    setSyncMessage('')
+    syncSamsaraTrips({ date_from: dateFrom, date_to: dateTo })
+      .then((result) => {
+        setSyncMessage(
+          `Synced ${result.trip_count} trip(s) - ${result.resolved_count} `
+          + `resolved to a vehicle, ${result.unresolved_count} unresolved.`,
+        )
+        load()
+      })
+      .catch((err) => setError(errorMessage(err, 'Unable to sync Samsara trips.')))
+      .finally(() => setIsSyncing(false))
+  }
+
+  return (
+    <div className="ri-panel">
+      <div className="ri-panel-header">
+        <div>
+          <h3>Trip History</h3>
+          <p>
+            Ingested Samsara trip history. A trip whose vehicle/driver
+            hasn't been imported yet is still stored and flagged by the
+            Data Quality Center, not dropped.
+          </p>
+        </div>
+      </div>
+      {error && <div className="ri-error">{error}</div>}
+      {syncMessage && <div className="ri-note">{syncMessage}</div>}
+
+      <div className="ri-inline-form">
+        <label>
+          From
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(event) => setDateFrom(event.target.value)}
+          />
+        </label>
+        <label>
+          To
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(event) => setDateTo(event.target.value)}
+          />
+        </label>
+        <button type="button" onClick={load}>Refresh</button>
+        <button type="button" onClick={runSync} disabled={isSyncing}>
+          {isSyncing ? 'Syncing…' : 'Sync Now'}
+        </button>
+      </div>
+
+      <div className="ri-table-wrap">
+        {runs.length === 0 ? (
+          <div className="ri-empty">No trips ingested for this range yet.</div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Vehicle</th><th>Driver</th><th>Start</th><th>End</th>
+                <th>Distance (m)</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runs.map((run) => (
+                <tr key={run.run_id}>
+                  <td>{run.vehicle_id ?? 'Unresolved'}</td>
+                  <td>{run.driver_id ?? 'Unresolved'}</td>
+                  <td>{run.start_time || '—'}</td>
+                  <td>{run.end_time || '—'}</td>
+                  <td>{run.distance_meters ?? '—'}</td>
+                  <td>{run.completion_status || '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -699,6 +924,7 @@ export default function RouteIntelligenceWorkspace() {
       {tab === 'vehicles' && <VehiclesTab />}
       {tab === 'drivers' && <DriversTab />}
       {tab === 'customer-profiles' && <CustomerProfilesTab />}
+      {tab === 'trip-history' && <TripHistoryTab />}
       {tab === 'business-rules' && <BusinessRulesTab />}
     </div>
   )

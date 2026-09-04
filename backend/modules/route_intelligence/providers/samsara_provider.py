@@ -35,6 +35,9 @@ class SamsaraProvider(Protocol):
     def list_driver_vehicle_assignments(self) -> list[dict[str, Any]]:
         ...
 
+    def list_addresses(self) -> list[dict[str, Any]]:
+        ...
+
     def get_customer_geofence(
         self, customer_number: str
     ) -> dict[str, Any] | None:
@@ -71,6 +74,9 @@ class UnconfiguredSamsaraProvider:
         raise RuntimeError(self._MESSAGE)
 
     def list_driver_vehicle_assignments(self) -> list[dict[str, Any]]:
+        raise RuntimeError(self._MESSAGE)
+
+    def list_addresses(self) -> list[dict[str, Any]]:
         raise RuntimeError(self._MESSAGE)
 
     def get_customer_geofence(
@@ -201,12 +207,15 @@ class SamsaraApiProvider:
             "/fleet/driver-vehicle-assignments", params={"filterBy": "vehicles"}
         )
 
+    def list_addresses(self) -> list[dict[str, Any]]:
+        """GET /addresses - developers.samsara.com/reference/listaddresses"""
+
+        return self._paginated_get("/addresses")
+
     def get_customer_geofence(
         self, customer_number: str
     ) -> dict[str, Any] | None:
-        """GET /addresses - developers.samsara.com/reference/listaddresses
-
-        Filtered client-side by externalIds, since /addresses has no
+        """Filtered client-side by externalIds, since /addresses has no
         confirmed server-side externalId-value filter param. Assumes K&M's
         Samsara addresses are tagged with the ETOP/MaddenCo customer number
         as an externalId value - that tagging convention does not exist
@@ -214,7 +223,7 @@ class SamsaraApiProvider:
         anything real. See the module README.
         """
 
-        for address in self._paginated_get("/addresses"):
+        for address in self.list_addresses():
             external_ids = address.get("externalIds") or {}
             if customer_number in external_ids.values():
                 return address

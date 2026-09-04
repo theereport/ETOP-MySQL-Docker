@@ -1,5 +1,6 @@
 import { requestJson } from '../../api/client'
 import type {
+  ActualRunListResponse,
   AddVehicleCapacityRequest,
   BusinessRuleListResponse,
   CreateDriverRequest,
@@ -9,9 +10,14 @@ import type {
   DataQualityReport,
   Driver,
   DriverListResponse,
+  LinkCustomerSamsaraAddressRequest,
+  SamsaraAddressSearchResponse,
+  SamsaraImportResult,
   SaveBusinessRuleRequest,
   SaveCustomerProfileRequest,
   SetDriverAvailabilityRequest,
+  SyncSamsaraTripsRequest,
+  SyncSamsaraTripsResult,
   Vehicle,
   VehicleListResponse,
   WarehouseListResponse,
@@ -145,4 +151,62 @@ export function saveBusinessRule(
   return requestJson(`${BASE}/business-rules/${encodeURIComponent(ruleKey)}`, {
     method: 'PUT', body: payload, signal,
   })
+}
+
+export function importSamsaraVehicles(signal?: AbortSignal): Promise<SamsaraImportResult> {
+  return requestJson<SamsaraImportResult>(`${BASE}/samsara/import/vehicles`, {
+    method: 'POST', signal,
+  })
+}
+
+export function importSamsaraDrivers(signal?: AbortSignal): Promise<SamsaraImportResult> {
+  return requestJson<SamsaraImportResult>(`${BASE}/samsara/import/drivers`, {
+    method: 'POST', signal,
+  })
+}
+
+export function searchSamsaraAddresses(
+  query: string,
+  signal?: AbortSignal,
+): Promise<SamsaraAddressSearchResponse> {
+  const params = new URLSearchParams()
+  if (query.trim()) params.set('q', query.trim())
+  return requestJson<SamsaraAddressSearchResponse>(
+    `${BASE}/samsara/addresses/search?${params.toString()}`,
+    { signal },
+  )
+}
+
+export function linkCustomerSamsaraAddress(
+  customerNumber: string,
+  payload: LinkCustomerSamsaraAddressRequest,
+  signal?: AbortSignal,
+): Promise<CustomerProfile> {
+  return requestJson<CustomerProfile>(
+    `${BASE}/customer-profiles/${encodeURIComponent(customerNumber)}/samsara-address`,
+    { method: 'PUT', body: payload, signal },
+  )
+}
+
+export function syncSamsaraTrips(
+  payload: SyncSamsaraTripsRequest,
+  signal?: AbortSignal,
+): Promise<SyncSamsaraTripsResult> {
+  return requestJson<SyncSamsaraTripsResult>(`${BASE}/samsara/sync-trips`, {
+    method: 'POST', body: payload, signal,
+  })
+}
+
+export function listActualRuns(
+  params: { dateFrom?: string; dateTo?: string } = {},
+  signal?: AbortSignal,
+): Promise<ActualRunListResponse> {
+  const search = new URLSearchParams()
+  if (params.dateFrom) search.set('date_from', params.dateFrom)
+  if (params.dateTo) search.set('date_to', params.dateTo)
+  const query = search.toString()
+  return requestJson<ActualRunListResponse>(
+    `${BASE}/actual-runs${query ? `?${query}` : ''}`,
+    { signal },
+  )
 }

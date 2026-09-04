@@ -2651,6 +2651,10 @@ route_customer_profiles_table = Table(
     Column("notes", Text, nullable=False),
     Column("updated_at", String(64), nullable=False),
     Column("updated_by", String(255), nullable=False, server_default=""),
+    # Set via a manual "link" action (search Samsara addresses by name) -
+    # no reliable auto-match exists without an externalId tagging
+    # convention that doesn't exist yet in Samsara. See the module README.
+    Column("samsara_address_id", String(64), nullable=True),
 )
 
 route_vehicles_table = Table(
@@ -2663,7 +2667,13 @@ route_vehicles_table = Table(
     Column("active", Boolean, nullable=False, server_default="1"),
     Column("notes", Text, nullable=False),
     Column("updated_at", String(64), nullable=False),
+    # Populated by import_samsara_vehicles(), not hand-entered - Samsara
+    # already has the real fleet, so vehicles are created FROM it rather
+    # than reconciled against independently-entered data.
+    Column("vin", String(32), nullable=True),
+    Column("samsara_vehicle_id", String(64), nullable=True),
     Index("idx_route_vehicles_warehouse", "home_warehouse_number"),
+    Index("idx_route_vehicles_samsara_id", "samsara_vehicle_id"),
 )
 
 route_vehicle_capacities_table = Table(
@@ -2694,7 +2704,11 @@ route_drivers_table = Table(
     Column("qualifications", Text, nullable=False),
     Column("notes", Text, nullable=False),
     Column("updated_at", String(64), nullable=False),
+    # Populated by import_samsara_drivers() - see route_vehicles.vin above
+    # for why this is import-populated, not hand-entered.
+    Column("samsara_driver_id", String(64), nullable=True),
     Index("idx_route_drivers_warehouse", "home_warehouse_number"),
+    Index("idx_route_drivers_samsara_id", "samsara_driver_id"),
 )
 
 route_driver_availability_table = Table(
@@ -2722,6 +2736,56 @@ route_business_rules_table = Table(
     Column("description", Text, nullable=False),
     Column("updated_at", String(64), nullable=False),
     Column("updated_by", String(255), nullable=False, server_default=""),
+)
+
+# One row per ingested Samsara trip (RI-1: sync_samsara_trips). vehicle_id/
+# driver_id are nullable - a trip may reference a Samsara vehicle/driver
+# not yet imported into route_vehicles/route_drivers, and that gap is
+# surfaced by the Data Quality Center rather than silently dropping the
+# trip (see route_intelligence/service.py's compute_data_quality_report).
+route_actual_runs_table = Table(
+    "route_actual_runs",
+    metadata,
+    Column("run_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("samsara_trip_id", String(64), nullable=False),
+    Column(
+        "vehicle_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("route_vehicles.vehicle_id"),
+        nullable=True,
+    ),
+    Column(
+        "driver_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("route_drivers.driver_id"),
+        nullable=True,
+    ),
+    Column("start_time", String(64), nullable=True),
+    Column("end_time", String(64), nullable=True),
+    Column("start_latitude", Float, nullable=True),
+    Column("start_longitude", Float, nullable=True),
+    Column("end_latitude", Float, nullable=True),
+    Column("end_longitude", Float, nullable=True),
+    Column("distance_meters", Float, nullable=True),
+    Column("completion_status", String(32), nullable=False, server_default=""),
+    Column("ingested_at", String(64), nullable=False),
+    UniqueConstraint("samsara_trip_id"),
+    Index("idx_route_actual_runs_vehicle", "vehicle_id"),
+    Index("idx_route_actual_runs_start_time", "start_time"),
+)
+
+# Singleton-row-per-sync-key record of the last manual sync run (this
+# slice triggers sync_samsara_trips() explicitly from the UI, not on a
+# schedule - last_synced_through is informational for "last synced: X" in
+# the UI, not yet an automatic cursor driving unattended re-syncs).
+samsara_sync_state_table = Table(
+    "samsara_sync_state",
+    metadata,
+    Column("sync_key", String(64), primary_key=True),
+    Column("last_synced_through", String(64), nullable=True),
+    Column("last_run_at", String(64), nullable=True),
+    Column("last_run_status", String(32), nullable=False, server_default=""),
+    Column("last_run_message", Text, nullable=False),
 )
 
 

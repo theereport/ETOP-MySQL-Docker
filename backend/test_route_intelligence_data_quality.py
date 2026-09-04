@@ -11,6 +11,9 @@ from sqlalchemy import create_engine
 from data.mysql import _reset_engine_override, _set_engine_override
 from modules.route_intelligence import repository as route_repository
 from modules.route_intelligence import service as route_service
+from modules.route_intelligence.providers.samsara_provider import (
+    UnconfiguredSamsaraProvider,
+)
 
 
 class FakeFreightLogisticsService:
@@ -68,7 +71,8 @@ class DataQualityReportTest(unittest.TestCase):
             report = route_service.compute_data_quality_report(
                 freight_service=FakeFreightLogisticsService(
                     warehouse_numbers=[41], route_codes=["12"],
-                )
+                ),
+                samsara=UnconfiguredSamsaraProvider(),
             )
 
         self.assertEqual(report.customers_checked, 1)
@@ -88,7 +92,8 @@ class DataQualityReportTest(unittest.TestCase):
             report = route_service.compute_data_quality_report(
                 freight_service=FakeFreightLogisticsService(
                     warehouse_numbers=[41], route_codes=["12"],
-                )
+                ),
+                samsara=UnconfiguredSamsaraProvider(),
             )
 
         self.assertEqual(report.matched_route_code_count, 0)
@@ -109,7 +114,8 @@ class DataQualityReportTest(unittest.TestCase):
             report = route_service.compute_data_quality_report(
                 freight_service=FakeFreightLogisticsService(
                     warehouse_numbers=[41], route_codes=["12"],
-                )
+                ),
+                samsara=UnconfiguredSamsaraProvider(),
             )
 
         self.assertEqual(report.matched_store_number_count, 0)
@@ -127,7 +133,8 @@ class DataQualityReportTest(unittest.TestCase):
             report = route_service.compute_data_quality_report(
                 freight_service=FakeFreightLogisticsService(
                     warehouse_numbers=[41], route_codes=["12"],
-                )
+                ),
+                samsara=UnconfiguredSamsaraProvider(),
             )
 
         # A blank route code is a data-entry gap, not a mismatch - it
@@ -141,7 +148,8 @@ class DataQualityReportTest(unittest.TestCase):
             report = route_service.compute_data_quality_report(
                 freight_service=FakeFreightLogisticsService(
                     warehouse_numbers=[], route_codes=[],
-                )
+                ),
+                samsara=UnconfiguredSamsaraProvider(),
             )
 
         categories = [issue.category for issue in report.issues]
@@ -153,7 +161,8 @@ class DataQualityReportTest(unittest.TestCase):
             report = route_service.compute_data_quality_report(
                 freight_service=FakeFreightLogisticsService(
                     warehouse_numbers=[], route_codes=[],
-                )
+                ),
+                samsara=UnconfiguredSamsaraProvider(),
             )
 
         categories = [issue.category for issue in report.issues]
@@ -165,11 +174,125 @@ class DataQualityReportTest(unittest.TestCase):
             report = route_service.compute_data_quality_report(
                 freight_service=FakeFreightLogisticsService(
                     warehouse_numbers=[], route_codes=[],
-                )
+                ),
+                samsara=UnconfiguredSamsaraProvider(),
             )
 
         categories = [issue.category for issue in report.issues]
         self.assertIn("customer_profile_missing_coordinates", categories)
+
+    def test_samsara_vehicle_not_yet_imported_is_flagged(self) -> None:
+        samsara = SimpleNamespace(
+            list_vehicles=lambda: [{"id": "v1", "name": "Truck 1"}],
+            list_drivers=lambda: [],
+        )
+        with self._patch_customers([]):
+            report = route_service.compute_data_quality_report(
+                freight_service=FakeFreightLogisticsService(
+                    warehouse_numbers=[], route_codes=[],
+                ),
+                samsara=samsara,
+            )
+
+        categories = [issue.category for issue in report.issues]
+        self.assertIn("samsara_vehicle_not_imported", categories)
+
+    def test_imported_samsara_vehicle_is_not_flagged(self) -> None:
+        route_service.import_samsara_vehicles(
+            samsara=SimpleNamespace(
+                list_vehicles=lambda: [{"id": "v1", "name": "Truck 1"}],
+            )
+        )
+        samsara = SimpleNamespace(
+            list_vehicles=lambda: [{"id": "v1", "name": "Truck 1"}],
+            list_drivers=lambda: [],
+        )
+        with self._patch_customers([]):
+            report = route_service.compute_data_quality_report(
+                freight_service=FakeFreightLogisticsService(
+                    warehouse_numbers=[], route_codes=[],
+                ),
+                samsara=samsara,
+            )
+
+        categories = [issue.category for issue in report.issues]
+        self.assertNotIn("samsara_vehicle_not_imported", categories)
+
+    def test_samsara_driver_not_yet_imported_is_flagged(self) -> None:
+        samsara = SimpleNamespace(
+            list_vehicles=lambda: [],
+            list_drivers=lambda: [{"id": "d1", "name": "Sam Rivera"}],
+        )
+        with self._patch_customers([]):
+            report = route_service.compute_data_quality_report(
+                freight_service=FakeFreightLogisticsService(
+                    warehouse_numbers=[], route_codes=[],
+                ),
+                samsara=samsara,
+            )
+
+        categories = [issue.category for issue in report.issues]
+        self.assertIn("samsara_driver_not_imported", categories)
+
+    def test_unresolved_actual_run_is_flagged(self) -> None:
+        route_repository.upsert_actual_run(
+            "trip-1",
+            {
+                "vehicle_id": None,
+                "driver_id": None,
+                "start_time": None,
+                "end_time": None,
+                "start_latitude": None,
+                "start_longitude": None,
+                "end_latitude": None,
+                "end_longitude": None,
+                "distance_meters": None,
+                "completion_status": "completed",
+                "ingested_at": "2026-09-04T00:00:00Z",
+            },
+        )
+        with self._patch_customers([]):
+            report = route_service.compute_data_quality_report(
+                freight_service=FakeFreightLogisticsService(
+                    warehouse_numbers=[], route_codes=[],
+                ),
+                samsara=UnconfiguredSamsaraProvider(),
+            )
+
+        categories = [issue.category for issue in report.issues]
+        self.assertIn("actual_run_unresolved_link", categories)
+
+    def test_run_with_a_resolved_vehicle_but_no_driver_is_not_flagged(self) -> None:
+        # /trips/stream never returns a driver on ANY trip (a real Samsara
+        # API limitation, not a per-trip resolution gap) - driver_id is
+        # always null by design, so it must not affect this check.
+        vehicle = route_service.create_vehicle({"unit_number": "T-101"})
+        route_repository.upsert_actual_run(
+            "trip-1",
+            {
+                "vehicle_id": vehicle.vehicle_id,
+                "driver_id": None,
+                "start_time": None,
+                "end_time": None,
+                "start_latitude": None,
+                "start_longitude": None,
+                "end_latitude": None,
+                "end_longitude": None,
+                "distance_meters": None,
+                "completion_status": "completed",
+                "ingested_at": "2026-09-04T00:00:00Z",
+            },
+        )
+        with self._patch_customers([]):
+            report = route_service.compute_data_quality_report(
+                freight_service=FakeFreightLogisticsService(
+                    warehouse_numbers=[], route_codes=[],
+                ),
+                samsara=UnconfiguredSamsaraProvider(),
+            )
+
+        categories = [issue.category for issue in report.issues]
+        self.assertNotIn("actual_run_unresolved_link", categories)
 
 
 if __name__ == "__main__":
