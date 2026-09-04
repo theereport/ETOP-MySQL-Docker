@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Query
 
 from modules.freight_logistics.schemas import (
@@ -10,6 +12,7 @@ from modules.freight_logistics.service import freight_logistics_service
 
 from . import service
 from .schemas import (
+    ActualRunListResponse,
     AddVehicleCapacityRequest,
     BusinessRule,
     BusinessRuleListResponse,
@@ -20,9 +23,14 @@ from .schemas import (
     DataQualityReport,
     Driver,
     DriverListResponse,
+    LinkCustomerSamsaraAddressRequest,
+    SamsaraAddressSearchResponse,
+    SamsaraImportResult,
     SaveBusinessRuleRequest,
     SaveCustomerProfileRequest,
     SetDriverAvailabilityRequest,
+    SyncSamsaraTripsRequest,
+    SyncSamsaraTripsResult,
     UpdateDriverRequest,
     UpdateVehicleRequest,
     Vehicle,
@@ -85,6 +93,19 @@ def save_customer_profile(
     payload: SaveCustomerProfileRequest,
 ) -> CustomerProfile:
     return service.save_customer_profile(customer_number, payload.model_dump())
+
+
+@router.put(
+    "/customer-profiles/{customer_number}/samsara-address",
+    response_model=CustomerProfile,
+)
+def link_customer_samsara_address(
+    customer_number: str,
+    payload: LinkCustomerSamsaraAddressRequest,
+) -> CustomerProfile:
+    return service.link_customer_samsara_address(
+        customer_number, payload.samsara_address_id
+    )
 
 
 # --- vehicles / capacities -----------------------------------------------
@@ -186,6 +207,50 @@ def get_samsara_customer_geofence(customer_number: str) -> dict:
 @router.get("/samsara/vehicles/{vehicle_id}/live-gps")
 def get_samsara_live_gps(vehicle_id: str) -> dict:
     return {"location": service.get_samsara_live_gps(vehicle_id)}
+
+
+@router.post("/samsara/import/vehicles", response_model=SamsaraImportResult)
+def import_samsara_vehicles() -> SamsaraImportResult:
+    return service.import_samsara_vehicles()
+
+
+@router.post("/samsara/import/drivers", response_model=SamsaraImportResult)
+def import_samsara_drivers() -> SamsaraImportResult:
+    return service.import_samsara_drivers()
+
+
+@router.get(
+    "/samsara/addresses/search",
+    response_model=SamsaraAddressSearchResponse,
+)
+def search_samsara_addresses(
+    q: str = Query(default="", max_length=100),
+) -> SamsaraAddressSearchResponse:
+    addresses = service.search_samsara_addresses(q)
+    return SamsaraAddressSearchResponse(count=len(addresses), addresses=addresses)
+
+
+@router.post("/samsara/sync-trips", response_model=SyncSamsaraTripsResult)
+def sync_samsara_trips(payload: SyncSamsaraTripsRequest) -> SyncSamsaraTripsResult:
+    date_from = date.fromisoformat(payload.date_from)
+    date_to = date.fromisoformat(payload.date_to)
+    runs, sync_state = service.sync_samsara_trips(date_from, date_to)
+    resolved = sum(1 for run in runs if run.vehicle_id is not None)
+    return SyncSamsaraTripsResult(
+        trip_count=len(runs),
+        resolved_count=resolved,
+        unresolved_count=len(runs) - resolved,
+        sync_state=sync_state,
+    )
+
+
+@router.get("/actual-runs", response_model=ActualRunListResponse)
+def list_actual_runs(
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+) -> ActualRunListResponse:
+    runs = service.list_actual_runs(date_from=date_from, date_to=date_to)
+    return ActualRunListResponse(count=len(runs), runs=runs)
 
 
 # --- data quality ----------------------------------------------------------

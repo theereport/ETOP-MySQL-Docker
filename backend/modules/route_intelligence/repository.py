@@ -13,18 +13,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from core.database import madden_database
 from data.mysql import (
     get_engine,
     metadata,
+    route_actual_runs_table,
     route_business_rules_table,
     route_customer_profiles_table,
     route_driver_availability_table,
     route_drivers_table,
     route_vehicle_capacities_table,
     route_vehicles_table,
+    samsara_sync_state_table,
 )
 
 _TABLES = [
@@ -34,6 +36,8 @@ _TABLES = [
     route_drivers_table,
     route_driver_availability_table,
     route_business_rules_table,
+    route_actual_runs_table,
+    samsara_sync_state_table,
 ]
 
 
@@ -122,6 +126,50 @@ def save_customer_profile(
     return profile
 
 
+def set_customer_samsara_address_id(
+    customer_number: str, samsara_address_id: str | None
+) -> dict[str, Any]:
+    """Kept separate from save_customer_profile() deliberately - that
+    function's `values` dict is rebuilt from the general edit form on
+    every save, which doesn't know about the linked Samsara address and
+    would silently clobber it back to null otherwise."""
+
+    initialize_database()
+    table = route_customer_profiles_table
+    now = _now()
+    with get_engine().begin() as connection:
+        existing = connection.execute(
+            select(table.c.customer_number).where(
+                table.c.customer_number == customer_number
+            )
+        ).first()
+        if existing is None:
+            connection.execute(
+                table.insert().values(
+                    customer_number=customer_number,
+                    receiving_window_start="",
+                    receiving_window_end="",
+                    closed_days_json="[]",
+                    preferred_delivery_days_json="[]",
+                    priority="",
+                    vehicle_access_restrictions="",
+                    delivery_instructions="",
+                    notes="",
+                    updated_at=now,
+                    samsara_address_id=samsara_address_id,
+                )
+            )
+        else:
+            connection.execute(
+                table.update()
+                .where(table.c.customer_number == customer_number)
+                .values(samsara_address_id=samsara_address_id, updated_at=now)
+            )
+    profile = get_customer_profile(customer_number)
+    assert profile is not None  # pragma: no cover - just written above
+    return profile
+
+
 # --- route_vehicles / route_vehicle_capacities --------------------------
 
 def list_vehicles() -> list[dict[str, Any]]:
@@ -167,6 +215,47 @@ def update_vehicle(vehicle_id: int, values: dict[str, Any]) -> dict[str, Any] | 
         if result.rowcount != 1:
             return None
     return get_vehicle(vehicle_id)
+
+
+def get_vehicle_by_samsara_id(samsara_vehicle_id: str) -> dict[str, Any] | None:
+    initialize_database()
+    table = route_vehicles_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.samsara_vehicle_id == samsara_vehicle_id)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def upsert_vehicle_from_samsara(
+    samsara_vehicle_id: str, values: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """Create or update a route_vehicles row keyed by samsara_vehicle_id.
+
+    Returns (row, created) - created=True the first time this Samsara
+    vehicle is seen, False on a subsequent re-import that just refreshes
+    name/vin/active. `notes`/`home_warehouse_number` are preserved from
+    the existing row on re-import (not Samsara-sourced fields) rather
+    than wiped back to blank/null every time someone re-imports.
+    """
+
+    existing = get_vehicle_by_samsara_id(samsara_vehicle_id)
+    if existing is None:
+        payload = {"notes": "", "home_warehouse_number": None, **values}
+        created = create_vehicle(
+            {**payload, "samsara_vehicle_id": samsara_vehicle_id}
+        )
+        return created, True
+    payload = {
+        "notes": existing.get("notes") or "",
+        "home_warehouse_number": existing.get("home_warehouse_number"),
+        **values,
+    }
+    updated = update_vehicle(
+        existing["vehicle_id"], {**payload, "samsara_vehicle_id": samsara_vehicle_id}
+    )
+    assert updated is not None  # pragma: no cover - vehicle_id just read above
+    return updated, False
 
 
 def list_vehicle_capacities(vehicle_id: int) -> list[dict[str, Any]]:
@@ -240,6 +329,47 @@ def update_driver(driver_id: int, values: dict[str, Any]) -> dict[str, Any] | No
         if result.rowcount != 1:
             return None
     return get_driver(driver_id)
+
+
+def get_driver_by_samsara_id(samsara_driver_id: str) -> dict[str, Any] | None:
+    initialize_database()
+    table = route_drivers_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.samsara_driver_id == samsara_driver_id)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def upsert_driver_from_samsara(
+    samsara_driver_id: str, values: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """Create or update a route_drivers row keyed by samsara_driver_id -
+    see upsert_vehicle_from_samsara's docstring for the same shape and
+    the same reasoning for preserving notes/home_warehouse_number/
+    qualifications across re-imports."""
+
+    existing = get_driver_by_samsara_id(samsara_driver_id)
+    if existing is None:
+        payload = {
+            "notes": "",
+            "qualifications": "",
+            "home_warehouse_number": None,
+            **values,
+        }
+        created = create_driver({**payload, "samsara_driver_id": samsara_driver_id})
+        return created, True
+    payload = {
+        "notes": existing.get("notes") or "",
+        "qualifications": existing.get("qualifications") or "",
+        "home_warehouse_number": existing.get("home_warehouse_number"),
+        **values,
+    }
+    updated = update_driver(
+        existing["driver_id"], {**payload, "samsara_driver_id": samsara_driver_id}
+    )
+    assert updated is not None  # pragma: no cover - driver_id just read above
+    return updated, False
 
 
 def list_driver_availability(driver_id: int) -> list[dict[str, Any]]:
@@ -333,3 +463,103 @@ def save_business_rule(rule_key: str, values: dict[str, Any]) -> dict[str, Any]:
     rule = get_business_rule(rule_key)
     assert rule is not None  # pragma: no cover
     return rule
+
+
+# --- route_actual_runs (Samsara historical trip ingestion) ---------------
+
+def get_actual_run_by_samsara_trip_id(samsara_trip_id: str) -> dict[str, Any] | None:
+    initialize_database()
+    table = route_actual_runs_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.samsara_trip_id == samsara_trip_id)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def upsert_actual_run(samsara_trip_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_actual_runs_table
+    with get_engine().begin() as connection:
+        existing = connection.execute(
+            select(table.c.run_id).where(table.c.samsara_trip_id == samsara_trip_id)
+        ).first()
+        if existing is None:
+            connection.execute(
+                table.insert().values(samsara_trip_id=samsara_trip_id, **values)
+            )
+        else:
+            connection.execute(
+                table.update()
+                .where(table.c.samsara_trip_id == samsara_trip_id)
+                .values(**values)
+            )
+    run = get_actual_run_by_samsara_trip_id(samsara_trip_id)
+    assert run is not None  # pragma: no cover
+    return run
+
+
+def list_actual_runs(
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    initialize_database()
+    table = route_actual_runs_table
+    query = select(table)
+    if date_from:
+        query = query.where(table.c.start_time >= date_from)
+    if date_to:
+        query = query.where(table.c.start_time < date_to)
+    query = query.order_by(table.c.start_time.desc()).limit(limit)
+    with get_engine().connect() as connection:
+        rows = connection.execute(query).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def count_actual_runs_with_unresolved_links() -> int:
+    """Only checks vehicle_id, not driver_id - Samsara's /trips/stream
+    never returns a driver on any trip (a real API limitation, confirmed
+    live 2026-09-04, not a per-trip resolution gap), so counting
+    driver_id IS NULL here would flag every single ingested trip
+    permanently, which isn't an actionable signal for anyone."""
+
+    initialize_database()
+    table = route_actual_runs_table
+    with get_engine().connect() as connection:
+        return connection.scalar(
+            select(func.count())
+            .select_from(table)
+            .where(table.c.vehicle_id.is_(None))
+        ) or 0
+
+
+# --- samsara_sync_state ---------------------------------------------------
+
+def get_sync_state(sync_key: str) -> dict[str, Any] | None:
+    initialize_database()
+    table = samsara_sync_state_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.sync_key == sync_key)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def save_sync_state(sync_key: str, values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = samsara_sync_state_table
+    with get_engine().begin() as connection:
+        existing = connection.execute(
+            select(table.c.sync_key).where(table.c.sync_key == sync_key)
+        ).first()
+        if existing is None:
+            connection.execute(table.insert().values(sync_key=sync_key, **values))
+        else:
+            connection.execute(
+                table.update().where(table.c.sync_key == sync_key).values(**values)
+            )
+    state = get_sync_state(sync_key)
+    assert state is not None  # pragma: no cover
+    return state

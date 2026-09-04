@@ -50,6 +50,7 @@ export interface CustomerProfile {
   notes: string
   updated_at: string
   updated_by: string
+  samsara_address_id: string | null
 }
 
 export interface CustomerProfileListResponse {
@@ -92,6 +93,8 @@ export interface Vehicle {
   active: boolean
   notes: string
   updated_at: string
+  vin: string | null
+  samsara_vehicle_id: string | null
   capacities: VehicleCapacity[]
 }
 
@@ -135,6 +138,7 @@ export interface Driver {
   qualifications: string
   notes: string
   updated_at: string
+  samsara_driver_id: string | null
   availability: DriverAvailability[]
 }
 
@@ -179,6 +183,72 @@ export interface SaveBusinessRuleRequest {
   updated_by?: string
 }
 
+// --- Samsara import / linking / historical sync ---------------------------
+
+export interface SamsaraImportResult {
+  samsara_count: number
+  created_count: number
+  updated_count: number
+}
+
+export interface SamsaraAddress {
+  id: string
+  name: string
+  formatted_address: string
+  latitude: number | null
+  longitude: number | null
+}
+
+export interface SamsaraAddressSearchResponse {
+  count: number
+  addresses: SamsaraAddress[]
+}
+
+export interface LinkCustomerSamsaraAddressRequest {
+  samsara_address_id: string | null
+}
+
+export interface ActualRun {
+  run_id: number
+  samsara_trip_id: string
+  vehicle_id: number | null
+  driver_id: number | null
+  start_time: string | null
+  end_time: string | null
+  start_latitude: number | null
+  start_longitude: number | null
+  end_latitude: number | null
+  end_longitude: number | null
+  distance_meters: number | null
+  completion_status: string
+  ingested_at: string
+}
+
+export interface ActualRunListResponse {
+  count: number
+  runs: ActualRun[]
+}
+
+export interface SyncState {
+  sync_key: string
+  last_synced_through: string | null
+  last_run_at: string | null
+  last_run_status: string
+  last_run_message: string
+}
+
+export interface SyncSamsaraTripsRequest {
+  date_from: string
+  date_to: string
+}
+
+export interface SyncSamsaraTripsResult {
+  trip_count: number
+  resolved_count: number
+  unresolved_count: number
+  sync_state: SyncState
+}
+
 // --- data quality ----------------------------------------------------------
 
 export interface DataQualityIssue {
@@ -188,6 +258,9 @@ export interface DataQualityIssue {
     | 'customer_profile_missing_coordinates'
     | 'vehicle_missing_capacity'
     | 'driver_missing_availability'
+    | 'samsara_vehicle_not_imported'
+    | 'samsara_driver_not_imported'
+    | 'actual_run_unresolved_link'
   subject: string
   message: string
 }

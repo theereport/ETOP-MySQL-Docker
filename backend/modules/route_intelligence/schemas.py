@@ -27,6 +27,7 @@ class CustomerProfile(BaseModel):
     notes: str = ""
     updated_at: str = ""
     updated_by: str = ""
+    samsara_address_id: str | None = None
 
 
 class SaveCustomerProfileRequest(BaseModel):
@@ -77,6 +78,8 @@ class Vehicle(BaseModel):
     active: bool = True
     notes: str = ""
     updated_at: str = ""
+    vin: str | None = None
+    samsara_vehicle_id: str | None = None
     capacities: list[VehicleCapacity] = Field(default_factory=list)
 
 
@@ -123,6 +126,7 @@ class Driver(BaseModel):
     qualifications: str = ""
     notes: str = ""
     updated_at: str = ""
+    samsara_driver_id: str | None = None
     availability: list[DriverAvailability] = Field(default_factory=list)
 
 
@@ -164,6 +168,72 @@ class BusinessRuleListResponse(BaseModel):
     rules: list[BusinessRule]
 
 
+# --- Samsara import / linking / historical sync --------------------------
+
+class SamsaraImportResult(BaseModel):
+    samsara_count: int
+    created_count: int
+    updated_count: int
+
+
+class SamsaraAddress(BaseModel):
+    id: str
+    name: str = ""
+    formatted_address: str = ""
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class SamsaraAddressSearchResponse(BaseModel):
+    count: int
+    addresses: list[SamsaraAddress]
+
+
+class LinkCustomerSamsaraAddressRequest(BaseModel):
+    samsara_address_id: str | None = Field(default=None, max_length=64)
+
+
+class ActualRun(BaseModel):
+    run_id: int
+    samsara_trip_id: str
+    vehicle_id: int | None = None
+    driver_id: int | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    start_latitude: float | None = None
+    start_longitude: float | None = None
+    end_latitude: float | None = None
+    end_longitude: float | None = None
+    distance_meters: float | None = None
+    completion_status: str = ""
+    ingested_at: str = ""
+
+
+class ActualRunListResponse(BaseModel):
+    count: int
+    runs: list[ActualRun]
+
+
+class SyncSamsaraTripsRequest(BaseModel):
+    date_from: str
+    date_to: str
+
+
+class SyncSamsaraTripsResult(BaseModel):
+    trip_count: int
+    resolved_count: int
+    unresolved_count: int
+    sync_state: "SyncState"
+
+
+class SyncState(BaseModel):
+    sync_key: str
+    last_synced_through: str | None = None
+    last_run_at: str | None = None
+    last_run_status: str = ""
+    last_run_message: str = ""
+
+
 # --- data quality --------------------------------------------------------
 
 class DataQualityIssue(BaseModel):
@@ -173,6 +243,9 @@ class DataQualityIssue(BaseModel):
         "customer_profile_missing_coordinates",
         "vehicle_missing_capacity",
         "driver_missing_availability",
+        "samsara_vehicle_not_imported",
+        "samsara_driver_not_imported",
+        "actual_run_unresolved_link",
     ]
     subject: str
     message: str

@@ -101,6 +101,18 @@ class SamsaraApiProviderRequestTest(unittest.TestCase):
         called_params = self.provider._session.get.call_args.kwargs["params"]
         self.assertEqual(called_params["filterBy"], "vehicles")
 
+    def test_list_addresses_hits_addresses_endpoint(self) -> None:
+        self.provider._session.get.return_value = _fake_response({
+            "data": [{"id": "a1", "name": "Gothenburg Tire"}],
+            "pagination": {"hasNextPage": False},
+        })
+
+        addresses = self.provider.list_addresses()
+
+        self.assertEqual(addresses[0]["name"], "Gothenburg Tire")
+        called_url = self.provider._session.get.call_args.args[0]
+        self.assertIn("/addresses", called_url)
+
     def test_get_customer_geofence_filters_by_external_id(self) -> None:
         self.provider._session.get.return_value = _fake_response({
             "data": [
@@ -191,6 +203,12 @@ class SamsaraApiProviderRequestTest(unittest.TestCase):
         self.provider._session.get.return_value.text = '{"message": "unauthorized"}'
         with self.assertRaisesRegex(RuntimeError, "401"):
             self.provider.list_vehicles()
+
+
+class UnconfiguredSamsaraProviderTest(unittest.TestCase):
+    def test_list_addresses_raises_a_clear_error(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Samsara is not connected"):
+            UnconfiguredSamsaraProvider().list_addresses()
 
 
 class GetSamsaraProviderTest(unittest.TestCase):

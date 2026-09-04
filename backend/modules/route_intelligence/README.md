@@ -8,6 +8,42 @@ dependency; a real Samsara API token became available shortly after
 and a handful of read-only endpoints were added on top without changing
 anything else in this module.
 
+## RI-1: fleet import + historical trip sync (added 2026-09-04)
+
+`route_vehicles`/`route_drivers` are now populated by **importing directly
+from Samsara** (`POST /samsara/import/vehicles`, `POST /samsara/import/
+drivers`), keyed by `samsara_vehicle_id`/`samsara_driver_id` - not by
+reconciling against independently-entered data, since those tables were
+empty before this and Samsara already has the real fleet. Re-importing
+refreshes name/vin/active from Samsara but preserves manually-entered
+`notes`/`home_warehouse_number`/`qualifications`.
+
+`POST /samsara/sync-trips` (date range) pulls real trip history via
+`list_historical_routes()` and stores it in `route_actual_runs`, resolving
+each trip's vehicle via `samsara_vehicle_id`. **Driver is never resolved
+on a trip** - confirmed live 2026-09-04 that `/trips/stream` has no driver
+field on any trip, not a per-trip gap - so the Data Quality Center's
+"unresolved link" check only looks at the vehicle side; checking driver_id
+there would flag every trip permanently and mean nothing actionable.
+
+Customer-to-Samsara-address linking (`PUT /customer-profiles/{customer}/
+samsara-address`, backed by `GET /samsara/addresses/search`) stays a
+manual action, not an import - customers already exist in MaddenCo
+independently, and Samsara's address list includes non-customer locations
+too (warehouses, depots), so there's no safe bulk-import direction here.
+
+**Live-verified against the real account** (2026-09-04): imported all
+1,472 vehicles and 958 drivers with zero errors, then synced 2 days of
+real trip history - 13,168 trips ingested, all 13,168 resolved cleanly to
+an imported vehicle.
+
+Still explicitly deferred: automatic/scheduled sync (manual trigger only -
+`backend/modules/automations/`'s real cron scheduler is the natural next
+home for this once manual sync has been used for real), and matching a
+trip to a specific MaddenCo route_code (a vehicle isn't tied to one fixed
+route_code in this schema - needs more MaddenCo data modeling than should
+be guessed at here).
+
 ## Samsara integration status (added 2026-09-04)
 
 Real, confirmed against developers.samsara.com the day this was built:
