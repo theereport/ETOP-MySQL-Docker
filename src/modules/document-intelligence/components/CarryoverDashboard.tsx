@@ -25,6 +25,7 @@ export default function CarryoverDashboard() {
   const [openTransactionId, setOpenTransactionId] = useState('')
   const [openReview, setOpenReview] = useState<LockboxReviewResult | null>(null)
   const [isOpeningReview, setIsOpeningReview] = useState(false)
+  const [customerFilter, setCustomerFilter] = useState('')
 
   const loadCarryover = () => {
     setIsLoading(true)
@@ -56,10 +57,27 @@ export default function CarryoverDashboard() {
     })
   }
 
-  const totalCheckAmount = transactions.reduce(
+  const normalizedFilter = customerFilter.trim().toLowerCase()
+  const visibleTransactions = normalizedFilter
+    ? transactions.filter((transaction) => (
+      transaction.customer_name?.toLowerCase().includes(normalizedFilter)
+      || transaction.customer_number?.toLowerCase().includes(normalizedFilter)
+    ))
+    : transactions
+
+  const totalCheckAmount = visibleTransactions.reduce(
     (total, transaction) => total + Number(transaction.check_amount || 0),
     0,
   )
+
+  // A filter narrowed to exactly one customer number scopes the export too -
+  // otherwise it stays the full cross-customer approved-carryover export.
+  const filteredCustomerNumbers = new Set(
+    visibleTransactions.map((transaction) => transaction.customer_number).filter(Boolean),
+  )
+  const exportCustomerNumber = normalizedFilter && filteredCustomerNumbers.size === 1
+    ? [...filteredCustomerNumbers][0]
+    : ''
 
   return (
     <div className="carryover-dashboard">
@@ -85,6 +103,15 @@ export default function CarryoverDashboard() {
           font-size: 12px;
           text-decoration: none;
           cursor: pointer;
+        }
+        .carryover-dashboard-filter {
+          padding: 9px 12px;
+          border-radius: 7px;
+          border: 1px solid #3b526f;
+          background: #0f1928;
+          color: #edf4fc;
+          font-size: 12px;
+          min-width: 220px;
         }
         .carryover-dashboard-metrics {
           display: flex;
@@ -146,10 +173,21 @@ export default function CarryoverDashboard() {
           </p>
         </div>
         <div className="carryover-dashboard-actions">
+          <input
+            type="text"
+            className="carryover-dashboard-filter"
+            value={customerFilter}
+            onChange={(event) => setCustomerFilter(event.target.value)}
+            placeholder="Filter by customer name or number"
+          />
           <button type="button" onClick={loadCarryover} disabled={isLoading}>
             {isLoading ? 'Refreshing…' : 'Refresh'}
           </button>
-          <a href={carryoverExportUrl()}>Export Approved Carryover</a>
+          <a href={carryoverExportUrl(exportCustomerNumber)}>
+            {exportCustomerNumber
+              ? 'Export Approved Carryover (this customer)'
+              : 'Export Approved Carryover'}
+          </a>
         </div>
       </div>
 
@@ -157,7 +195,7 @@ export default function CarryoverDashboard() {
 
       <div className="carryover-dashboard-metrics">
         <div className="carryover-dashboard-metric">
-          <strong>{transactions.length}</strong>
+          <strong>{visibleTransactions.length}</strong>
           <span>Carryover Transactions</span>
         </div>
         <div className="carryover-dashboard-metric">
@@ -167,11 +205,13 @@ export default function CarryoverDashboard() {
       </div>
 
       <div className="carryover-dashboard-table-wrap">
-        {transactions.length === 0 ? (
+        {visibleTransactions.length === 0 ? (
           <div className="carryover-dashboard-empty">
             {isLoading
               ? 'Loading carryover transactions…'
-              : 'No transactions are currently parked as carryover.'}
+              : normalizedFilter
+                ? 'No carryover transactions match this filter.'
+                : 'No transactions are currently parked as carryover.'}
           </div>
         ) : (
           <table>
@@ -185,7 +225,7 @@ export default function CarryoverDashboard() {
               </tr>
             </thead>
             <tbody>
-              {transactions.map((transaction) => (
+              {visibleTransactions.map((transaction) => (
                 <tr
                   key={`${transaction.job_id}:${transaction.transaction_id}`}
                   className="carryover-row"

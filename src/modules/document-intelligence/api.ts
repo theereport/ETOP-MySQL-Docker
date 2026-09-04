@@ -452,8 +452,11 @@ export async function getCarryoverTransactions(
   return response.json()
 }
 
-export function carryoverExportUrl(): string {
-  return `${API_BASE}/lockbox/carryover/export`
+export function carryoverExportUrl(customerNumber?: string): string {
+  const trimmed = customerNumber?.trim()
+  return trimmed
+    ? `${API_BASE}/lockbox/carryover/export?customer_number=${encodeURIComponent(trimmed)}`
+    : `${API_BASE}/lockbox/carryover/export`
 }
 
 export async function saveLockboxTransactionReview(

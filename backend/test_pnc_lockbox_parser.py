@@ -112,6 +112,7 @@ from modules.document_intelligence.remittance_understanding import (
     extract_remittance_evidence,
 )
 from modules.document_intelligence.check_understanding import (
+    _ocr_lines,
     extract_customer_identity,
 )
 from modules.document_intelligence.resolution.payer_parser import (
@@ -1134,6 +1135,31 @@ class PncLockboxParserTest(unittest.TestCase):
         self.assertEqual(identity.customer_state, "IL")
         self.assertEqual(identity.customer_postal_code, "60601")
         self.assertGreaterEqual(identity.confidence, 0.95)
+
+    def test_ocr_lines_returns_empty_when_tesseract_times_out(self) -> None:
+        region = SimpleNamespace(
+            x0=0.0, y0=0.0, x1=300.0, y1=200.0, to_rect=lambda: None,
+        )
+        with patch(
+            "modules.document_intelligence.check_understanding.ocr_region",
+            side_effect=RuntimeError("Tesseract process timeout"),
+        ):
+            lines = _ocr_lines(SimpleNamespace(), region, psm=11)
+
+        self.assertEqual(lines, [])
+
+    def test_customer_identity_extraction_survives_ocr_timeout(self) -> None:
+        region = SimpleNamespace(
+            x0=0.0, y0=0.0, x1=300.0, y1=200.0, to_rect=lambda: None,
+        )
+        with patch(
+            "modules.document_intelligence.check_understanding.ocr_region",
+            side_effect=RuntimeError("Tesseract process timeout"),
+        ):
+            identity = extract_customer_identity(SimpleNamespace(), region)
+
+        self.assertEqual(identity.customer_name, "")
+        self.assertEqual(identity.confidence, 0.0)
 
     def test_split_payee_label_cannot_replace_complete_payer_block(self) -> None:
         realistic_lines = [

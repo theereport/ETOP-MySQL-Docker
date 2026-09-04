@@ -107,13 +107,23 @@ def _looks_like_name(value: str) -> bool:
 
 
 def _ocr_lines(page, region, *, psm: int = 11) -> list[TextLine]:
-    data = ocr_region(
-        page,
-        clip=region.to_rect(),
-        scale=4.0,
-        psm=psm,
-        include_data=True,
-    )
+    try:
+        data = ocr_region(
+            page,
+            clip=region.to_rect(),
+            scale=4.0,
+            psm=psm,
+            include_data=True,
+        )
+    except Exception:
+        # Mirrors _extract_page_remittance_evidence's catch-and-continue:
+        # a stalled/failed Tesseract call on one region/PSM attempt should
+        # not crash the whole job - extract_customer_identity tries other
+        # PSM values and _extract_transaction_customer_identity tries other
+        # candidate regions, so treating this attempt as "found nothing"
+        # lets those fallbacks run instead of a 500 that reaches the
+        # browser as a bare "Failed to fetch".
+        return []
 
     grouped = defaultdict(list)
     texts = data.get("text", [])

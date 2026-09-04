@@ -6,6 +6,7 @@ from modules.credit_risk.potential_customers import (
     PotentialCustomerRepository,
     PotentialCustomerService,
     classify_km_credit_application,
+    default_km_setup_values,
     parse_km_credit_application,
     validate_tmcust_readiness,
 )
@@ -144,6 +145,48 @@ def test_repository_persists_potential_customer_and_never_enables_erp_write(tmp_
         assert repo.get("PCA-TEST")["fields"]["legal_business_name"] == "Test LLC"
     finally:
         engine.dispose()
+
+def test_new_applications_are_seeded_with_km_setup_defaults(tmp_path, monkeypatch):
+    db = tmp_path / "potential-defaults.db"
+    engine = create_engine(f"sqlite:///{db}")
+    try:
+        repo = PotentialCustomerRepository(engine=engine)
+        service = PotentialCustomerService(repo)
+        monkeypatch.setattr(service, "find_existing_matches", lambda fields: [])
+        record = {
+            "potential_customer_id": "PCA-DEFAULTS",
+            "status": "needs_review",
+            "source_file_name": "application.pdf",
+            "source_sha256": "c" * 64,
+            "parser_name": "km-credit-application",
+            "parser_version": "r72.1",
+            "classifier_confidence": 1.0,
+            "received_at": "2026-08-21T17:00:00+00:00",
+            "updated_at": "2026-08-21T17:00:00+00:00",
+            "fields": {"legal_business_name": "Test LLC"},
+            "evidence": {},
+        }
+        saved = repo.create(record)
+        enriched = service.enrich(saved)
+        for field, value in default_km_setup_values().items():
+            assert enriched["km_setup"][field] == value
+        # Fields that genuinely vary per customer are never defaulted.
+        for field in ("customer_number", "route_code", "customer_type", "site", "bill_to_customer"):
+            assert field not in enriched["km_setup"]
+    finally:
+        engine.dispose()
+
+
+def test_km_setup_defaults_are_overridable_via_env(monkeypatch):
+    monkeypatch.setenv("ETOP_R72_DEFAULT_CREDIT_LIMIT", "25000")
+    monkeypatch.setenv("ETOP_R72_DEFAULT_STORE_NUMBER", "2")
+    values = default_km_setup_values()
+    assert values["credit_limit"] == "25000"
+    assert values["store_number"] == "2"
+    # Untouched fields still fall back to the standard defaults.
+    assert values["price_code"] == "2"
+    assert values["terms_code"] == "7"
+
 
 def test_document_and_human_corrections_persist(tmp_path, monkeypatch):
     db = tmp_path / "potential-doc.db"

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from .lockbox_review.queue_export import _safe_file_part
@@ -63,7 +64,25 @@ def result_path(job_id: str) -> Path:
 
 
 def process_lockbox(job_id: str, pdf_path: str | Path) -> dict[str, Any]:
-    result = parse_pnc_lockbox(pdf_path)
+    try:
+        result = parse_pnc_lockbox(pdf_path)
+    except Exception as error:
+        # An unhandled exception here reaches the browser as a bare
+        # "Failed to fetch" - FastAPI's default 500 response for an
+        # uncaught exception doesn't carry CORS headers the way a raised
+        # HTTPException does, so the browser reports a network failure
+        # instead of showing this message. Convert to a clear one instead
+        # of letting reviewers (and whoever debugs it next) start from
+        # "the request just failed."
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Lockbox processing failed while reading this PDF "
+                f"({type(error).__name__}: {error}). Try processing it "
+                "again - if it keeps failing, the PDF itself may need "
+                "attention."
+            ),
+        ) from error
     result["job_id"] = job_id
     save_result(result, result_path(job_id))
     return _apply_saved_reviews(result)

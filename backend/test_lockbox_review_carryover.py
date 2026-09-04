@@ -276,6 +276,70 @@ class CrossJobCarryoverTest(unittest.TestCase):
         ]
         self.assertEqual(transaction_ids, ["A-1"])
 
+    def test_create_carryover_export_can_be_scoped_to_one_customer(
+        self,
+    ) -> None:
+        sources = {
+            "job-a": _source(self._transaction("A-1", check_amount=75.00)),
+            "job-b": _source(self._transaction("B-1", check_amount=25.00)),
+        }
+        with patch.object(
+            review_service,
+            "get_lockbox_result",
+            lambda job_id: deepcopy(sources[job_id]),
+        ):
+            # A-1 and B-1 are both approved-after-carryover, but for two
+            # different customers.
+            carried_over_a = review_service.save_transaction_review(
+                "job-a", "A-1", self._payload(customer_number="640194"),
+            )
+            review_service.save_transaction_review(
+                "job-a",
+                "A-1",
+                self._payload(
+                    customer_number="640194",
+                    status="approved",
+                    expected_reviewed_at=next(
+                        item["reviewed_at"]
+                        for item in carried_over_a["transactions"]
+                        if item["transaction_id"] == "A-1"
+                    ),
+                    allocations=[
+                        {"invoice_number": "12345678", "net_invoice_amount": 75.00}
+                    ],
+                ),
+            )
+            carried_over_b = review_service.save_transaction_review(
+                "job-b", "B-1", self._payload(customer_number="999999"),
+            )
+            review_service.save_transaction_review(
+                "job-b",
+                "B-1",
+                self._payload(
+                    customer_number="999999",
+                    status="approved",
+                    expected_reviewed_at=next(
+                        item["reviewed_at"]
+                        for item in carried_over_b["transactions"]
+                        if item["transaction_id"] == "B-1"
+                    ),
+                    allocations=[
+                        {"invoice_number": "87654321", "net_invoice_amount": 25.00}
+                    ],
+                ),
+            )
+            output = review_service.create_carryover_export("640194")
+
+        from openpyxl import load_workbook
+        workbook = load_workbook(output)
+        sheet = workbook["detail"]
+        transaction_ids = [
+            row[3].value for row in sheet.iter_rows(min_row=4)
+            if row[3].value
+        ]
+        self.assertEqual(transaction_ids, ["A-1"])
+        self.assertIn("640194", output.name)
+
 
 if __name__ == "__main__":
     unittest.main()

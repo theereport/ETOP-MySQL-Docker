@@ -153,8 +153,8 @@ def read_carryover_transactions() -> dict:
     "/lockbox/carryover/export",
     response_class=FileResponse,
 )
-def export_carryover_transactions() -> FileResponse:
-    output = create_carryover_export()
+def export_carryover_transactions(customer_number: str = "") -> FileResponse:
+    output = create_carryover_export(customer_number)
     return FileResponse(
         path=output,
         media_type=(
