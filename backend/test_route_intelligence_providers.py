@@ -6,6 +6,7 @@ from datetime import date
 from modules.route_intelligence.providers.forecast_provider import (
     HistoricalDemandPoint,
     SimpleDayOfWeekForecastProvider,
+    _percentile,
 )
 from modules.route_intelligence.providers.routing_solver_provider import (
     UnconfiguredRoutingSolverProvider,
@@ -102,6 +103,35 @@ class SimpleDayOfWeekForecastProviderTest(unittest.TestCase):
         self.assertEqual(result["Monday"].expected_stops, 12.0)
         self.assertEqual(result["Tuesday"].sample_size, 1)
         self.assertEqual(result["Tuesday"].expected_stops, 8.0)
+
+    def test_percentiles_are_computed_alongside_the_mean(self) -> None:
+        provider = SimpleDayOfWeekForecastProvider()
+        history = [
+            HistoricalDemandPoint(
+                day=date(2026, 8, 3),  # Monday
+                stop_count=10, total_weight=1000.0, total_quantity=50.0,
+            ),
+            HistoricalDemandPoint(
+                day=date(2026, 8, 10),  # Monday
+                stop_count=14, total_weight=1400.0, total_quantity=70.0,
+            ),
+        ]
+        result = provider.forecast_day_of_week_baseline(history)
+
+        monday = result["Monday"]
+        self.assertEqual(monday.p50_weight, 1200.0)
+        self.assertEqual(monday.p80_weight, 1320.0)
+        self.assertEqual(monday.p90_weight, 1360.0)
+
+    def test_percentile_of_a_single_sample_is_just_that_sample(self) -> None:
+        for pct in (50, 80, 90):
+            self.assertEqual(_percentile([42.0], pct), 42.0)
+
+    def test_percentile_linear_interpolation(self) -> None:
+        values = [10.0, 20.0, 30.0, 40.0]
+        self.assertEqual(_percentile(values, 0), 10.0)
+        self.assertEqual(_percentile(values, 100), 40.0)
+        self.assertEqual(_percentile(values, 50), 25.0)
 
 
 if __name__ == "__main__":

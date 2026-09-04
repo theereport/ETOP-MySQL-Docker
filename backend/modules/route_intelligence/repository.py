@@ -21,9 +21,11 @@ from data.mysql import (
     metadata,
     route_actual_runs_table,
     route_business_rules_table,
+    route_capacity_assessments_table,
     route_customer_profiles_table,
     route_driver_availability_table,
     route_drivers_table,
+    route_forecast_runs_table,
     route_vehicle_capacities_table,
     route_vehicles_table,
     samsara_sync_state_table,
@@ -38,6 +40,8 @@ _TABLES = [
     route_business_rules_table,
     route_actual_runs_table,
     samsara_sync_state_table,
+    route_forecast_runs_table,
+    route_capacity_assessments_table,
 ]
 
 
@@ -613,3 +617,100 @@ def save_sync_state(sync_key: str, values: dict[str, Any]) -> dict[str, Any]:
     state = get_sync_state(sync_key)
     assert state is not None  # pragma: no cover
     return state
+
+
+# --- route_forecast_runs / route_capacity_assessments (RI-3) ---------------
+
+def save_forecast_run(values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_forecast_runs_table
+    with get_engine().begin() as connection:
+        result = connection.execute(table.insert().values(**values))
+        run_id = result.inserted_primary_key[0]
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.run_id == run_id)
+        ).mappings().first()
+    assert row is not None  # pragma: no cover
+    return dict(row)
+
+
+def update_forecast_run(run_id: int, values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_forecast_runs_table
+    with get_engine().begin() as connection:
+        connection.execute(
+            table.update().where(table.c.run_id == run_id).values(**values)
+        )
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.run_id == run_id)
+        ).mappings().first()
+    assert row is not None  # pragma: no cover
+    return dict(row)
+
+
+def get_latest_forecast_run() -> dict[str, Any] | None:
+    initialize_database()
+    table = route_forecast_runs_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).order_by(table.c.run_id.desc()).limit(1)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def upsert_capacity_assessment(
+    warehouse_number: int, day_of_week: str, values: dict[str, Any]
+) -> dict[str, Any]:
+    """Latest-state upsert keyed by (warehouse_number, day_of_week) - each
+    compute run overwrites the prior assessment rather than accumulating
+    unbounded history, same style as samsara_sync_state."""
+
+    initialize_database()
+    table = route_capacity_assessments_table
+    with get_engine().begin() as connection:
+        existing = connection.execute(
+            select(table.c.warehouse_number).where(
+                table.c.warehouse_number == warehouse_number,
+                table.c.day_of_week == day_of_week,
+            )
+        ).first()
+        if existing is None:
+            connection.execute(
+                table.insert().values(
+                    warehouse_number=warehouse_number,
+                    day_of_week=day_of_week,
+                    **values,
+                )
+            )
+        else:
+            connection.execute(
+                table.update()
+                .where(
+                    table.c.warehouse_number == warehouse_number,
+                    table.c.day_of_week == day_of_week,
+                )
+                .values(**values)
+            )
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(
+                table.c.warehouse_number == warehouse_number,
+                table.c.day_of_week == day_of_week,
+            )
+        ).mappings().first()
+    assert row is not None  # pragma: no cover
+    return dict(row)
+
+
+def list_capacity_assessments() -> list[dict[str, Any]]:
+    initialize_database()
+    table = route_capacity_assessments_table
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            select(table).order_by(
+                table.c.warehouse_number, table.c.day_of_week
+            )
+        ).mappings().all()
+    return [dict(row) for row in rows]

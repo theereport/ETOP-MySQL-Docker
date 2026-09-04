@@ -12,6 +12,8 @@ from .schemas import (
     CodPayment,
     CodPaymentCorrection,
     CodPaymentDetailNote,
+    DailyLoadTotal,
+    DailyLoadTotalsResponse,
     DeliveryAdjustment,
     DeliveryException,
     ExceptionEvidence,
@@ -318,6 +320,39 @@ class FreightLogisticsService:
             date_to=date_to.isoformat(),
             line_count=len(lines),
             lines=lines,
+        )
+
+    def get_daily_load_totals_for_warehouse(
+        self,
+        warehouse_number: int,
+        *,
+        date_from,
+        date_to,
+    ) -> DailyLoadTotalsResponse:
+        rows = self._repository.get_daily_load_totals_for_warehouse(
+            warehouse_number, date_from=date_from, date_to=date_to,
+        )
+        retrieved_at = self._clock().astimezone(UTC).isoformat()
+        totals = [
+            DailyLoadTotal(
+                load_date=(
+                    row["load_date"].isoformat()
+                    if hasattr(row["load_date"], "isoformat")
+                    else str(row["load_date"])
+                ),
+                route_count=int(row.get("route_count") or 0),
+                total_weight=float(row.get("total_weight") or 0.0),
+                total_quantity=float(row.get("total_quantity") or 0.0),
+                line_count=int(row.get("line_count") or 0),
+            )
+            for row in rows
+        ]
+        return DailyLoadTotalsResponse(
+            source=SourceEvidence(retrieved_at=retrieved_at),
+            warehouse_number=warehouse_number,
+            date_from=date_from.isoformat(),
+            date_to=date_to.isoformat(),
+            totals=totals,
         )
 
     def get_route_evidence(self, route_code: str) -> RouteEvidenceResponse:

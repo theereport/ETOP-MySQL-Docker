@@ -16,6 +16,8 @@ from .schemas import (
     AddVehicleCapacityRequest,
     BusinessRule,
     BusinessRuleListResponse,
+    CapacityForecastListResponse,
+    ComputeForecastRequest,
     CreateDriverRequest,
     CreateVehicleRequest,
     CustomerProfile,
@@ -23,6 +25,7 @@ from .schemas import (
     DataQualityReport,
     Driver,
     DriverListResponse,
+    ForecastRunStatus,
     LinkCustomerSamsaraAddressRequest,
     RoutePerformanceResponse,
     SamsaraAddressSearchResponse,
@@ -271,6 +274,26 @@ def get_vehicle_performance(
     date_to: date = Query(...),
 ) -> RoutePerformanceResponse:
     return service.compute_vehicle_performance(date_from, date_to)
+
+
+# --- capacity forecast / proactive alerts (RI-3, recommendation-only) ------
+
+@router.post("/forecast/compute", response_model=ForecastRunStatus)
+def compute_capacity_forecast(payload: ComputeForecastRequest) -> ForecastRunStatus:
+    return service.compute_capacity_forecast(
+        weeks_back=payload.weeks_back, warehouse_number=payload.warehouse_number,
+    )
+
+
+@router.get("/forecast/capacity-assessments", response_model=CapacityForecastListResponse)
+def list_capacity_forecasts() -> CapacityForecastListResponse:
+    assessments = service.list_capacity_forecasts()
+    return CapacityForecastListResponse(count=len(assessments), assessments=assessments)
+
+
+@router.get("/forecast/status", response_model=ForecastRunStatus)
+def get_forecast_run_status() -> ForecastRunStatus:
+    return service.get_forecast_run_status()
 
 
 # --- data quality ----------------------------------------------------------

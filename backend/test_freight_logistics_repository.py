@@ -71,6 +71,31 @@ class FreightLogisticsRepositoryTest(unittest.TestCase):
             (41, date(2026, 9, 1), date(2026, 9, 2), 5000),
         )
 
+    def test_get_daily_load_totals_for_warehouse_aggregates_by_day(self) -> None:
+        # No row LIMIT here, unlike get_load_lines_for_warehouse - a
+        # multi-week/month query must not be silently truncated (a single
+        # busy warehouse can have 1,500+ lines on one day alone).
+        with patch(
+            "modules.freight_logistics.repository.madden_database"
+        ) as fake_db:
+            fake_db.fetch_all.return_value = []
+            repository = RouteRepository()
+            repository.get_daily_load_totals_for_warehouse(
+                41,
+                date_from=date(2026, 7, 1),
+                date_to=date(2026, 9, 2),
+            )
+
+        query, parameters = fake_db.fetch_all.call_args[0]
+        self.assertIn("KMTDTA.KMROUTES", query)
+        self.assertIn("route.RTEWHSE = %s", query)
+        self.assertIn("GROUP BY DATE(ld.CRTSTAMP)", query)
+        self.assertNotIn("LIMIT", query)
+        self.assertEqual(
+            parameters,
+            (41, date(2026, 7, 1), date(2026, 9, 2)),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

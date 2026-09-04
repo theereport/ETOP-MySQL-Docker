@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   addVehicleCapacity,
+  computeCapacityForecast,
   createDriver,
   createVehicle,
   getCustomerProfile,
   getDataQualityReport,
+  getForecastRunStatus,
   getVehiclePerformance,
   getWorkloadSummary,
   importSamsaraDrivers,
@@ -13,6 +15,7 @@ import {
   linkCustomerSamsaraAddress,
   listActualRuns,
   listBusinessRules,
+  listCapacityForecasts,
   listCustomerProfiles,
   listDrivers,
   listRoutesForWarehouse,
@@ -27,9 +30,11 @@ import {
 import type {
   ActualRun,
   BusinessRule,
+  CapacityAssessment,
   CustomerProfile,
   DataQualityReport,
   Driver,
+  ForecastStatus,
   RouteSummary,
   SamsaraAddress,
   Vehicle,
@@ -49,6 +54,7 @@ type Tab =
   | 'customer-profiles'
   | 'trip-history'
   | 'capacity-performance'
+  | 'capacity-forecast'
   | 'business-rules'
 
 const TABS: { id: Tab; label: string }[] = [
@@ -59,6 +65,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'customer-profiles', label: 'Customer Profiles' },
   { id: 'trip-history', label: 'Trip History' },
   { id: 'capacity-performance', label: 'Capacity & Performance' },
+  { id: 'capacity-forecast', label: 'Capacity Forecast' },
   { id: 'business-rules', label: 'Business Rules' },
 ]
 
@@ -965,6 +972,141 @@ function CapacityPerformanceTab() {
   )
 }
 
+// --- Capacity Forecast ---------------------------------------------------
+
+function ForecastStatusTag({ status }: { status: ForecastStatus }) {
+  return (
+    <span className={`ri-status-tag ri-status-tag--${status}`}>
+      {status.replaceAll('_', ' ')}
+    </span>
+  )
+}
+
+function CapacityForecastTab() {
+  const [assessments, setAssessments] = useState<CapacityAssessment[]>([])
+  const [runStatus, setRunStatus] = useState<{
+    status: string; message: string; runAt: string | null
+  } | null>(null)
+  const [weeksBack, setWeeksBack] = useState('8')
+  const [error, setError] = useState('')
+  const [isComputing, setIsComputing] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
+
+  const load = () => {
+    setIsLoading(true)
+    setError('')
+    Promise.all([listCapacityForecasts(), getForecastRunStatus()])
+      .then(([forecasts, status]) => {
+        setAssessments(forecasts.assessments)
+        setRunStatus({
+          status: status.status, message: status.message, runAt: status.run_at,
+        })
+      })
+      .catch((err) => setError(errorMessage(err, 'Unable to load the capacity forecast.')))
+      .finally(() => setIsLoading(false))
+  }
+
+  useEffect(load, [])
+
+  const runCompute = () => {
+    const weeks = Number(weeksBack) || 8
+    setIsComputing(true)
+    setError('')
+    computeCapacityForecast({ weeks_back: weeks })
+      .then(() => load())
+      .catch((err) => setError(errorMessage(err, 'Unable to compute the capacity forecast.')))
+      .finally(() => setIsComputing(false))
+  }
+
+  return (
+    <div className="ri-panel">
+      <div className="ri-panel-header">
+        <div>
+          <h3>Capacity Forecast</h3>
+          <p>
+            Day-of-week demand forecast (real MaddenCo load history) vs.
+            fleet weight capacity, per warehouse - a recommendation only,
+            not an automatic action. Computing all warehouses takes several
+            minutes; results are cached until the next "Compute Now."
+          </p>
+        </div>
+      </div>
+      {error && <div className="ri-error">{error}</div>}
+      {runStatus && runStatus.status && (
+        <div className="ri-note">
+          Last run: {runStatus.status} - {runStatus.message}
+          {runStatus.runAt ? ` (${runStatus.runAt})` : ''}
+        </div>
+      )}
+
+      <div className="ri-inline-form">
+        <label>
+          Weeks of history
+          <input
+            type="number"
+            min={1}
+            max={52}
+            value={weeksBack}
+            onChange={(event) => setWeeksBack(event.target.value)}
+          />
+        </label>
+        <button type="button" onClick={runCompute} disabled={isComputing}>
+          {isComputing ? 'Computing… (this can take several minutes)' : 'Compute Now'}
+        </button>
+        <button type="button" onClick={load} disabled={isLoading}>
+          {isLoading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+
+      <div className="ri-table-wrap">
+        {assessments.length === 0 ? (
+          <div className="ri-empty">
+            No forecast computed yet - click "Compute Now."
+          </div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Warehouse</th><th>Day</th><th>Samples</th>
+                <th>Expected Weight (lb)</th><th>P90 Weight (lb)</th>
+                <th>Capacity (lb)</th><th>P90 Utilization</th>
+                <th>Status</th><th>Structural Review</th>
+              </tr>
+            </thead>
+            <tbody>
+              {assessments.map((assessment) => (
+                <tr key={`${assessment.warehouse_number}-${assessment.day_of_week}`}>
+                  <td>
+                    {assessment.warehouse_number}
+                    {assessment.warehouse_location_name
+                      ? ` - ${assessment.warehouse_location_name}` : ''}
+                  </td>
+                  <td>{assessment.day_of_week}</td>
+                  <td>{assessment.sample_size}</td>
+                  <td>{formatNumber(assessment.expected_weight ?? 0)}</td>
+                  <td>{formatNumber(assessment.p90_weight ?? 0)}</td>
+                  <td>{formatNumber(assessment.weight_capacity)}</td>
+                  <td>
+                    {assessment.p90_utilization_pct == null
+                      ? '—'
+                      : `${assessment.p90_utilization_pct.toFixed(1)}%`}
+                  </td>
+                  <td><ForecastStatusTag status={assessment.status} /></td>
+                  <td>
+                    {assessment.structural_review
+                      ? <span className="ri-structural-review-flag">⚠ Review</span>
+                      : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // --- Business Rules ---------------------------------------------------
 
 function BusinessRulesTab() {
@@ -1078,6 +1220,7 @@ export default function RouteIntelligenceWorkspace() {
       {tab === 'customer-profiles' && <CustomerProfilesTab />}
       {tab === 'trip-history' && <TripHistoryTab />}
       {tab === 'capacity-performance' && <CapacityPerformanceTab />}
+      {tab === 'capacity-forecast' && <CapacityForecastTab />}
       {tab === 'business-rules' && <BusinessRulesTab />}
     </div>
   )

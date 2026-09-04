@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 from fastapi import HTTPException
@@ -12,15 +13,21 @@ from modules.freight_logistics.service import (
 )
 
 from . import repository
+from .providers.forecast_provider import (
+    HistoricalDemandPoint,
+    SimpleDayOfWeekForecastProvider,
+)
 from .providers.samsara_provider import SamsaraProvider, get_samsara_provider
 from .schemas import (
     ActualRun,
     BusinessRule,
+    CapacityAssessment,
     CustomerProfile,
     DataQualityIssue,
     DataQualityReport,
     Driver,
     DriverAvailability,
+    ForecastRunStatus,
     RoutePerformanceResponse,
     SamsaraAddress,
     SamsaraImportResult,
@@ -778,6 +785,294 @@ def compute_vehicle_performance(
         date_to=date_to.isoformat(),
         vehicles=performance,
     )
+
+
+# --- capacity forecast / proactive alerts (RI-3, recommendation-only) ------
+
+_DEFAULT_FORECAST_WATCH_PCT = 80.0
+_DEFAULT_FORECAST_BACKUP_LIKELY_PCT = 90.0
+_DEFAULT_FORECAST_SPLIT_PCT = 100.0
+_DEFAULT_STRUCTURAL_REVIEW_MIN_OCCURRENCES = 2.0
+
+
+def _classify_forecast_status(
+    utilization_pct: float | None,
+    *,
+    watch_pct: float,
+    backup_likely_pct: float,
+    split_pct: float,
+) -> Literal["healthy", "watch", "backup_likely", "split_recommended", "unknown"]:
+    if utilization_pct is None:
+        return "unknown"
+    if utilization_pct >= split_pct:
+        return "split_recommended"
+    if utilization_pct >= backup_likely_pct:
+        return "backup_likely"
+    if utilization_pct >= watch_pct:
+        return "watch"
+    return "healthy"
+
+
+def _build_historical_demand_points(
+    warehouse_number: int,
+    weeks_back: int,
+    *,
+    freight_service: FreightLogisticsService,
+) -> list[HistoricalDemandPoint]:
+    """One point per real historical day of MaddenCo load activity at this
+    warehouse, from freight_logistics's server-side daily aggregation
+    (get_daily_load_totals_for_warehouse) - NOT the raw-line
+    get_load_lines_for_warehouse() RI-2's workload dashboard uses.
+
+    That raw-line call defaults to a 5000-row LIMIT, tuned for "show me
+    a few days of lines," and a single busy warehouse can have
+    1,500-2,200+ lines on ONE day alone (confirmed live) - an 8-week
+    forecast window would silently be truncated to only its 2-3 most
+    recent days, making a "day-of-week average" meaningless (this was
+    caught live: it produced sample_size=1 for every weekday on a real
+    8-week request). Aggregating server-side avoids the truncation
+    entirely, since MaddenCo returns one row per day, not one row per
+    line.
+    """
+
+    today = date.today()
+    daily_totals = freight_service.get_daily_load_totals_for_warehouse(
+        warehouse_number,
+        date_from=today - timedelta(weeks=weeks_back),
+        date_to=today,
+    )
+    points = []
+    for row in daily_totals.totals:
+        try:
+            day = date.fromisoformat(row.load_date[:10])
+        except ValueError:
+            continue
+        points.append(
+            HistoricalDemandPoint(
+                day=day,
+                stop_count=row.route_count,
+                total_weight=row.total_weight,
+                total_quantity=row.total_quantity,
+            )
+        )
+    return points
+
+
+def _current_fleet_weight_capacity(vehicles: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for vehicle in vehicles:
+        capacity = repository.get_current_vehicle_capacity(vehicle["vehicle_id"])
+        if capacity is not None:
+            total += capacity.get("weight_capacity") or 0.0
+    return total
+
+
+def _map_forecast_run(row: dict[str, Any]) -> ForecastRunStatus:
+    return ForecastRunStatus(
+        run_id=row.get("run_id"),
+        run_at=row.get("run_at"),
+        weeks_of_history=row.get("weeks_of_history"),
+        warehouse_count=row.get("warehouse_count"),
+        status=row.get("status") or "",
+        message=row.get("message") or "",
+    )
+
+
+def get_forecast_run_status() -> ForecastRunStatus:
+    row = repository.get_latest_forecast_run()
+    if row is None:
+        return ForecastRunStatus()
+    return _map_forecast_run(row)
+
+
+def _map_capacity_assessment(
+    row: dict[str, Any], *, warehouse_names: dict[int, str]
+) -> CapacityAssessment:
+    return CapacityAssessment(
+        warehouse_number=row["warehouse_number"],
+        warehouse_location_name=warehouse_names.get(row["warehouse_number"], ""),
+        day_of_week=row["day_of_week"],
+        sample_size=row.get("sample_size") or 0,
+        expected_weight=row.get("expected_weight"),
+        expected_quantity=row.get("expected_quantity"),
+        expected_stops=row.get("expected_stops"),
+        p50_weight=row.get("p50_weight"),
+        p80_weight=row.get("p80_weight"),
+        p90_weight=row.get("p90_weight"),
+        weight_capacity=row.get("weight_capacity") or 0.0,
+        p90_utilization_pct=row.get("p90_utilization_pct"),
+        status=row.get("status") or "unknown",
+        structural_review=bool(row.get("structural_review", False)),
+        computed_at=row.get("computed_at") or "",
+    )
+
+
+def list_capacity_forecasts(
+    *, freight_service: FreightLogisticsService = freight_logistics_service
+) -> list[CapacityAssessment]:
+    """Reads the latest stored assessments - instant, no live MaddenCo
+    query. Run compute_capacity_forecast() first to populate/refresh."""
+
+    warehouse_names = {
+        warehouse.warehouse_number: warehouse.warehouse_location_name
+        for warehouse in freight_service.list_warehouses().warehouses
+    }
+    return [
+        _map_capacity_assessment(row, warehouse_names=warehouse_names)
+        for row in repository.list_capacity_assessments()
+    ]
+
+
+def compute_capacity_forecast(
+    *,
+    weeks_back: int = 8,
+    warehouse_number: int | None = None,
+    freight_service: FreightLogisticsService = freight_logistics_service,
+) -> ForecastRunStatus:
+    """Manual-trigger day-of-week demand forecast vs. fleet capacity per
+    warehouse, stored for instant reads afterward via
+    list_capacity_forecasts() - same manual-trigger-then-cache shape as
+    RI-1's sync_samsara_trips(), since a full network-wide compute takes
+    several real minutes (confirmed live: ~7s per warehouse x ~53
+    warehouses) - too slow for a live per-request call.
+
+    Warehouse-level only, not per-route - see compute_workload_summary()'s
+    docstring for why (no route_code-to-vehicle link exists anywhere in
+    this schema). Only the saturation-percentage-driven tiers of the
+    program plan's 5-tier alert system are implemented here
+    (healthy/watch/backup_likely/split_recommended) - the time/HOS-based
+    criteria (operating buffer minutes, hard time-window violations)
+    aren't computable, since no time-based capacity dimension or Samsara
+    HOS integration exists in this codebase yet.
+    """
+
+    now = _now()
+    watch_pct = _get_threshold(
+        "forecast_watch_threshold_pct", _DEFAULT_FORECAST_WATCH_PCT
+    )
+    backup_likely_pct = _get_threshold(
+        "forecast_backup_likely_threshold_pct", _DEFAULT_FORECAST_BACKUP_LIKELY_PCT
+    )
+    split_pct = _get_threshold(
+        "forecast_split_threshold_pct", _DEFAULT_FORECAST_SPLIT_PCT
+    )
+    structural_review_min = _get_threshold(
+        "forecast_structural_review_min_occurrences",
+        _DEFAULT_STRUCTURAL_REVIEW_MIN_OCCURRENCES,
+    )
+
+    active_vehicles = [
+        vehicle for vehicle in repository.list_vehicles()
+        if vehicle.get("active", True)
+    ]
+    vehicles_by_warehouse: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for vehicle in active_vehicles:
+        warehouse = vehicle.get("home_warehouse_number")
+        if warehouse is not None:
+            vehicles_by_warehouse[warehouse].append(vehicle)
+
+    if warehouse_number is not None:
+        warehouse_numbers = [warehouse_number]
+    else:
+        known_warehouses = freight_service.list_warehouses()
+        # Same union-with-vehicle-warehouses fix RI-2 needed - freight_
+        # logistics's own warehouse master only lists a subset of the
+        # real warehouses.
+        warehouse_numbers = sorted(
+            {w.warehouse_number for w in known_warehouses.warehouses}
+            | set(vehicles_by_warehouse)
+        )
+
+    run = repository.save_forecast_run(
+        {
+            "run_at": now,
+            "weeks_of_history": weeks_back,
+            "warehouse_count": len(warehouse_numbers),
+            "status": "running",
+            "message": f"Computing capacity forecast for {len(warehouse_numbers)} warehouse(s).",
+        }
+    )
+    run_id = run["run_id"]
+    provider = SimpleDayOfWeekForecastProvider()
+
+    try:
+        for warehouse in warehouse_numbers:
+            weight_capacity = _current_fleet_weight_capacity(
+                vehicles_by_warehouse.get(warehouse, [])
+            )
+            history = _build_historical_demand_points(
+                warehouse, weeks_back, freight_service=freight_service
+            )
+            forecasts = provider.forecast_day_of_week_baseline(history)
+
+            weights_by_day: dict[str, list[float]] = defaultdict(list)
+            for point in history:
+                weights_by_day[point.day.strftime("%A")].append(point.total_weight)
+
+            for day_name, forecast in forecasts.items():
+                utilization_pct = (
+                    round(forecast.p90_weight / weight_capacity * 100, 1)
+                    if weight_capacity > 0
+                    else None
+                )
+                status = _classify_forecast_status(
+                    utilization_pct,
+                    watch_pct=watch_pct,
+                    backup_likely_pct=backup_likely_pct,
+                    split_pct=split_pct,
+                )
+                # A real historical-recurrence signal, not a guess: how
+                # many of this weekday's own past samples already
+                # exceeded today's capacity (plan section J: "at least
+                # twice per week").
+                over_capacity_occurrences = (
+                    sum(
+                        1 for weight in weights_by_day[day_name]
+                        if weight > weight_capacity
+                    )
+                    if weight_capacity > 0
+                    else 0
+                )
+                structural_review = (
+                    over_capacity_occurrences >= structural_review_min
+                )
+
+                repository.upsert_capacity_assessment(
+                    warehouse,
+                    day_name,
+                    {
+                        "forecast_run_id": run_id,
+                        "sample_size": forecast.sample_size,
+                        "expected_weight": forecast.expected_weight,
+                        "expected_quantity": forecast.expected_quantity,
+                        "expected_stops": forecast.expected_stops,
+                        "p50_weight": forecast.p50_weight,
+                        "p80_weight": forecast.p80_weight,
+                        "p90_weight": forecast.p90_weight,
+                        "weight_capacity": weight_capacity,
+                        "p90_utilization_pct": utilization_pct,
+                        "status": status,
+                        "structural_review": structural_review,
+                        "computed_at": now,
+                    },
+                )
+    except Exception as exc:
+        repository.update_forecast_run(
+            run_id, {"status": "failed", "message": str(exc)}
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to compute capacity forecast: {exc}",
+        ) from exc
+
+    completed = repository.update_forecast_run(
+        run_id,
+        {
+            "status": "success",
+            "message": f"Computed capacity forecast for {len(warehouse_numbers)} warehouse(s).",
+        },
+    )
+    return _map_forecast_run(completed)
 
 
 def compute_data_quality_report(

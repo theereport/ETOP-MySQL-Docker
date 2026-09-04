@@ -274,6 +274,45 @@ class RoutePerformanceResponse(BaseModel):
     vehicles: list[VehicleRunPerformance]
 
 
+# --- capacity forecast / proactive alerts (RI-3, recommendation-only) -----
+
+class CapacityAssessment(BaseModel):
+    warehouse_number: int
+    warehouse_location_name: str = ""
+    day_of_week: WEEKDAY
+    sample_size: int
+    expected_weight: float | None = None
+    expected_quantity: float | None = None
+    expected_stops: float | None = None
+    p50_weight: float | None = None
+    p80_weight: float | None = None
+    p90_weight: float | None = None
+    weight_capacity: float = 0.0
+    p90_utilization_pct: float | None = None
+    status: Literal["healthy", "watch", "backup_likely", "split_recommended", "unknown"]
+    structural_review: bool = False
+    computed_at: str = ""
+
+
+class CapacityForecastListResponse(BaseModel):
+    count: int
+    assessments: list[CapacityAssessment]
+
+
+class ForecastRunStatus(BaseModel):
+    run_id: int | None = None
+    run_at: str | None = None
+    weeks_of_history: int | None = None
+    warehouse_count: int | None = None
+    status: str = ""
+    message: str = ""
+
+
+class ComputeForecastRequest(BaseModel):
+    weeks_back: int = Field(default=8, ge=1, le=52)
+    warehouse_number: int | None = None
+
+
 # --- data quality --------------------------------------------------------
 
 class DataQualityIssue(BaseModel):

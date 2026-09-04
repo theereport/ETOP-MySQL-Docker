@@ -2788,6 +2788,50 @@ samsara_sync_state_table = Table(
     Column("last_run_message", Text, nullable=False),
 )
 
+# One row per manual "compute capacity forecast" trigger (RI-3) - metadata
+# only, mirrors samsara_sync_state's "last run" record but keeps a row per
+# run rather than a single overwritten row, since route_capacity_
+# assessments below already holds the single latest-per-warehouse view.
+route_forecast_runs_table = Table(
+    "route_forecast_runs",
+    metadata,
+    Column("run_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("run_at", String(64), nullable=False),
+    Column("weeks_of_history", Integer, nullable=False),
+    Column("warehouse_count", Integer, nullable=False, server_default="0"),
+    Column("status", String(32), nullable=False, server_default=""),
+    Column("message", Text, nullable=False),
+)
+
+# Latest computed day-of-week demand forecast vs. fleet capacity per
+# warehouse (RI-3) - a single row per (warehouse_number, day_of_week),
+# upserted on every compute run rather than accumulating unbounded
+# history, same "latest state" style as samsara_sync_state.
+route_capacity_assessments_table = Table(
+    "route_capacity_assessments",
+    metadata,
+    Column("warehouse_number", Integer, primary_key=True),
+    Column("day_of_week", String(16), primary_key=True),
+    Column(
+        "forecast_run_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("route_forecast_runs.run_id"),
+        nullable=True,
+    ),
+    Column("sample_size", Integer, nullable=False, server_default="0"),
+    Column("expected_weight", Float, nullable=True),
+    Column("expected_quantity", Float, nullable=True),
+    Column("expected_stops", Float, nullable=True),
+    Column("p50_weight", Float, nullable=True),
+    Column("p80_weight", Float, nullable=True),
+    Column("p90_weight", Float, nullable=True),
+    Column("weight_capacity", Float, nullable=True),
+    Column("p90_utilization_pct", Float, nullable=True),
+    Column("status", String(32), nullable=False, server_default=""),
+    Column("structural_review", Boolean, nullable=False, server_default="0"),
+    Column("computed_at", String(64), nullable=False),
+)
+
 
 _engine: Engine | None = None
 _engine_override: Engine | None = None

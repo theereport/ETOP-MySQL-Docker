@@ -146,6 +146,22 @@ class WarehouseLoadLinesResponse(BaseModel):
     lines: list[RouteLoadLine]
 
 
+class DailyLoadTotal(BaseModel):
+    load_date: str
+    route_count: int
+    total_weight: float
+    total_quantity: float
+    line_count: int
+
+
+class DailyLoadTotalsResponse(BaseModel):
+    source: SourceEvidence
+    warehouse_number: int
+    date_from: str
+    date_to: str
+    totals: list[DailyLoadTotal]
+
+
 class CodPaymentCorrection(BaseModel):
     field: str = ""
     before_value: str = ""
@@ -384,6 +400,8 @@ __all__ = [
     "WarehouseListResponse",
     "WarehouseRouteListResponse",
     "WarehouseLoadLinesResponse",
+    "DailyLoadTotal",
+    "DailyLoadTotalsResponse",
     "RouteScheduleDay",
     "WarehouseDirectionLabel",
     "WarehouseLabelEvidence",

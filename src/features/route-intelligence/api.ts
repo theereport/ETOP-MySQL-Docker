@@ -3,6 +3,8 @@ import type {
   ActualRunListResponse,
   AddVehicleCapacityRequest,
   BusinessRuleListResponse,
+  CapacityForecastListResponse,
+  ComputeForecastRequest,
   CreateDriverRequest,
   CreateVehicleRequest,
   CustomerProfile,
@@ -10,6 +12,7 @@ import type {
   DataQualityReport,
   Driver,
   DriverListResponse,
+  ForecastRunStatus,
   LinkCustomerSamsaraAddressRequest,
   RoutePerformanceResponse,
   SamsaraAddressSearchResponse,
@@ -237,4 +240,26 @@ export function getVehiclePerformance(
     `${BASE}/vehicle-performance?${search.toString()}`,
     { signal },
   )
+}
+
+export function computeCapacityForecast(
+  payload: ComputeForecastRequest,
+  signal?: AbortSignal,
+): Promise<ForecastRunStatus> {
+  return requestJson<ForecastRunStatus>(`${BASE}/forecast/compute`, {
+    method: 'POST', body: payload, signal,
+  })
+}
+
+export function listCapacityForecasts(
+  signal?: AbortSignal,
+): Promise<CapacityForecastListResponse> {
+  return requestJson<CapacityForecastListResponse>(
+    `${BASE}/forecast/capacity-assessments`,
+    { signal },
+  )
+}
+
+export function getForecastRunStatus(signal?: AbortSignal): Promise<ForecastRunStatus> {
+  return requestJson<ForecastRunStatus>(`${BASE}/forecast/status`, { signal })
 }

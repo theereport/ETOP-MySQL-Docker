@@ -310,9 +310,34 @@
   color: #815608;
 }
 
-.ri-status-tag--critical {
+.ri-status-tag--critical,
+.ri-status-tag--split_recommended {
   background: #fbeaec;
   color: #8e3340;
+}
+
+.ri-status-tag--healthy {
+  background: #e5f5ef;
+  color: #17674d;
+}
+
+.ri-status-tag--watch {
+  background: #fff0d5;
+  color: #815608;
+}
+
+.ri-status-tag--backup_likely {
+  background: #fde3cf;
+  color: #96420c;
+}
+
+.ri-structural-review-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #8e3340;
+  font-weight: 700;
+  font-size: 11px;
 }
 
 .ri-sections {

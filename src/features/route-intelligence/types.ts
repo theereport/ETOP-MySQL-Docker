@@ -291,6 +291,52 @@ export interface RoutePerformanceResponse {
   vehicles: VehicleRunPerformance[]
 }
 
+// --- capacity forecast / proactive alerts (RI-3, recommendation-only) -----
+
+export type ForecastStatus =
+  | 'healthy'
+  | 'watch'
+  | 'backup_likely'
+  | 'split_recommended'
+  | 'unknown'
+
+export interface CapacityAssessment {
+  warehouse_number: number
+  warehouse_location_name: string
+  day_of_week: WeekdayName
+  sample_size: number
+  expected_weight: number | null
+  expected_quantity: number | null
+  expected_stops: number | null
+  p50_weight: number | null
+  p80_weight: number | null
+  p90_weight: number | null
+  weight_capacity: number
+  p90_utilization_pct: number | null
+  status: ForecastStatus
+  structural_review: boolean
+  computed_at: string
+}
+
+export interface CapacityForecastListResponse {
+  count: number
+  assessments: CapacityAssessment[]
+}
+
+export interface ForecastRunStatus {
+  run_id: number | null
+  run_at: string | null
+  weeks_of_history: number | null
+  warehouse_count: number | null
+  status: string
+  message: string
+}
+
+export interface ComputeForecastRequest {
+  weeks_back?: number
+  warehouse_number?: number | null
+}
+
 // --- data quality ----------------------------------------------------------
 
 export interface DataQualityIssue {

@@ -107,6 +107,63 @@ Still explicitly deferred: any route_code-to-vehicle/driver assignment
 `SimpleDayOfWeekForecastProvider` (this slice is current/historical only);
 treating `effective_date` as a real point-in-time filter.
 
+## RI-3: forecasting and proactive capacity alerts (added 2026-09-04)
+
+`POST /forecast/compute` (manual trigger, body: `weeks_back`, optional
+`warehouse_number`), `GET /forecast/capacity-assessments` (reads stored
+results - instant), `GET /forecast/status` (latest run metadata).
+
+Finishes wiring up `forecast_provider.py`'s `SimpleDayOfWeekForecastProvider`
+(built in RI-0, confirmed live never called by anything until now) into a
+real per-warehouse day-of-week demand forecast vs. fleet weight capacity,
+with P50/P80/P90 (added to `DayOfWeekForecast` this slice - it previously
+only produced a mean) and a 4-tier status
+(`healthy`/`watch`/`backup_likely`/`split_recommended`, plus `unknown`
+when a warehouse has no capacity data) using configurable thresholds
+from `route_business_rules` (`forecast_watch_threshold_pct` (80),
+`forecast_backup_likely_threshold_pct` (90),
+`forecast_split_threshold_pct` (100)), same pattern as RI-2's workload
+dashboard. Also flags `structural_review` when at least
+`forecast_structural_review_min_occurrences` (default 2) of a weekday's
+own historical samples already exceeded today's capacity - a real
+recurring-overload signal computed from actual past data, not a guess.
+
+**Manual-trigger, stored-result design, not live-computed-per-request**
+(unlike RI-2's dashboard): live-verified that `get_load_lines_for_warehouse`
+over an 8-12 week lookback takes ~7 seconds per warehouse, so a full
+network-wide compute (~53 warehouses) takes several real minutes -
+results are cached in two new tables (`route_forecast_runs`,
+`route_capacity_assessments`, migration `dffa4a3678d0`) and served
+instantly afterward, same shape as RI-1's `sync_samsara_trips`.
+
+**Warehouse-level only, same reasoning as RI-2**: no schema anywhere
+links a MaddenCo `route_code` to a vehicle/driver, so per-route or
+per-customer forecasting isn't attempted here.
+
+**Real finding, not a design choice**: `INWHLOAD` (MaddenCo's load
+manifest, described in its own metadata as a "Load Sheet Hold File")
+was assumed to be short-retention - live-verified 2026-09-04 it actually
+holds a full 2 years of real data (back to 2024-09-04, 5.37M rows), with
+an obvious weekly rhythm already visible in a sample warehouse's daily
+counts. This is what made day-of-week forecasting viable at all; it
+should be re-verified if this deferred item is ever revisited, since
+nothing enforces that MaddenCo won't purge this table's history later.
+
+Still explicitly deferred: customer-level and route-level forecasting
+(blocked on the same route_code-to-vehicle gap, or a not-yet-built
+`sales_order_visibility_service` function against `TMIHSH`); network-
+level (cross-warehouse) rollups; seasonal/trend/promotional adjustments
+beyond the day-of-week baseline (per the program plan itself: "more
+advanced models only when they materially outperform the baseline in
+backtesting"); the full 5-tier alert system's time/HOS-based criteria
+(operating buffer minutes, hard time-window violations) - no time-based
+capacity dimension or Samsara HOS integration exists in this codebase
+yet; automatic/scheduled recomputation (manual trigger only this slice -
+`backend/modules/automations/`'s `AutomationScheduler` remains the
+natural future home); tire-equivalent-based forecasting (`INWHLOAD`'s
+`WEIGHT`/`QUANTITY` columns carry no product-mix/tire-classification
+data).
+
 ## Samsara integration status (added 2026-09-04)
 
 Real, confirmed against developers.samsara.com the day this was built:

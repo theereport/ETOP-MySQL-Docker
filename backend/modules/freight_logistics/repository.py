@@ -157,6 +157,42 @@ class RouteRepository:
             (warehouse_number, date_from, date_to, limit),
         )
 
+    def get_daily_load_totals_for_warehouse(
+        self,
+        warehouse_number: int,
+        *,
+        date_from: date,
+        date_to: date,
+    ) -> list[dict[str, Any]]:
+        """Same route/warehouse join as get_load_lines_for_warehouse, but
+        aggregated server-side by day, not returned as raw lines - a
+        single busy warehouse can have 1,500-2,200+ lines on ONE day
+        alone (confirmed live), so any multi-week/month historical query
+        (e.g. day-of-week demand forecasting) would silently be truncated
+        by even a generous row LIMIT on the raw-line query. Aggregating
+        in SQL avoids transferring/holding months of raw lines just to
+        sum a handful of numbers per day."""
+
+        return madden_database.fetch_all(
+            """
+            SELECT
+                DATE(ld.CRTSTAMP) AS load_date,
+                COUNT(DISTINCT TRIM(ld.ROUTE)) AS route_count,
+                SUM(ld.WEIGHT) AS total_weight,
+                SUM(ld.QUANTITY) AS total_quantity,
+                COUNT(*) AS line_count
+            FROM KMTDTA.INWHLOAD AS ld
+            INNER JOIN KMTDTA.KMROUTES AS route
+                ON TRIM(route.RTECODE) = TRIM(ld.ROUTE)
+            WHERE route.RTEWHSE = %s
+              AND ld.CRTSTAMP >= %s
+              AND ld.CRTSTAMP < %s
+            GROUP BY DATE(ld.CRTSTAMP)
+            ORDER BY load_date
+            """,
+            (warehouse_number, date_from, date_to),
+        )
+
     def get_route(self, route_code: str) -> dict[str, Any] | None:
         return madden_database.fetch_one(
             """

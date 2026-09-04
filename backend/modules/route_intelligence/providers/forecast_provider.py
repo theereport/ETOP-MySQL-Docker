@@ -38,6 +38,15 @@ class DayOfWeekForecast:
     expected_stops: float
     expected_weight: float
     expected_quantity: float
+    p50_stops: float
+    p80_stops: float
+    p90_stops: float
+    p50_weight: float
+    p80_weight: float
+    p90_weight: float
+    p50_quantity: float
+    p80_quantity: float
+    p90_quantity: float
 
 
 class ForecastProvider(Protocol):
@@ -45,6 +54,23 @@ class ForecastProvider(Protocol):
         self, history: list[HistoricalDemandPoint]
     ) -> dict[str, DayOfWeekForecast]:
         ...
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    """Linear-interpolation percentile (the standard, dependency-free
+    method - same result as numpy's default) over a small historical
+    sample. Not a distributional model - just "what did the pct-th
+    ranked historical day actually look like," matching this program's
+    "transparent statistical baseline" mandate."""
+
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (pct / 100) * (len(ordered) - 1)
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = rank - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
 class SimpleDayOfWeekForecastProvider:
@@ -55,15 +81,25 @@ class SimpleDayOfWeekForecastProvider:
         for point in history:
             buckets[point.day.strftime("%A")].append(point)
 
-        return {
-            day_name: DayOfWeekForecast(
+        forecasts: dict[str, DayOfWeekForecast] = {}
+        for day_name, points in buckets.items():
+            stops = [float(p.stop_count) for p in points]
+            weights = [p.total_weight for p in points]
+            quantities = [p.total_quantity for p in points]
+            forecasts[day_name] = DayOfWeekForecast(
                 day_of_week=day_name,
                 sample_size=len(points),
-                expected_stops=round(mean(p.stop_count for p in points), 1),
-                expected_weight=round(mean(p.total_weight for p in points), 1),
-                expected_quantity=round(
-                    mean(p.total_quantity for p in points), 1
-                ),
+                expected_stops=round(mean(stops), 1),
+                expected_weight=round(mean(weights), 1),
+                expected_quantity=round(mean(quantities), 1),
+                p50_stops=round(_percentile(stops, 50), 1),
+                p80_stops=round(_percentile(stops, 80), 1),
+                p90_stops=round(_percentile(stops, 90), 1),
+                p50_weight=round(_percentile(weights, 50), 1),
+                p80_weight=round(_percentile(weights, 80), 1),
+                p90_weight=round(_percentile(weights, 90), 1),
+                p50_quantity=round(_percentile(quantities, 50), 1),
+                p80_quantity=round(_percentile(quantities, 80), 1),
+                p90_quantity=round(_percentile(quantities, 90), 1),
             )
-            for day_name, points in buckets.items()
-        }
+        return forecasts
