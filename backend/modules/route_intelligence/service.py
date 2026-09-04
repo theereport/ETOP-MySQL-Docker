@@ -12,6 +12,7 @@ from modules.freight_logistics.service import (
 )
 
 from . import repository
+from .providers.samsara_provider import SamsaraProvider, get_samsara_provider
 from .schemas import (
     BusinessRule,
     CustomerProfile,
@@ -288,6 +289,67 @@ def save_business_rule(rule_key: str, payload: dict[str, Any]) -> BusinessRule:
 
 
 # --- data quality ----------------------------------------------------------
+
+def _call_samsara(
+    action: str,
+    fn,
+    *args,
+    samsara: SamsaraProvider | None = None,
+    **kwargs,
+):
+    """Run one Samsara provider call, converting the Unconfigured stub's
+    (or a real API failure's) RuntimeError into a clear HTTP error instead
+    of an unhandled 500."""
+
+    provider = samsara or get_samsara_provider()
+    try:
+        return getattr(provider, fn)(*args, **kwargs)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to {action}: {exc}",
+        ) from exc
+
+
+def list_samsara_vehicles(*, samsara: SamsaraProvider | None = None) -> list[dict[str, Any]]:
+    return _call_samsara("list Samsara vehicles", "list_vehicles", samsara=samsara)
+
+
+def list_samsara_drivers(*, samsara: SamsaraProvider | None = None) -> list[dict[str, Any]]:
+    return _call_samsara("list Samsara drivers", "list_drivers", samsara=samsara)
+
+
+def list_samsara_driver_vehicle_assignments(
+    *, samsara: SamsaraProvider | None = None
+) -> list[dict[str, Any]]:
+    return _call_samsara(
+        "list Samsara driver-vehicle assignments",
+        "list_driver_vehicle_assignments",
+        samsara=samsara,
+    )
+
+
+def get_samsara_customer_geofence(
+    customer_number: str, *, samsara: SamsaraProvider | None = None
+) -> dict[str, Any] | None:
+    return _call_samsara(
+        f"look up a Samsara geofence for customer {customer_number}",
+        "get_customer_geofence",
+        customer_number,
+        samsara=samsara,
+    )
+
+
+def get_samsara_live_gps(
+    vehicle_id: str, *, samsara: SamsaraProvider | None = None
+) -> dict[str, Any] | None:
+    return _call_samsara(
+        f"get live GPS for Samsara vehicle {vehicle_id}",
+        "get_live_gps",
+        vehicle_id,
+        samsara=samsara,
+    )
+
 
 def compute_data_quality_report(
     *,
