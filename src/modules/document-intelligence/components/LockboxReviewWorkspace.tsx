@@ -18,10 +18,12 @@ import type {
 
 import {
   appendLockboxCustomerNote,
+  getLockboxCustomerDiscount,
   getLockboxCustomerNotes,
   getDocumentFile,
   getLinkedCustomerAccounts,
   linkCustomerAsEnterprise,
+  saveLockboxCustomerDiscount,
   saveLockboxTransactionReview,
   unlinkCustomerFromManualEnterprise,
 } from '../api'
@@ -308,7 +310,10 @@ function money(value: number) {
 const MISC_GL_REASONS: { value: string; glCode: string }[] = [
   { value: 'Service Charge ADJ', glCode: '3880' },
   { value: 'AR Variance', glCode: '3950' },
+  { value: 'Customer Discount', glCode: '4070' },
 ]
+
+const CUSTOMER_DISCOUNT_GL_REASON = 'Customer Discount'
 
 function displayDate(value?: string | null) {
   if (!value) return '—'
@@ -469,6 +474,9 @@ export default function LockboxReviewWorkspace({
   const [miscGlLocation, setMiscGlLocation] = useState('')
   const [miscGlDepartment, setMiscGlDepartment] = useState('')
   const [miscGlAmount, setMiscGlAmount] = useState('')
+  const [isDiscountCustomer, setIsDiscountCustomer] = useState(false)
+  const [discountPercent, setDiscountPercent] = useState('')
+  const [discountSaveError, setDiscountSaveError] = useState('')
   const [reviewActionModal, setReviewActionModal] =
     useState<ReviewActionModal>(null)
   const reviewActionModalRef = useRef<ReviewActionModal>(null)
@@ -854,6 +862,59 @@ export default function LockboxReviewWorkspace({
   }, [customerNumber, transaction])
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  useEffect(() => {
+    setDiscountSaveError('')
+    const trimmedCustomerNumber = customerNumber.trim()
+    if (!trimmedCustomerNumber) {
+      setIsDiscountCustomer(false)
+      setDiscountPercent('')
+      return
+    }
+
+    const controller = new AbortController()
+    void getLockboxCustomerDiscount(
+      trimmedCustomerNumber,
+      controller.signal,
+    ).then((discount) => {
+      if (controller.signal.aborted) return
+      setIsDiscountCustomer(discount.is_discount_customer)
+      setDiscountPercent(
+        discount.discount_percent ? String(discount.discount_percent) : '',
+      )
+    }).catch((error) => {
+      if (controller.signal.aborted) return
+      setIsDiscountCustomer(false)
+      setDiscountPercent('')
+      setDiscountSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to load the discount customer setting.',
+      )
+    })
+
+    return () => controller.abort()
+  }, [customerNumber])
+
+  const saveDiscountSetting = (
+    nextIsDiscountCustomer: boolean,
+    nextDiscountPercent: string,
+  ) => {
+    const trimmedCustomerNumber = customerNumber.trim()
+    if (!trimmedCustomerNumber) return
+    setDiscountSaveError('')
+    void saveLockboxCustomerDiscount(trimmedCustomerNumber, {
+      is_discount_customer: nextIsDiscountCustomer,
+      discount_percent: Number(nextDiscountPercent) || 0,
+      updated_by: reviewer.trim(),
+    }).catch((error) => {
+      setDiscountSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to save the discount customer setting.',
+      )
+    })
+  }
+
   const toggleZeroBalanceInvoices = () => {
     const next = !showZeroBalanceInvoices
     setShowZeroBalanceInvoices(next)
@@ -1123,6 +1184,24 @@ export default function LockboxReviewWorkspace({
     ),
     [allocations],
   )
+
+  const isCustomerDiscountReason = miscGlReason === CUSTOMER_DISCOUNT_GL_REASON
+  const customerDiscountAmount = useMemo(
+    () => Math.round(
+      allocationTotal * ((Number(discountPercent) || 0) / 100) * 100,
+    ) / 100,
+    [allocationTotal, discountPercent],
+  )
+
+  useEffect(() => {
+    if (!isCustomerDiscountReason) return
+    // A credit to the allocated balance, not a coverage amount like the
+    // other Misc G/L reasons - stored negative so it reduces (rather than
+    // adds to) the allocation side of the difference calculation below.
+    setMiscGlAmount(
+      customerDiscountAmount ? String(-customerDiscountAmount) : '',
+    )
+  }, [isCustomerDiscountReason, customerDiscountAmount])
 
   const miscGlAmountNumber = Number(miscGlAmount) || 0
   const miscGlCode = MISC_GL_REASONS.find(
@@ -2838,14 +2917,53 @@ export default function LockboxReviewWorkspace({
                   )}
                 </div>
 
-                <label>
-                  Customer Name
-                  <input
-                    value={customerName}
-                    onChange={(event) => setCustomerName(event.target.value)}
-                    placeholder="Customer or payer name"
-                  />
-                </label>
+                <div className="lockbox-customer-name-cell">
+                  <label>
+                    Customer Name
+                    <input
+                      value={customerName}
+                      onChange={(event) => setCustomerName(event.target.value)}
+                      placeholder="Customer or payer name"
+                    />
+                  </label>
+
+                  <div className="lockbox-discount-customer-field">
+                    <label className="lockbox-discount-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={isDiscountCustomer}
+                        onChange={(event) => {
+                          const next = event.target.checked
+                          setIsDiscountCustomer(next)
+                          saveDiscountSetting(next, discountPercent)
+                        }}
+                      />
+                      Discount Customer?
+                    </label>
+                    <label>
+                      Discount %
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="100"
+                        value={discountPercent}
+                        disabled={!isDiscountCustomer}
+                        onChange={(event) => setDiscountPercent(event.target.value)}
+                        onBlur={(event) => saveDiscountSetting(
+                          isDiscountCustomer,
+                          event.target.value,
+                        )}
+                        placeholder="0.00"
+                      />
+                    </label>
+                  </div>
+                  {discountSaveError && (
+                    <span className="lockbox-discount-customer-error">
+                      {discountSaveError}
+                    </span>
+                  )}
+                </div>
 
                 <label>
                   Phone Number
@@ -3168,13 +3286,6 @@ export default function LockboxReviewWorkspace({
                   </button>
                 </div>
               </div>
-
-              {customerSummary?.flags?.discount_customer && (
-                <div className="ed-banner discount-customer">
-                  Discount Customer — review this customer&apos;s pricing
-                  agreement before applying this payment.
-                </div>
-              )}
 
               {recommendationError && (
                 <div className="ed-banner error">{recommendationError}</div>
@@ -3951,7 +4062,16 @@ export default function LockboxReviewWorkspace({
                     value={miscGlAmount}
                     onChange={(event) => setMiscGlAmount(event.target.value)}
                     placeholder="0.00"
+                    readOnly={isCustomerDiscountReason}
+                    title={isCustomerDiscountReason
+                      ? 'Calculated automatically from the allocation total and discount %.'
+                      : undefined}
                   />
+                  {isCustomerDiscountReason && (
+                    <small>
+                      {discountPercent || '0'}% of {money(allocationTotal)}
+                    </small>
+                  )}
                 </label>
               </div>
             </div>

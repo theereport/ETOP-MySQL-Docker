@@ -426,6 +426,20 @@ export type AppendLockboxCustomerNoteRequest = {
   author: string
 }
 
+export type LockboxCustomerDiscount = {
+  customer_number: string
+  is_discount_customer: boolean
+  discount_percent: number
+  updated_by: string
+  updated_at: string
+}
+
+export type SaveLockboxCustomerDiscountRequest = {
+  is_discount_customer: boolean
+  discount_percent: number
+  updated_by: string
+}
+
 export type CustomerMatchCandidate = {
   customer_number: string
   customer_name: string

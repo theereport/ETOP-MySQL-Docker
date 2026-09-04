@@ -264,13 +264,6 @@
   color: #9ce9c4;
 }
 
-.ed-banner.discount-customer {
-  border: 1px solid #b38f00;
-  background: #ffd400;
-  color: #1a1400;
-  font-weight: 700;
-  font-size: 12px;
-}
 
 .ed-metrics {
   display: grid;
@@ -2445,6 +2438,14 @@
   margin-top: 5px;
 }
 
+.lockbox-misc-gl-row label small {
+  display: block;
+  margin-top: 4px;
+  font-weight: 400;
+  font-size: 10px;
+  color: #a9bcd6;
+}
+
 @media (max-width: 900px) {
   .lockbox-misc-gl-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2699,6 +2700,44 @@
 
 .lockbox-customer-fields {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lockbox-customer-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.lockbox-discount-customer-field {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+}
+
+.lockbox-discount-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #8595ab;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.lockbox-discount-checkbox input {
+  width: auto;
+  margin-top: 0;
+}
+
+.lockbox-discount-customer-field label:not(.lockbox-discount-checkbox) {
+  flex: 1;
+  min-width: 0;
+}
+
+.lockbox-discount-customer-error {
+  color: #ff9aa2;
+  font-size: 10px;
 }
 
 .lockbox-erp-lookup {

@@ -22,12 +22,21 @@ services:
     # sustained ~200% CPU and climbed to 96% of the 2GB memory ceiling,
     # and tesseract's own 30s per-region subprocess timeout
     # (ocr_engine.py's `timeout_seconds`) was blown twice in a row under
-    # that contention - the job never completed. 4 CPU/4GB is still a
-    # placeholder, not a measured real-server figure.
+    # that contention - the job never completed.
+    #
+    # Raised again from 4 CPU/4GB on 2026-09-03: the lockbox parser runs
+    # up to DEFAULT_OCR_WORKERS=6 concurrent tesseract subprocesses per
+    # PDF (pnc_lockbox_parser.py's ThreadPoolExecutor), so a 4-CPU quota
+    # oversubscribed those 6 processes onto 4 cores and individual OCR
+    # calls blew their 30s timeout even with a generous memory ceiling
+    # and even after the Docker Desktop VM's own total memory was raised
+    # separately. 8 CPU/4GB is still a placeholder, not a measured
+    # real-server figure, but gives each of the 6 OCR workers a full
+    # core with headroom to spare.
     deploy:
       resources:
         limits:
-          cpus: "4"
+          cpus: "8"
           memory: 4g
     logging:
       driver: json-file

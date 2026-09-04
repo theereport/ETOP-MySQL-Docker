@@ -17,6 +17,8 @@ import type {
   SaveLockboxTransactionReviewRequest,
   AppendLockboxCustomerNoteRequest,
   LockboxCustomerNoteList,
+  LockboxCustomerDiscount,
+  SaveLockboxCustomerDiscountRequest,
   CustomerMatchRequest,
   CustomerMatchResponse,
   BulkInvoiceOwnerResponse,
@@ -498,6 +500,36 @@ export async function appendLockboxCustomerNote(
     + `${encodeURIComponent(transactionId)}/customer-notes`,
     {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    },
+  )
+  if (!response.ok) throw new Error(await readError(response))
+  return response.json()
+}
+
+export async function getLockboxCustomerDiscount(
+  customerNumber: string,
+  signal?: AbortSignal,
+): Promise<LockboxCustomerDiscount> {
+  const response = await fetch(
+    `${API_BASE}/lockbox/customer-discount/${encodeURIComponent(customerNumber)}`,
+    { signal },
+  )
+  if (!response.ok) throw new Error(await readError(response))
+  return response.json()
+}
+
+export async function saveLockboxCustomerDiscount(
+  customerNumber: string,
+  payload: SaveLockboxCustomerDiscountRequest,
+  signal?: AbortSignal,
+): Promise<LockboxCustomerDiscount> {
+  const response = await fetch(
+    `${API_BASE}/lockbox/customer-discount/${encodeURIComponent(customerNumber)}`,
+    {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal,

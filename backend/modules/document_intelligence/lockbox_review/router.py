@@ -3,9 +3,11 @@ from fastapi.responses import FileResponse
 
 from .schemas import (
     AppendCustomerNoteRequest,
+    CustomerDiscount,
     CustomerNoteListResponse,
     LockboxReviewQueueExportRequest,
     LockboxReviewResponse,
+    SaveCustomerDiscountRequest,
     SaveTransactionReviewRequest,
 )
 from .service import (
@@ -13,9 +15,11 @@ from .service import (
     create_carryover_export,
     create_review_queue_export,
     create_reviewed_export,
+    get_customer_discount,
     get_lockbox_review,
     get_transaction_customer_notes,
     list_carryover_transactions,
+    save_customer_discount,
     save_transaction_review,
 )
 
@@ -116,6 +120,27 @@ def export_lockbox_review_queue(
             "spreadsheetml.sheet"
         ),
         filename=output.name,
+    )
+
+
+@router.get(
+    "/lockbox/customer-discount/{customer_number}",
+    response_model=CustomerDiscount,
+)
+def read_lockbox_customer_discount(customer_number: str) -> CustomerDiscount:
+    return CustomerDiscount(**get_customer_discount(customer_number))
+
+
+@router.put(
+    "/lockbox/customer-discount/{customer_number}",
+    response_model=CustomerDiscount,
+)
+def update_lockbox_customer_discount(
+    customer_number: str,
+    payload: SaveCustomerDiscountRequest,
+) -> CustomerDiscount:
+    return CustomerDiscount(
+        **save_customer_discount(customer_number, payload.model_dump())
     )
 
 

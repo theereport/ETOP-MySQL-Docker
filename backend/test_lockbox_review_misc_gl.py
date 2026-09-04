@@ -115,6 +115,25 @@ class MiscGlEntryTest(unittest.TestCase):
         self.assertEqual(transaction["misc_gl"]["gl_code"], "3950")
         self.assertEqual(transaction["misc_gl"]["amount"], 10.0)
 
+    def test_customer_discount_reason_resolves_to_its_own_gl_code(self) -> None:
+        with patch.object(
+            review_service,
+            "get_lockbox_result",
+            lambda _job_id: deepcopy(_source(self._transaction())),
+        ):
+            result = review_service.save_transaction_review(
+                "job-customer-discount",
+                "T-1",
+                self._payload(
+                    misc_gl_reason="Customer Discount",
+                    misc_gl_amount=10.00,
+                ),
+            )
+
+        transaction = result["transactions"][0]
+        self.assertEqual(transaction["misc_gl"]["gl_code"], "4070")
+        self.assertEqual(transaction["misc_gl"]["amount"], 10.0)
+
     def test_unknown_reason_is_rejected(self) -> None:
         with patch.object(
             review_service,

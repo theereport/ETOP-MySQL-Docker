@@ -15,11 +15,13 @@ from ..resolution.normalization import last4, normalize_company_name
 from ..resolution.payer_mapping_repository import PayerCustomerMappingRepository
 from .database import (
     append_customer_note as append_customer_note_record,
+    get_customer_discount as get_customer_discount_record,
     get_customer_notes as get_customer_note_records,
     get_reviews,
     list_approved_carryover_origin_transaction_ids,
     list_carryover_job_ids,
     migrate_legacy_reviews,
+    save_customer_discount as save_customer_discount_record,
     save_review,
 )
 from .queue_export import _safe_file_part, export_review_queue_workbook
@@ -51,6 +53,7 @@ PROTECTED_HUMAN_DRAFT_STATUSES = {"corrected", "held", "carryover", "approved"}
 MISC_GL_REASON_CODES: dict[str, str] = {
     "Service Charge ADJ": "3880",
     "AR Variance": "3950",
+    "Customer Discount": "4070",
 }
 GovernedPreparationLoader = Callable[[str], dict[str, Any]]
 CurrentOpenARLoader = Callable[[str, date], dict[str, Any]]
@@ -631,6 +634,51 @@ def append_transaction_customer_note(
         "customer_name": customer_name,
         "notes": get_customer_note_records(customer_number),
     }
+
+
+def get_customer_discount(customer_number: str) -> dict[str, Any]:
+    """Durable per-customer discount setting, keyed by customer_number only.
+
+    Manually maintained by reviewers (there is no reliable ERP field for
+    this - see the 2026-09-03 revert of the CUCONTRACT-based auto-detect),
+    so it carries over across every future lockbox review of this customer
+    once set, rather than being re-derived each time.
+    """
+
+    customer_number = customer_number.strip()
+    if not customer_number:
+        raise HTTPException(
+            status_code=400,
+            detail="A customer number is required.",
+        )
+    record = get_customer_discount_record(customer_number)
+    if record is None:
+        return {
+            "customer_number": customer_number,
+            "is_discount_customer": False,
+            "discount_percent": 0.0,
+            "updated_by": "",
+            "updated_at": "",
+        }
+    return record
+
+
+def save_customer_discount(
+    customer_number: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    customer_number = customer_number.strip()
+    if not customer_number:
+        raise HTTPException(
+            status_code=400,
+            detail="A customer number is required.",
+        )
+    return save_customer_discount_record(
+        customer_number,
+        is_discount_customer=bool(payload.get("is_discount_customer")),
+        discount_percent=float(payload.get("discount_percent") or 0.0),
+        updated_by=str(payload.get("updated_by") or "").strip(),
+    )
 
 
 def _validate_allocation_identifiers(

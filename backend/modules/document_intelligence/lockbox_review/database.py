@@ -8,13 +8,18 @@ from sqlalchemy import select
 
 from data.mysql import (
     get_engine,
+    lockbox_customer_discounts_table,
     lockbox_customer_notes_table,
     lockbox_reviews_table,
     lockbox_transaction_reviews_table,
     metadata,
 )
 
-_TABLES = [lockbox_transaction_reviews_table, lockbox_customer_notes_table]
+_TABLES = [
+    lockbox_transaction_reviews_table,
+    lockbox_customer_notes_table,
+    lockbox_customer_discounts_table,
+]
 
 
 def initialize_database() -> None:
@@ -266,3 +271,55 @@ def append_customer_note(
     if row is None:  # pragma: no cover - the database returned the inserted id.
         raise RuntimeError("The customer note could not be reloaded.")
     return dict(row)
+
+
+def get_customer_discount(customer_number: str) -> dict[str, Any] | None:
+    """Return the durable discount setting for one ERP customer, if set.
+
+    Keyed by customer_number only (not by job/transaction) so it carries
+    over automatically the next time any lockbox transaction for this
+    customer is reviewed, in any job.
+    """
+
+    initialize_database()
+    table = lockbox_customer_discounts_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.customer_number == customer_number)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def save_customer_discount(
+    customer_number: str,
+    *,
+    is_discount_customer: bool,
+    discount_percent: float,
+    updated_by: str,
+) -> dict[str, Any]:
+    initialize_database()
+    now = datetime.now(timezone.utc).isoformat()
+    table = lockbox_customer_discounts_table
+    values = dict(
+        is_discount_customer=is_discount_customer,
+        discount_percent=discount_percent,
+        updated_by=updated_by,
+        updated_at=now,
+    )
+    with get_engine().begin() as connection:
+        existing = connection.execute(
+            select(table.c.customer_number).where(
+                table.c.customer_number == customer_number
+            )
+        ).first()
+        if existing is None:
+            connection.execute(
+                table.insert().values(customer_number=customer_number, **values)
+            )
+        else:
+            connection.execute(
+                table.update()
+                .where(table.c.customer_number == customer_number)
+                .values(**values)
+            )
+    return {"customer_number": customer_number, **values}

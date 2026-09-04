@@ -83,6 +83,20 @@ class CustomerNoteListResponse(BaseModel):
     notes: list[CustomerNote] = Field(default_factory=list)
 
 
+class CustomerDiscount(BaseModel):
+    customer_number: str
+    is_discount_customer: bool = False
+    discount_percent: float = 0.0
+    updated_by: str = ""
+    updated_at: str = ""
+
+
+class SaveCustomerDiscountRequest(BaseModel):
+    is_discount_customer: bool = False
+    discount_percent: float = Field(default=0.0, ge=0.0, le=100.0)
+    updated_by: str = Field(default="", max_length=200)
+
+
 class LockboxReviewQueueExportRequest(BaseModel):
     transaction_ids: list[str] = Field(min_length=1, max_length=10000)
     queue_label: str = Field(default="All transactions", max_length=300)

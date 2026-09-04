@@ -2501,6 +2501,16 @@ lockbox_customer_notes_table = Table(
     ),
 )
 
+lockbox_customer_discounts_table = Table(
+    "lockbox_customer_discounts",
+    metadata,
+    Column("customer_number", String(64), primary_key=True),
+    Column("is_discount_customer", Boolean, nullable=False, server_default="0"),
+    Column("discount_percent", Float, nullable=False, server_default="0"),
+    Column("updated_by", String(255), nullable=False, server_default=""),
+    Column("updated_at", String(64), nullable=False),
+)
+
 # --- invoice_owner_cache.db (integrations/invoice_owner_cache.py) --------
 #
 # A plain wholesale-replaceable cache (~257k rows), not an append-only
