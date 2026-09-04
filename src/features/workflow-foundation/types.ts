@@ -32,6 +32,7 @@ export type ETOPModuleId =
   | 'pricing_contracts'
   | 'general_ledger'
   | 'cash_flow_forecasting'
+  | 'route_intelligence'
 
 export type EffectivePermissions = {
   module_ids: ETOPModuleId[]

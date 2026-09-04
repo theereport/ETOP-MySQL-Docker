@@ -35,6 +35,10 @@ from .schemas import (
     SourceEvidence,
     WarehouseDirectionLabel,
     WarehouseLabelEvidence,
+    WarehouseListResponse,
+    WarehouseLoadLinesResponse,
+    WarehouseRouteListResponse,
+    WarehouseSummary,
 )
 
 
@@ -125,6 +129,31 @@ def _elapsed_minutes(created_at: Any, delivered_at: Any) -> float | None:
     if delta_seconds < 0:
         return None
     return round(delta_seconds / 60.0, 1)
+
+
+def _map_load_line(row: dict[str, Any]) -> RouteLoadLine:
+    created_at = row.get("CRTSTAMP")
+    delivered_at = row.get("DLVSTAMP")
+    delivered_at_iso = _iso(delivered_at)
+    delivered = delivered_at_iso is not None
+    elapsed = _elapsed_minutes(created_at, delivered_at) if delivered else None
+    return RouteLoadLine(
+        store_number=_optional_int(row.get("STORENUM")),
+        route=_clean_text(row.get("ROUTE")),
+        status_code=_clean_text(row.get("STATUS")),
+        invoice_number=_optional_int(row.get("INVNUM")),
+        customer_number=_optional_int(row.get("CUSTNUM")),
+        line_number=_optional_int(row.get("LINENUM")),
+        seq=_optional_int(row.get("SEQ")),
+        product_number=_clean_text(row.get("PRODNUM")),
+        description=_clean_text(row.get("DESC")),
+        weight=_optional_number(row.get("WEIGHT")),
+        quantity=_optional_number(row.get("QUANTITY")),
+        created_at=_iso(created_at),
+        delivered_at=delivered_at_iso,
+        delivered=delivered,
+        elapsed_minutes=elapsed,
+    )
 
 
 _GAPS = [
@@ -227,6 +256,70 @@ class FreightLogisticsService:
             routes=results,
         )
 
+    def list_warehouses(self) -> WarehouseListResponse:
+        rows = self._repository.list_warehouses()
+        retrieved_at = self._clock().astimezone(UTC).isoformat()
+        warehouses = [
+            WarehouseSummary(
+                warehouse_number=_optional_int(row.get("LOCATION_NUMBER")) or 0,
+                warehouse_location_name=_clean_text(row.get("LOCATION_NAME")),
+            )
+            for row in rows
+        ]
+        return WarehouseListResponse(
+            source=SourceEvidence(retrieved_at=retrieved_at),
+            count=len(warehouses),
+            warehouses=warehouses,
+        )
+
+    def list_routes_for_warehouse(
+        self,
+        warehouse_number: int,
+        *,
+        active_only: bool = True,
+    ) -> WarehouseRouteListResponse:
+        rows = self._repository.list_routes_for_warehouse(
+            warehouse_number, active_only=active_only,
+        )
+        retrieved_at = self._clock().astimezone(UTC).isoformat()
+        routes = [
+            RouteSearchResult(
+                route_key=_clean_text(row.get("RTEKEY")),
+                route_code=_clean_text(row.get("RTECODE")),
+                warehouse_number=_optional_int(row.get("RTEWHSE")),
+                status_code=_clean_text(row.get("RTESTATUS")),
+                active=_clean_text(row.get("RTESTATUS")) in ("", "A"),
+            )
+            for row in rows
+        ]
+        return WarehouseRouteListResponse(
+            source=SourceEvidence(retrieved_at=retrieved_at),
+            warehouse_number=warehouse_number,
+            count=len(routes),
+            routes=routes,
+        )
+
+    def get_load_lines_for_warehouse(
+        self,
+        warehouse_number: int,
+        *,
+        date_from,
+        date_to,
+    ) -> WarehouseLoadLinesResponse:
+        rows = self._repository.get_load_lines_for_warehouse(
+            warehouse_number, date_from=date_from, date_to=date_to,
+        )
+        retrieved_at = self._clock().astimezone(UTC).isoformat()
+        lines = [_map_load_line(row) for row in rows]
+        return WarehouseLoadLinesResponse(
+            source=SourceEvidence(retrieved_at=retrieved_at),
+            warehouse_number=warehouse_number,
+            date_from=date_from.isoformat(),
+            date_to=date_to.isoformat(),
+            line_count=len(lines),
+            lines=lines,
+        )
+
     def get_route_evidence(self, route_code: str) -> RouteEvidenceResponse:
         row = self._repository.get_route(route_code)
         if row is None:
@@ -323,38 +416,14 @@ class FreightLogisticsService:
         elapsed_values: list[float] = []
 
         for row in rows:
-            created_at = row.get("CRTSTAMP")
-            delivered_at = row.get("DLVSTAMP")
-            delivered_at_iso = _iso(delivered_at)
-            delivered = delivered_at_iso is not None
-            elapsed = (
-                _elapsed_minutes(created_at, delivered_at) if delivered else None
-            )
-            if delivered:
+            line = _map_load_line(row)
+            if line.delivered:
                 delivered_count += 1
-                if elapsed is not None:
-                    elapsed_values.append(elapsed)
+                if line.elapsed_minutes is not None:
+                    elapsed_values.append(line.elapsed_minutes)
             total_weight += _number(row.get("WEIGHT"))
             total_quantity += _number(row.get("QUANTITY"))
-            lines.append(
-                RouteLoadLine(
-                    store_number=_optional_int(row.get("STORENUM")),
-                    route=_clean_text(row.get("ROUTE")),
-                    status_code=_clean_text(row.get("STATUS")),
-                    invoice_number=_optional_int(row.get("INVNUM")),
-                    customer_number=_optional_int(row.get("CUSTNUM")),
-                    line_number=_optional_int(row.get("LINENUM")),
-                    seq=_optional_int(row.get("SEQ")),
-                    product_number=_clean_text(row.get("PRODNUM")),
-                    description=_clean_text(row.get("DESC")),
-                    weight=_optional_number(row.get("WEIGHT")),
-                    quantity=_optional_number(row.get("QUANTITY")),
-                    created_at=_iso(created_at),
-                    delivered_at=delivered_at_iso,
-                    delivered=delivered,
-                    elapsed_minutes=elapsed,
-                )
-            )
+            lines.append(line)
 
         line_count = len(lines)
         return RouteLoadEvidence(

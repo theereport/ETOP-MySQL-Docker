@@ -6,6 +6,7 @@ import { manifests as accountsPayableManifests } from '../../features/accounts-p
 import { manifests as vendorIntelligenceManifests } from '../../features/vendor-intelligence/manifest'
 import { manifests as arCollectionsManifests } from '../../features/ar-collections/manifest'
 import { manifests as freightLogisticsManifests } from '../../features/freight-logistics/manifest'
+import { manifests as routeIntelligenceManifests } from '../../features/route-intelligence/manifest'
 import { manifests as inventoryPurchasingManifests } from '../../features/inventory-purchasing/manifest'
 import { manifests as taxComplianceManifests } from '../../features/tax-compliance/manifest'
 import { manifests as salesOrderVisibilityManifests } from '../../features/sales-order-visibility/manifest'
@@ -148,6 +149,7 @@ export const moduleManifests: ModuleManifestEntry[] = [
   ...vendorIntelligenceManifests,
   ...arCollectionsManifests,
   ...freightLogisticsManifests,
+  ...routeIntelligenceManifests,
   ...inventoryPurchasingManifests,
   ...taxComplianceManifests,
   ...salesOrderVisibilityManifests,

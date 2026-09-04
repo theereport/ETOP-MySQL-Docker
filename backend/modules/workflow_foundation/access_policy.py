@@ -43,6 +43,8 @@ def required_modules_for_path(path: str) -> tuple[str, ...] | None:
         return ("ar_collections",)
     if normalized.startswith("/api/v1/freight-logistics"):
         return ("freight_logistics",)
+    if normalized.startswith("/api/v1/route-intelligence"):
+        return ("route_intelligence",)
     if normalized.startswith("/api/v1/inventory-purchasing"):
         return ("inventory_purchasing",)
     if normalized.startswith("/api/v1/tax-compliance"):

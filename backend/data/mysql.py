@@ -2621,6 +2621,110 @@ lockbox_preparation_events_table = Table(
 )
 
 
+# --- route_intelligence module ---------------------------------------------
+#
+# Only ETOP-owned master data that MaddenCo has no field for. Warehouses and
+# routes themselves are NOT duplicated here - they already live in MaddenCo
+# (KMTDTA.WH_DASHBOARD_LOCATIONS, KMTDTA.KMROUTES) and are read through the
+# freight_logistics module's service layer. customer_number columns are
+# String(64) to match TMCUST.CUNUMBER and the lockbox_customer_discounts
+# convention above, not an int, since this is a join key against ERP data
+# read as text elsewhere in this codebase.
+
+route_customer_profiles_table = Table(
+    "route_customer_profiles",
+    metadata,
+    Column("customer_number", String(64), primary_key=True),
+    Column("latitude", Float, nullable=True),
+    Column("longitude", Float, nullable=True),
+    Column("receiving_window_start", String(16), nullable=False, server_default=""),
+    Column("receiving_window_end", String(16), nullable=False, server_default=""),
+    # MySQL rejects a server_default on TEXT/BLOB columns - the repository
+    # layer always supplies an explicit value on insert instead (see
+    # route_intelligence/repository.py's save_customer_profile).
+    Column("closed_days_json", Text, nullable=False),
+    Column("preferred_delivery_days_json", Text, nullable=False),
+    Column("priority", String(32), nullable=False, server_default=""),
+    Column("normal_unloading_minutes", Float, nullable=True),
+    Column("vehicle_access_restrictions", Text, nullable=False),
+    Column("delivery_instructions", Text, nullable=False),
+    Column("notes", Text, nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Column("updated_by", String(255), nullable=False, server_default=""),
+)
+
+route_vehicles_table = Table(
+    "route_vehicles",
+    metadata,
+    Column("vehicle_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("unit_number", String(64), nullable=False),
+    Column("vehicle_type", String(64), nullable=False, server_default=""),
+    Column("home_warehouse_number", Integer, nullable=True),
+    Column("active", Boolean, nullable=False, server_default="1"),
+    Column("notes", Text, nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Index("idx_route_vehicles_warehouse", "home_warehouse_number"),
+)
+
+route_vehicle_capacities_table = Table(
+    "route_vehicle_capacities",
+    metadata,
+    Column("capacity_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column(
+        "vehicle_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("route_vehicles.vehicle_id"),
+        nullable=False,
+    ),
+    Column("weight_capacity", Float, nullable=True),
+    Column("cube_capacity", Float, nullable=True),
+    Column("tire_equivalent_capacity", Float, nullable=True),
+    Column("max_stops", Integer, nullable=True),
+    Column("effective_date", String(32), nullable=False, server_default=""),
+    Index("idx_route_vehicle_capacities_vehicle", "vehicle_id"),
+)
+
+route_drivers_table = Table(
+    "route_drivers",
+    metadata,
+    Column("driver_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("name", String(255), nullable=False),
+    Column("home_warehouse_number", Integer, nullable=True),
+    Column("active", Boolean, nullable=False, server_default="1"),
+    Column("qualifications", Text, nullable=False),
+    Column("notes", Text, nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Index("idx_route_drivers_warehouse", "home_warehouse_number"),
+)
+
+route_driver_availability_table = Table(
+    "route_driver_availability",
+    metadata,
+    Column("availability_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column(
+        "driver_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("route_drivers.driver_id"),
+        nullable=False,
+    ),
+    Column("day_of_week", String(16), nullable=False),
+    Column("available", Boolean, nullable=False, server_default="1"),
+    Column("shift_start", String(16), nullable=False, server_default=""),
+    Column("shift_end", String(16), nullable=False, server_default=""),
+    Index("idx_route_driver_availability_driver", "driver_id"),
+)
+
+route_business_rules_table = Table(
+    "route_business_rules",
+    metadata,
+    Column("rule_key", String(128), primary_key=True),
+    Column("rule_value", Text, nullable=False),
+    Column("description", Text, nullable=False),
+    Column("updated_at", String(64), nullable=False),
+    Column("updated_by", String(255), nullable=False, server_default=""),
+)
+
+
 _engine: Engine | None = None
 _engine_override: Engine | None = None
 

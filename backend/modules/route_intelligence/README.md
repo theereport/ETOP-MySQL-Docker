@@ -1,0 +1,165 @@
+# Route Intelligence
+
+A predictive, capacity-aware, human-governed delivery-routing platform,
+built incrementally against the "ETOP Route Intelligence" program plan
+(RI-0 through RI-9). Built as an RI-0 first slice with no Samsara
+dependency; a real Samsara API token became available shortly after
+(2026-09-04), so `providers/samsara_provider.py`'s `SamsaraApiProvider`
+and a handful of read-only endpoints were added on top without changing
+anything else in this module.
+
+## Samsara integration status (added 2026-09-04)
+
+Real, confirmed against developers.samsara.com the day this was built:
+
+- `GET /samsara/vehicles` - `/assets?type=vehicle`
+- `GET /samsara/drivers` - `/fleet/drivers`
+- `GET /samsara/driver-vehicle-assignments` - `/fleet/driver-vehicle-assignments`
+- `GET /samsara/customer-geofence/{customer_number}` - `/addresses`,
+  filtered client-side by `externalIds`. **K&M has not yet established a
+  convention for tagging a Samsara address with the ETOP/MaddenCo
+  customer number as an externalId** - this returns nothing useful until
+  that tagging exists in Samsara itself. Worth a conversation with
+  whoever administers the Samsara account.
+- `GET /samsara/vehicles/{vehicle_id}/live-gps` - `/v1/fleet/locations`
+  (note the different response envelope from every other endpoint here -
+  see the method's docstring)
+
+`get_samsara_provider()` switches automatically between the real
+`SamsaraApiProvider` and `UnconfiguredSamsaraProvider` based on whether
+`SAMSARA_API_TOKEN` is set (see `.env.docker.example`) - no code change
+needed once a token exists.
+
+**Not implemented - genuinely can't be, not just deferred**:
+`list_actual_stops()` (route-stop arrival/departure). Samsara delivers
+this as webhook events (`RouteStopArrival`/`RouteStopDeparture`,
+currently Beta), not a pollable REST list - there is no GET endpoint to
+call. Reading this needs a webhook receiver in this backend (an endpoint,
+signature verification, and somewhere to store incoming events) - real,
+separate infrastructure work, not a provider swap. This blocks the
+Samsara-based "customer service-time intelligence" (program plan section
+D) and historical-route "actual stops" reconstruction (RI-1) until that
+receiver exists.
+
+**Blocked on a public HTTPS endpoint, not on code** (confirmed 2026-09-04):
+Samsara's cloud has to be able to reach the webhook URL over the public
+internet - this backend is currently a local/on-prem Docker deployment
+(`https://localhost`, self-signed cert), which Samsara's servers cannot
+reach. Deliberately not building the receiver until either a real public
+domain exists for ETOP, or a tunnel (ngrok/Cloudflare Tunnel) is stood up
+for testing - user's explicit call, not a technical dead end.
+
+Confirmed webhook mechanics for whenever this is picked up (via
+`developers.samsara.com/docs/webhooks`):
+- **Delivery**: `POST`, `Content-Type: application/json`, from Samsara's
+  static IPs. Must return a 2XX promptly; non-2XX retries 5x with
+  exponential backoff.
+- **Signature verification**: `X-Samsara-Signature: v1=<hex>` header,
+  HMAC-SHA256. The webhook's secret (shown once in the Samsara dashboard
+  at creation) is base64-encoded and must be decoded before use. Message
+  to sign is `v1:<X-Samsara-Timestamp header value>:<raw request body>`.
+  **Never skip this check** - an unauthenticated webhook receiver is a
+  real attack surface (anyone who finds the URL could inject fake
+  RouteStopArrival events).
+- **Payload**: `eventId`, `eventMs`, `eventType` (`"Alert"` or `"Ping"`),
+  plus event-specific data - RouteStopArrival's fields are
+  `data.route.id`, `data.routeStopDetails.id`, `data.vehicle.id`,
+  `data.driver.id`, `data.routeStopDetails.actualArrivalTime`,
+  coordinates in `data.route.stops[].singleUseLocation`.
+- When built, the endpoint should live at
+  `/api/v1/route-intelligence/samsara/webhook` and a new
+  `samsara_webhook_events` table (append-only, per this codebase's
+  established convention for evidence logs) should store every verified
+  event before any processing - this is the deferred `samsara_event_log`
+  table from the original program plan's section 7.
+
+`list_historical_routes()` maps to `/trips/stream` (GPS-derived actual
+trips), not Samsara's "Routes" feature (which is for dispatching planned
+routes - the RI-6+ write-back target, not a read source for historical
+execution).
+
+## What this slice actually does
+
+- **Data Quality Center** (`GET /data-quality`): live, always-fresh
+  cross-check of every K&M customer's MaddenCo route code (`TMCUST.
+  CUROUTECD`) and store number (`TMCUST.CUSTORENUM`) against MaddenCo's own
+  route (`KMTDTA.KMROUTES`) and warehouse (`KMTDTA.WH_DASHBOARD_LOCATIONS`)
+  masters, plus completeness checks on this module's own master data
+  (customer coordinates, vehicle capacity profiles, driver availability).
+- **Master-data management**: CRUD for `route_vehicles`,
+  `route_vehicle_capacities`, `route_drivers`, `route_driver_availability`,
+  `route_customer_profiles`, and `route_business_rules` (a generic
+  config-key/value store, so the capacity-status thresholds this platform
+  will eventually need are configuration, not a code change).
+- **Warehouse & route browser** (read-only): passes through to
+  `freight_logistics_service`, which already reads MaddenCo's route master,
+  warehouse master, and per-route load manifest.
+
+## What this slice deliberately does NOT do yet
+
+Building the full 27-table schema, all 7 UI workspaces, and every increment
+in one pass would produce mostly-empty scaffolding with no real logic
+behind it - this codebase's own `docs/Architecture/Module Standards.md`
+explicitly warns against exactly that. Each of the following gets built
+alongside its real backing logic in its own increment, not stubbed out now:
+
+- Route plans, optimization, backup-split scenarios, forecasting beyond the
+  `SimpleDayOfWeekForecastProvider` baseline, network-design/permanent-route
+  recommendations, and their corresponding UI workspaces (Command Center,
+  Daily Planning, Route Detail, Backup Split, Capacity Forecast, Network
+  Design).
+- Any Samsara write-back (RI-6+). Raw Samsara reads (vehicles, drivers,
+  assignments, live GPS, geofences) are now real - see "Samsara
+  integration status" above - but geofence-based service-time
+  intelligence and historical-route "actual stops" reconstruction are
+  still blocked on a webhook receiver that doesn't exist yet (also
+  above).
+- `providers/routing_solver_provider.py` (planned: OR-Tools) and
+  `providers/weather_provider.py` are likewise real interfaces with
+  Unconfigured stubs - genuine future engineering work, not something to
+  fake today.
+- `providers/travel_matrix_provider.py`'s `HaversineTravelMatrixProvider`
+  IS real (straight-line distance needs no external vendor), but is an
+  explicitly crude placeholder - no road network, no traffic - documented
+  in its own module docstring as something to replace once travel-time
+  accuracy actually matters for a downstream feature.
+- `samsara_sync_state`/`samsara_entity_mappings`/`samsara_event_log` tables
+  are not created - they should be designed against the real Samsara API
+  shape once access exists, not guessed now.
+- `route_locations`/`route_templates` tables are not created - they'd
+  duplicate MaddenCo's own `WH_DASHBOARD_LOCATIONS`/`KMROUTES`, which
+  `freight_logistics_service` already reads.
+
+## Open question: MaddenCo has no live open-order table
+
+Per `sales_order_visibility/repository.py`'s own docstring and the data
+dictionary, MaddenCo has **no `TMORDH`/`TMORDL`-style live open/committed-
+order feed**. "Orders" can only come from `TMIHSH`/`TMIHSL` (closed/
+invoiced history - good for demand forecasting) or `INWHLOAD` (today's load
+manifest, already loaded/dispatched - good for "what's actually on a route
+today"). The original program plan's "committed orders / order cutoff"
+language assumes a live intraday feed that doesn't exist in the schema this
+codebase has confirmed access to. **Worth confirming with the MaddenCo/data
+resource contact** whether such a feed exists under a table name not yet
+documented in `backend/sql_knowledge/generated/data_dictionary.json` - this
+materially affects what "today's committed deliveries" can mean for the
+Route Command Center increment later.
+
+## Data-quality scope note
+
+The Data Quality Center's customer population is every `TMCUST` row with
+`CUSTORENUM > 0`, since TMCUST has no confirmed active/inactive flag
+elsewhere in this codebase. **Confirmed against live MaddenCo data
+2026-09-04: 137,515 TMCUST rows match `CUSTORENUM > 0`** - almost
+certainly far more than K&M's real active customer count, and the first
+live run's route-code match rate (12.7% of a capped 20,000-row sample)
+was dominated by what look like legacy/inactive records and internal
+inter-warehouse "transfer" pseudo-customers (e.g. "LOCATION 6 TRANSFER"),
+not real delivery customers with a stale route code. **This is a real,
+documented limitation of the current population filter, not a discovery
+that 87% of K&M's routing data is broken** - `CUSTORENUM > 0` is too loose
+a definition of "a real, current customer" to use as-is for a meaningful
+match-rate metric. Needs a better active-customer definition (e.g. a
+last-activity-date cutoff) before the match-rate numbers should be treated
+as a real KPI - worth a follow-up conversation with the MaddenCo/data
+resource contact rather than guessing at a cutoff here.

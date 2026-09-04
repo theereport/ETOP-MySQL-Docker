@@ -16,6 +16,7 @@
   "platform_search": true,
   "pricing_contracts": true,
   "reports": true,
+  "route_intelligence": true,
   "sales_order_visibility": true,
   "tax_compliance": true,
   "vendor_intelligence": true,

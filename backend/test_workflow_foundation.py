@@ -899,6 +899,10 @@ class WorkflowFoundationTests(unittest.TestCase):
             ("payment_notes",),
         )
         self.assertEqual(
+            required_modules_for_path("/api/v1/route-intelligence/data-quality"),
+            ("route_intelligence",),
+        )
+        self.assertEqual(
             required_modules_for_path("/api/v1/payment-notes-archive"),
             (),
         )

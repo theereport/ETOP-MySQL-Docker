@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from core.database import madden_database
@@ -68,6 +69,93 @@ class RouteRepository:
         """
         parameters.extend([limit, offset])
         return madden_database.fetch_all(sql, parameters)
+
+    def list_warehouses(self) -> list[dict[str, Any]]:
+        """Every warehouse-dashboard location - the closest thing to a
+        warehouse master in the current MaddenCo schema."""
+
+        return madden_database.fetch_all(
+            """
+            SELECT
+                location.LOCATION_NUMBER,
+                TRIM(location.LOCATION_NAME) AS LOCATION_NAME
+            FROM KMTDTA.WH_DASHBOARD_LOCATIONS AS location
+            ORDER BY location.LOCATION_NUMBER
+            """
+        )
+
+    def list_routes_for_warehouse(
+        self,
+        warehouse_number: int,
+        *,
+        active_only: bool = True,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Exact-match routes for one warehouse (search_routes above is a
+        fuzzy text search across all warehouses, not scoped to one)."""
+
+        conditions = ["route.RTEWHSE = %s"]
+        parameters: list[Any] = [warehouse_number]
+        if active_only:
+            conditions.append(
+                "COALESCE(NULLIF(TRIM(route.RTESTATUS), ''), 'A') = 'A'"
+            )
+        where_clause = "WHERE " + " AND ".join(conditions)
+        sql = f"""
+        SELECT
+            TRIM(route.RTEKEY) AS RTEKEY,
+            TRIM(route.RTECODE) AS RTECODE,
+            route.RTEWHSE,
+            TRIM(route.RTESTATUS) AS RTESTATUS
+        FROM KMTDTA.KMROUTES AS route
+        {where_clause}
+        ORDER BY TRIM(route.RTECODE)
+        LIMIT %s
+        """
+        parameters.append(limit)
+        return madden_database.fetch_all(sql, parameters)
+
+    def get_load_lines_for_warehouse(
+        self,
+        warehouse_number: int,
+        *,
+        date_from: date,
+        date_to: date,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Load lines across every route at one warehouse in a date range -
+        get_load_lines above is scoped to a single route_code, not a whole
+        warehouse's daily load. Joins through KMROUTES (not INWHLOAD.
+        STORENUM directly) since RTEWHSE is the confirmed warehouse
+        relationship already used by search_routes/get_route above."""
+
+        return madden_database.fetch_all(
+            """
+            SELECT
+                ld.STORENUM,
+                TRIM(ld.ROUTE) AS ROUTE,
+                TRIM(ld.STATUS) AS STATUS,
+                ld.INVNUM,
+                ld.CUSTNUM,
+                ld.LINENUM,
+                ld.SEQ,
+                TRIM(ld.PRODNUM) AS PRODNUM,
+                TRIM(ld.`DESC`) AS `DESC`,
+                ld.WEIGHT,
+                ld.QUANTITY,
+                ld.CRTSTAMP,
+                ld.DLVSTAMP
+            FROM KMTDTA.INWHLOAD AS ld
+            INNER JOIN KMTDTA.KMROUTES AS route
+                ON TRIM(route.RTECODE) = TRIM(ld.ROUTE)
+            WHERE route.RTEWHSE = %s
+              AND ld.CRTSTAMP >= %s
+              AND ld.CRTSTAMP < %s
+            ORDER BY ld.CRTSTAMP DESC
+            LIMIT %s
+            """,
+            (warehouse_number, date_from, date_to, limit),
+        )
 
     def get_route(self, route_code: str) -> dict[str, Any] | None:
         return madden_database.fetch_one(
