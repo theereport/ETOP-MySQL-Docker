@@ -28,6 +28,7 @@ from data.mysql import (
     route_forecast_runs_table,
     route_optimization_plans_table,
     route_optimization_runs_table,
+    route_plan_decisions_table,
     route_vehicle_capacities_table,
     route_vehicles_table,
     route_warehouse_locations_table,
@@ -48,6 +49,7 @@ _TABLES = [
     route_warehouse_locations_table,
     route_optimization_runs_table,
     route_optimization_plans_table,
+    route_plan_decisions_table,
 ]
 
 
@@ -824,5 +826,33 @@ def list_optimization_plans_for_run(run_id: int) -> list[dict[str, Any]]:
             select(table)
             .where(table.c.run_id == run_id)
             .order_by(table.c.scenario, table.c.vehicle_slot)
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+# --- route_plan_decisions (RI-5, append-only dispatcher decisions) --------
+
+def save_plan_decision(values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_plan_decisions_table
+    with get_engine().begin() as connection:
+        result = connection.execute(table.insert().values(**values))
+        decision_id = result.inserted_primary_key[0]
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.decision_id == decision_id)
+        ).mappings().first()
+    assert row is not None  # pragma: no cover
+    return dict(row)
+
+
+def list_plan_decisions_for_run(run_id: int) -> list[dict[str, Any]]:
+    initialize_database()
+    table = route_plan_decisions_table
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            select(table)
+            .where(table.c.run_id == run_id)
+            .order_by(table.c.decision_id)
         ).mappings().all()
     return [dict(row) for row in rows]

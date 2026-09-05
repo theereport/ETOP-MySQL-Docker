@@ -24,6 +24,7 @@ from .schemas import (
     CustomerProfile,
     CustomerProfileListResponse,
     DataQualityReport,
+    DecideOptimizationRunRequest,
     Driver,
     DriverListResponse,
     ForecastRunStatus,
@@ -31,6 +32,8 @@ from .schemas import (
     OptimizationReadiness,
     OptimizationRunStatus,
     RoutePerformanceResponse,
+    RunDecisionHistoryResponse,
+    RunDecisionRecord,
     SamsaraAddressSearchResponse,
     SamsaraImportResult,
     SaveBusinessRuleRequest,
@@ -337,6 +340,34 @@ def compute_route_optimization(payload: ComputeOptimizationRequest) -> Optimizat
 @router.get("/optimize/runs/{run_id}", response_model=OptimizationRunStatus)
 def get_optimization_run(run_id: int) -> OptimizationRunStatus:
     return service.get_optimization_run(run_id)
+
+
+# --- dispatcher approval workflow (RI-5) ------------------------------------
+
+@router.post(
+    "/optimize/runs/{run_id}/decisions",
+    response_model=RunDecisionRecord,
+    status_code=201,
+)
+def decide_optimization_run(
+    run_id: int, payload: DecideOptimizationRunRequest,
+) -> RunDecisionRecord:
+    return service.decide_optimization_run(
+        run_id,
+        decision=payload.decision,
+        decided_by=payload.decided_by,
+        reason=payload.reason,
+        modification_notes=payload.modification_notes,
+    )
+
+
+@router.get(
+    "/optimize/runs/{run_id}/decisions",
+    response_model=RunDecisionHistoryResponse,
+)
+def list_plan_decisions(run_id: int) -> RunDecisionHistoryResponse:
+    decisions = service.list_plan_decisions(run_id)
+    return RunDecisionHistoryResponse(count=len(decisions), decisions=decisions)
 
 
 # --- data quality ----------------------------------------------------------

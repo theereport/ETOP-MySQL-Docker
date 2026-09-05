@@ -11,6 +11,7 @@ import type {
   CustomerProfile,
   CustomerProfileListResponse,
   DataQualityReport,
+  DecideOptimizationRunRequest,
   Driver,
   DriverListResponse,
   ForecastRunStatus,
@@ -18,6 +19,8 @@ import type {
   OptimizationReadiness,
   OptimizationRunStatus,
   RoutePerformanceResponse,
+  RunDecisionHistoryResponse,
+  RunDecisionRecord,
   SamsaraAddressSearchResponse,
   SamsaraImportResult,
   SaveBusinessRuleRequest,
@@ -313,4 +316,24 @@ export function getOptimizationRun(
   signal?: AbortSignal,
 ): Promise<OptimizationRunStatus> {
   return requestJson<OptimizationRunStatus>(`${BASE}/optimize/runs/${runId}`, { signal })
+}
+
+export function recordOptimizationDecision(
+  runId: number,
+  payload: DecideOptimizationRunRequest,
+  signal?: AbortSignal,
+): Promise<RunDecisionRecord> {
+  return requestJson<RunDecisionRecord>(`${BASE}/optimize/runs/${runId}/decisions`, {
+    method: 'POST', body: payload, signal,
+  })
+}
+
+export function listOptimizationDecisions(
+  runId: number,
+  signal?: AbortSignal,
+): Promise<RunDecisionHistoryResponse> {
+  return requestJson<RunDecisionHistoryResponse>(
+    `${BASE}/optimize/runs/${runId}/decisions`,
+    { signal },
+  )
 }

@@ -250,6 +250,51 @@ API, per the program plan's section 8) - `HaversineTravelMatrixProvider`
 (straight-line × 1.3 fudge factor) remains the only implementation;
 customer-level demand forecasting feeding the optimizer.
 
+## RI-5: dispatcher approval workflow (added 2026-09-05)
+
+`POST /optimize/runs/{run_id}/decisions` (body: `decision` -
+`"approved_baseline"`/`"approved_with_backup"`/`"modified"`/`"rejected"`,
+`decided_by`, `reason`, optional `modification_notes`),
+`GET /optimize/runs/{run_id}/decisions` (append-only history).
+
+Adds the missing piece the program plan's Definition of Done requires
+on top of RI-4's compute side: a dispatcher approves, modifies, or
+rejects a computed optimization run, with every decision traceable.
+`decide_optimization_run()` refuses to record a decision against a run
+whose `status` isn't `"success"` (a real, worthwhile guard - approving a
+run that never produced a plan, e.g. `"insufficient_data"`, would be
+meaningless) with a clear 400. `route_plan_decisions` is append-only -
+every action inserts a new row rather than mutating a status column, so
+a run's decision history is just its rows in order.
+
+**A real, consequential choice made explicitly, not by default**: this
+codebase has two competing precedents for "who approved this."
+`financial_close` uses real `core.auth`-verified identity
+(`Token`/`session_for_token()`) for governed decisions. But the two
+closest UI/UX analogs to what RI-5 needed - `credit_risk`'s
+`OrderDecisionPreparationPanel` and `accounts_payable`'s
+`APWarehouseApprovalQueue` - both deliberately use free-text, unverified
+identity, since they're evidence/recommendation logs, not final
+external-facing actions; `route_intelligence` itself has no identity
+mechanism wired in anywhere (every existing `updated_by` field is unset
+from the frontend). Asked the user directly rather than picking silently
+- chosen: **free-text `decided_by`**, matching this module's own
+existing convention and the credit_risk/accounts_payable precedent.
+Real `core.auth`-verified identity is the right call once a decision
+here actually triggers an external (Samsara) write - RI-6+, not before.
+Given the free-text choice, this slice also skips `financial_close`'s
+heavier hash-chained tamper-evidence machinery (that pattern exists
+specifically to pair with verified identity) - a plain append-only
+table is consistent with this module's existing simplicity level.
+
+Still explicitly deferred: real interactive plan editing (drag-and-drop
+stop reassignment) for the "modified" decision - recorded as a free-text
+note this slice, not an editor, since nothing real exists yet to edit
+against; the full "Route Command Center"/"Daily Planning Workspace"
+visual designs (maps, capacity bars, live route progress) - these need
+real customer/vehicle location data to render anything meaningful;
+publishing an approved plan anywhere (RI-6's job entirely).
+
 ## Samsara integration status (added 2026-09-04)
 
 Real, confirmed against developers.samsara.com the day this was built:

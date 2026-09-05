@@ -373,6 +373,33 @@ class ComputeOptimizationRequest(BaseModel):
     target_date: str
 
 
+# --- dispatcher approval workflow (RI-5) -----------------------------------
+
+DECISION = Literal["approved_baseline", "approved_with_backup", "modified", "rejected"]
+
+
+class DecideOptimizationRunRequest(BaseModel):
+    decision: DECISION
+    decided_by: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=4000)
+    modification_notes: str | None = Field(default=None, max_length=4000)
+
+
+class RunDecisionRecord(BaseModel):
+    decision_id: int
+    run_id: int
+    decision: DECISION
+    decided_by: str
+    reason: str
+    modification_notes: str | None = None
+    decided_at: str
+
+
+class RunDecisionHistoryResponse(BaseModel):
+    count: int
+    decisions: list[RunDecisionRecord]
+
+
 # --- data quality --------------------------------------------------------
 
 class DataQualityIssue(BaseModel):

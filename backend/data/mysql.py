@@ -2897,6 +2897,31 @@ route_optimization_plans_table = Table(
     Index("idx_route_optimization_plans_run", "run_id"),
 )
 
+# Append-only dispatcher decision log (RI-5) - every decision action
+# inserts a new row rather than mutating a status column, so a run's
+# full decision history is just "every row for this run_id in order."
+# Free-text decided_by (not core.auth-verified) - matches this module's
+# existing updated_by convention and the credit_risk/accounts_payable
+# precedent for evidence/decision logging; real verified identity is
+# deferred to whenever a decision actually triggers an external write.
+route_plan_decisions_table = Table(
+    "route_plan_decisions",
+    metadata,
+    Column("decision_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column(
+        "run_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("route_optimization_runs.run_id"),
+        nullable=False,
+    ),
+    Column("decision", String(32), nullable=False),
+    Column("decided_by", String(200), nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("modification_notes", Text, nullable=True),
+    Column("decided_at", String(64), nullable=False),
+    Index("idx_route_plan_decisions_run", "run_id"),
+)
+
 
 _engine: Engine | None = None
 _engine_override: Engine | None = None

@@ -20,9 +20,11 @@ import {
   listCapacityForecasts,
   listCustomerProfiles,
   listDrivers,
+  listOptimizationDecisions,
   listRoutesForWarehouse,
   listVehicles,
   listWarehouses,
+  recordOptimizationDecision,
   saveBusinessRule,
   saveCustomerProfile,
   saveWarehouseLocation,
@@ -41,7 +43,9 @@ import type {
   OptimizationPlan,
   OptimizationReadiness,
   OptimizationRunStatus,
+  PlanDecision,
   RouteSummary,
+  RunDecisionRecord,
   SamsaraAddress,
   Vehicle,
   VehicleRunPerformance,
@@ -1138,6 +1142,13 @@ function RouteOptimizerTab() {
   const [isLoadingReadiness, setIsLoadingReadiness] = useState(false)
   const [isSavingLocation, setIsSavingLocation] = useState(false)
   const [isComputing, setIsComputing] = useState(false)
+  const [decisionType, setDecisionType] = useState<PlanDecision>('approved_baseline')
+  const [decidedBy, setDecidedBy] = useState('')
+  const [decisionReason, setDecisionReason] = useState('')
+  const [modificationNotes, setModificationNotes] = useState('')
+  const [decisionHistory, setDecisionHistory] = useState<RunDecisionRecord[]>([])
+  const [decisionError, setDecisionError] = useState('')
+  const [isSavingDecision, setIsSavingDecision] = useState(false)
 
   useEffect(() => {
     listWarehouses()
@@ -1183,14 +1194,46 @@ function RouteOptimizerTab() {
       .finally(() => setIsSavingLocation(false))
   }
 
+  const loadDecisionHistory = (runId: number) => {
+    listOptimizationDecisions(runId)
+      .then((response) => setDecisionHistory(response.decisions))
+      .catch((err) => setDecisionError(errorMessage(err, 'Unable to load decision history.')))
+  }
+
   const runCompute = () => {
     if (warehouseNumber == null) return
     setIsComputing(true)
     setError('')
+    setDecisionHistory([])
+    setDecisionError('')
     computeRouteOptimization({ warehouse_number: warehouseNumber, target_date: targetDate })
-      .then(setRunResult)
+      .then((result) => {
+        setRunResult(result)
+        if (result.status === 'success' && result.run_id != null) {
+          loadDecisionHistory(result.run_id)
+        }
+      })
       .catch((err) => setError(errorMessage(err, 'Unable to compute route optimization.')))
       .finally(() => setIsComputing(false))
+  }
+
+  const submitDecision = () => {
+    if (runResult?.run_id == null || !decidedBy.trim() || !decisionReason.trim()) return
+    setIsSavingDecision(true)
+    setDecisionError('')
+    recordOptimizationDecision(runResult.run_id, {
+      decision: decisionType,
+      decided_by: decidedBy.trim(),
+      reason: decisionReason.trim(),
+      modification_notes: decisionType === 'modified' ? modificationNotes.trim() : null,
+    })
+      .then(() => {
+        setDecisionReason('')
+        setModificationNotes('')
+        if (runResult.run_id != null) loadDecisionHistory(runResult.run_id)
+      })
+      .catch((err) => setDecisionError(errorMessage(err, 'Unable to record this decision.')))
+      .finally(() => setIsSavingDecision(false))
   }
 
   const plansByScenario = (scenario: string): OptimizationPlan[] =>
@@ -1324,6 +1367,83 @@ function RouteOptimizerTab() {
               </div>
             )
           })}
+
+          {runResult.status === 'success' && (
+            <>
+              <h4 className="ri-section-title">Record Decision</h4>
+              {decisionError && <div className="ri-error">{decisionError}</div>}
+              <div className="ri-form-grid">
+                <label>
+                  Decision
+                  <select
+                    value={decisionType}
+                    onChange={(event) => setDecisionType(event.target.value as PlanDecision)}
+                  >
+                    <option value="approved_baseline">Approve Baseline</option>
+                    <option value="approved_with_backup">Approve With Backup</option>
+                    <option value="modified">Modify</option>
+                    <option value="rejected">Reject</option>
+                  </select>
+                </label>
+                <label>
+                  Decided By
+                  <input
+                    value={decidedBy}
+                    onChange={(event) => setDecidedBy(event.target.value)}
+                    placeholder="Person recording this decision"
+                  />
+                </label>
+                <label className="ri-span-2">
+                  Reason
+                  <textarea
+                    value={decisionReason}
+                    onChange={(event) => setDecisionReason(event.target.value)}
+                    placeholder="Why this decision - evidence considered, gaps, next step"
+                  />
+                </label>
+                {decisionType === 'modified' && (
+                  <label className="ri-span-2">
+                    Modification Notes
+                    <textarea
+                      value={modificationNotes}
+                      onChange={(event) => setModificationNotes(event.target.value)}
+                      placeholder="What should change before this plan is used - no live editor yet, this is a note for whoever adjusts it by hand"
+                    />
+                  </label>
+                )}
+                <button type="button" onClick={submitDecision} disabled={isSavingDecision}>
+                  {isSavingDecision ? 'Recording…' : 'Record Decision'}
+                </button>
+              </div>
+
+              <h4 className="ri-section-title">Decision History</h4>
+              <div className="ri-table-wrap">
+                {decisionHistory.length === 0 ? (
+                  <div className="ri-empty">No decisions recorded for this run yet.</div>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Decision</th><th>Decided By</th><th>When</th>
+                        <th>Reason</th><th>Modification Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {decisionHistory.map((item) => (
+                        <tr key={item.decision_id}>
+                          <td>{item.decision.replaceAll('_', ' ')}</td>
+                          <td>{item.decided_by}</td>
+                          <td>{item.decided_at}</td>
+                          <td>{item.reason}</td>
+                          <td>{item.modification_notes || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </>
+          )}
         </>
       )}
     </div>

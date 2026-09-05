@@ -42,6 +42,7 @@ from .schemas import (
     OptimizationReadiness,
     OptimizationRunStatus,
     RoutePerformanceResponse,
+    RunDecisionRecord,
     SamsaraAddress,
     SamsaraImportResult,
     SyncState,
@@ -1445,6 +1446,73 @@ def compute_route_optimization(
         for plan_row in repository.list_optimization_plans_for_run(run_id)
     ]
     return _map_optimization_run(completed, plans)
+
+
+# --- dispatcher approval workflow (RI-5) ------------------------------------
+
+def _map_plan_decision(row: dict[str, Any]) -> RunDecisionRecord:
+    return RunDecisionRecord(
+        decision_id=row["decision_id"],
+        run_id=row["run_id"],
+        decision=row["decision"],
+        decided_by=row.get("decided_by") or "",
+        reason=row.get("reason") or "",
+        modification_notes=row.get("modification_notes"),
+        decided_at=row.get("decided_at") or "",
+    )
+
+
+def list_plan_decisions(run_id: int) -> list[RunDecisionRecord]:
+    return [
+        _map_plan_decision(row)
+        for row in repository.list_plan_decisions_for_run(run_id)
+    ]
+
+
+def decide_optimization_run(
+    run_id: int,
+    *,
+    decision: str,
+    decided_by: str,
+    reason: str,
+    modification_notes: str | None = None,
+) -> RunDecisionRecord:
+    """Records a dispatcher's approve/modify/reject decision against a
+    computed optimization run - append-only, every call inserts a new
+    row rather than mutating a status column.
+
+    `decided_by` is free text, not a verified identity - matches this
+    module's existing `updated_by` convention and the credit_risk/
+    accounts_payable precedent for decision logging (see the module
+    README for the reasoning). Real core.auth-verified identity is
+    deferred until a decision actually triggers an external write.
+    """
+
+    run = repository.get_optimization_run(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404, detail=f"Optimization run {run_id} not found."
+        )
+    if run.get("status") != "success":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot record a decision on run {run_id} - its status is "
+                f"\"{run.get('status')}\", not \"success\". Only a run that "
+                "actually produced a plan can be approved, modified, or "
+                "rejected."
+            ),
+        )
+
+    row = repository.save_plan_decision({
+        "run_id": run_id,
+        "decision": decision,
+        "decided_by": decided_by,
+        "reason": reason,
+        "modification_notes": modification_notes,
+        "decided_at": _now(),
+    })
+    return _map_plan_decision(row)
 
 
 def compute_data_quality_report(

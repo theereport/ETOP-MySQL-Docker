@@ -399,6 +399,32 @@ export interface ComputeOptimizationRequest {
   target_date: string
 }
 
+// --- dispatcher approval workflow (RI-5) -----------------------------------
+
+export type PlanDecision = 'approved_baseline' | 'approved_with_backup' | 'modified' | 'rejected'
+
+export interface DecideOptimizationRunRequest {
+  decision: PlanDecision
+  decided_by: string
+  reason: string
+  modification_notes?: string | null
+}
+
+export interface RunDecisionRecord {
+  decision_id: number
+  run_id: number
+  decision: PlanDecision
+  decided_by: string
+  reason: string
+  modification_notes: string | null
+  decided_at: string
+}
+
+export interface RunDecisionHistoryResponse {
+  count: number
+  decisions: RunDecisionRecord[]
+}
+
 // --- data quality ----------------------------------------------------------
 
 export interface DataQualityIssue {
