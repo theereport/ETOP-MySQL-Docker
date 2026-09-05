@@ -337,6 +337,68 @@ export interface ComputeForecastRequest {
   warehouse_number?: number | null
 }
 
+// --- route optimizer / backup split scenarios (RI-4, shadow planning) -----
+
+export interface WarehouseLocation {
+  warehouse_number: number
+  latitude: number | null
+  longitude: number | null
+  updated_at: string
+  updated_by: string
+}
+
+export interface SaveWarehouseLocationRequest {
+  latitude?: number | null
+  longitude?: number | null
+  updated_by?: string
+}
+
+export interface WarehouseLocationListResponse {
+  count: number
+  locations: WarehouseLocation[]
+}
+
+export interface OptimizationReadiness {
+  warehouse_number: number
+  has_location: boolean
+  customer_count: number
+  customers_with_location_count: number
+  vehicle_count: number
+  vehicles_with_capacity_count: number
+}
+
+export type OptimizationScenario = 'baseline' | 'with_backup'
+
+export interface OptimizationPlan {
+  plan_id: number
+  scenario: OptimizationScenario
+  vehicle_slot: number
+  assigned_vehicle_id: number | null
+  stop_sequence: string[]
+  stop_count: number
+  total_distance_miles: number | null
+  total_time_minutes: number | null
+}
+
+export interface OptimizationRunStatus {
+  run_id: number | null
+  run_at: string | null
+  warehouse_number: number | null
+  target_date: string | null
+  customer_count: number
+  customers_with_location_count: number
+  vehicle_count: number
+  vehicles_with_capacity_count: number
+  status: 'success' | 'insufficient_data' | 'failed' | ''
+  message: string
+  plans: OptimizationPlan[]
+}
+
+export interface ComputeOptimizationRequest {
+  warehouse_number: number
+  target_date: string
+}
+
 // --- data quality ----------------------------------------------------------
 
 export interface DataQualityIssue {

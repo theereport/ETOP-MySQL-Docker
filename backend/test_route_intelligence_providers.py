@@ -9,7 +9,11 @@ from modules.route_intelligence.providers.forecast_provider import (
     _percentile,
 )
 from modules.route_intelligence.providers.routing_solver_provider import (
+    OrToolsRoutingSolverProvider,
+    SolverStop,
+    SolverVehicle,
     UnconfiguredRoutingSolverProvider,
+    get_routing_solver_provider,
 )
 from modules.route_intelligence.providers.samsara_provider import (
     UnconfiguredSamsaraProvider,
@@ -41,7 +45,84 @@ class UnconfiguredRoutingSolverProviderTest(unittest.TestCase):
     def test_solve_raises_a_clear_error(self) -> None:
         provider = UnconfiguredRoutingSolverProvider()
         with self.assertRaisesRegex(RuntimeError, "No route optimization"):
-            provider.solve(stops=[], vehicles=[], constraints={})
+            provider.solve(
+                depot=(0.0, 0.0), stops=[], vehicles=[],
+                travel_matrix=HaversineTravelMatrixProvider(),
+            )
+
+
+class OrToolsRoutingSolverProviderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.provider = OrToolsRoutingSolverProvider()
+        self.travel_matrix = HaversineTravelMatrixProvider()
+        # A depot plus 4 stops spread out in a rough line so a sane
+        # solver visits them in a sensible order, not scrambled.
+        self.depot = (40.7440, -84.9401)
+        self.stops = [
+            SolverStop(stop_id="A", latitude=40.75, longitude=-84.93),
+            SolverStop(stop_id="B", latitude=40.76, longitude=-84.92),
+            SolverStop(stop_id="C", latitude=40.77, longitude=-84.91),
+            SolverStop(stop_id="D", latitude=40.78, longitude=-84.90),
+        ]
+
+    def test_all_stops_assigned_when_capacity_is_sufficient(self) -> None:
+        vehicles = [SolverVehicle(vehicle_slot=1, max_stops=4)]
+        plan = self.provider.solve(
+            depot=self.depot, stops=self.stops, vehicles=vehicles,
+            travel_matrix=self.travel_matrix,
+        )
+        self.assertEqual(plan.unassigned_stop_ids, [])
+        assigned = {stop_id for route in plan.routes for stop_id in route.stop_ids}
+        self.assertEqual(assigned, {"A", "B", "C", "D"})
+
+    def test_respects_per_vehicle_stop_capacity(self) -> None:
+        vehicles = [
+            SolverVehicle(vehicle_slot=1, max_stops=2),
+            SolverVehicle(vehicle_slot=2, max_stops=2),
+        ]
+        plan = self.provider.solve(
+            depot=self.depot, stops=self.stops, vehicles=vehicles,
+            travel_matrix=self.travel_matrix,
+        )
+        for route in plan.routes:
+            self.assertLessEqual(len(route.stop_ids), 2)
+        assigned = {stop_id for route in plan.routes for stop_id in route.stop_ids}
+        self.assertEqual(assigned | set(plan.unassigned_stop_ids), {"A", "B", "C", "D"})
+
+    def test_drops_stops_that_do_not_fit_instead_of_failing(self) -> None:
+        # Total capacity (1) is less than the number of stops (4) - the
+        # solver must drop the excess as unassigned, not raise or return
+        # an empty/broken plan.
+        vehicles = [SolverVehicle(vehicle_slot=1, max_stops=1)]
+        plan = self.provider.solve(
+            depot=self.depot, stops=self.stops, vehicles=vehicles,
+            travel_matrix=self.travel_matrix,
+        )
+        assigned_count = sum(len(route.stop_ids) for route in plan.routes)
+        self.assertEqual(assigned_count, 1)
+        self.assertEqual(len(plan.unassigned_stop_ids), 3)
+
+    def test_no_stops_returns_an_empty_plan(self) -> None:
+        plan = self.provider.solve(
+            depot=self.depot, stops=[],
+            vehicles=[SolverVehicle(vehicle_slot=1, max_stops=4)],
+            travel_matrix=self.travel_matrix,
+        )
+        self.assertEqual(plan.routes, [])
+        self.assertEqual(plan.unassigned_stop_ids, [])
+
+    def test_no_vehicles_leaves_every_stop_unassigned(self) -> None:
+        plan = self.provider.solve(
+            depot=self.depot, stops=self.stops, vehicles=[],
+            travel_matrix=self.travel_matrix,
+        )
+        self.assertEqual(plan.routes, [])
+        self.assertEqual(set(plan.unassigned_stop_ids), {"A", "B", "C", "D"})
+
+
+class GetRoutingSolverProviderTest(unittest.TestCase):
+    def test_returns_the_real_provider_when_ortools_is_installed(self) -> None:
+        self.assertIsInstance(get_routing_solver_provider(), OrToolsRoutingSolverProvider)
 
 
 class UnconfiguredWeatherProviderTest(unittest.TestCase):

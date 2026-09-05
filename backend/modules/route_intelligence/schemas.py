@@ -313,6 +313,66 @@ class ComputeForecastRequest(BaseModel):
     warehouse_number: int | None = None
 
 
+# --- route optimizer / backup split scenarios (RI-4, shadow planning) -----
+
+class WarehouseLocation(BaseModel):
+    warehouse_number: int
+    latitude: float | None = None
+    longitude: float | None = None
+    updated_at: str = ""
+    updated_by: str = ""
+
+
+class SaveWarehouseLocationRequest(BaseModel):
+    latitude: float | None = None
+    longitude: float | None = None
+    updated_by: str = Field(default="", max_length=200)
+
+
+class WarehouseLocationListResponse(BaseModel):
+    count: int
+    locations: list[WarehouseLocation]
+
+
+class OptimizationReadiness(BaseModel):
+    warehouse_number: int
+    has_location: bool
+    customer_count: int
+    customers_with_location_count: int
+    vehicle_count: int
+    vehicles_with_capacity_count: int
+
+
+class OptimizationPlan(BaseModel):
+    plan_id: int
+    scenario: Literal["baseline", "with_backup"]
+    vehicle_slot: int
+    assigned_vehicle_id: int | None = None
+    stop_sequence: list[str] = Field(default_factory=list)
+    stop_count: int = 0
+    total_distance_miles: float | None = None
+    total_time_minutes: float | None = None
+
+
+class OptimizationRunStatus(BaseModel):
+    run_id: int | None = None
+    run_at: str | None = None
+    warehouse_number: int | None = None
+    target_date: str | None = None
+    customer_count: int = 0
+    customers_with_location_count: int = 0
+    vehicle_count: int = 0
+    vehicles_with_capacity_count: int = 0
+    status: Literal["success", "insufficient_data", "failed", ""] = ""
+    message: str = ""
+    plans: list[OptimizationPlan] = Field(default_factory=list)
+
+
+class ComputeOptimizationRequest(BaseModel):
+    warehouse_number: int
+    target_date: str
+
+
 # --- data quality --------------------------------------------------------
 
 class DataQualityIssue(BaseModel):

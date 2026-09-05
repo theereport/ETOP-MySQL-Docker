@@ -26,8 +26,11 @@ from data.mysql import (
     route_driver_availability_table,
     route_drivers_table,
     route_forecast_runs_table,
+    route_optimization_plans_table,
+    route_optimization_runs_table,
     route_vehicle_capacities_table,
     route_vehicles_table,
+    route_warehouse_locations_table,
     samsara_sync_state_table,
 )
 
@@ -42,6 +45,9 @@ _TABLES = [
     samsara_sync_state_table,
     route_forecast_runs_table,
     route_capacity_assessments_table,
+    route_warehouse_locations_table,
+    route_optimization_runs_table,
+    route_optimization_plans_table,
 ]
 
 
@@ -712,5 +718,111 @@ def list_capacity_assessments() -> list[dict[str, Any]]:
             select(table).order_by(
                 table.c.warehouse_number, table.c.day_of_week
             )
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+# --- route_warehouse_locations (RI-4, manual depot coordinates) -----------
+
+def get_warehouse_location(warehouse_number: int) -> dict[str, Any] | None:
+    initialize_database()
+    table = route_warehouse_locations_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.warehouse_number == warehouse_number)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def list_warehouse_locations() -> list[dict[str, Any]]:
+    initialize_database()
+    table = route_warehouse_locations_table
+    with get_engine().connect() as connection:
+        rows = connection.execute(select(table)).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def save_warehouse_location(warehouse_number: int, values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_warehouse_locations_table
+    payload = {**values, "updated_at": _now()}
+    with get_engine().begin() as connection:
+        existing = connection.execute(
+            select(table.c.warehouse_number).where(
+                table.c.warehouse_number == warehouse_number
+            )
+        ).first()
+        if existing is None:
+            connection.execute(
+                table.insert().values(warehouse_number=warehouse_number, **payload)
+            )
+        else:
+            connection.execute(
+                table.update()
+                .where(table.c.warehouse_number == warehouse_number)
+                .values(**payload)
+            )
+    location = get_warehouse_location(warehouse_number)
+    assert location is not None  # pragma: no cover
+    return location
+
+
+# --- route_optimization_runs / route_optimization_plans (RI-4) ------------
+
+def save_optimization_run(values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_optimization_runs_table
+    with get_engine().begin() as connection:
+        result = connection.execute(table.insert().values(**values))
+        run_id = result.inserted_primary_key[0]
+    run = get_optimization_run(run_id)
+    assert run is not None  # pragma: no cover
+    return run
+
+
+def update_optimization_run(run_id: int, values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_optimization_runs_table
+    with get_engine().begin() as connection:
+        connection.execute(
+            table.update().where(table.c.run_id == run_id).values(**values)
+        )
+    run = get_optimization_run(run_id)
+    assert run is not None  # pragma: no cover
+    return run
+
+
+def get_optimization_run(run_id: int) -> dict[str, Any] | None:
+    initialize_database()
+    table = route_optimization_runs_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.run_id == run_id)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def save_optimization_plan(values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_optimization_plans_table
+    with get_engine().begin() as connection:
+        result = connection.execute(table.insert().values(**values))
+        plan_id = result.inserted_primary_key[0]
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.plan_id == plan_id)
+        ).mappings().first()
+    assert row is not None  # pragma: no cover
+    return dict(row)
+
+
+def list_optimization_plans_for_run(run_id: int) -> list[dict[str, Any]]:
+    initialize_database()
+    table = route_optimization_plans_table
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            select(table)
+            .where(table.c.run_id == run_id)
+            .order_by(table.c.scenario, table.c.vehicle_slot)
         ).mappings().all()
     return [dict(row) for row in rows]

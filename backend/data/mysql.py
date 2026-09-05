@@ -2832,6 +2832,71 @@ route_capacity_assessments_table = Table(
     Column("computed_at", String(64), nullable=False),
 )
 
+# Manual-entry warehouse depot coordinates (RI-4) - MaddenCo's own
+# warehouse master (WH_DASHBOARD_LOCATIONS) has no lat/lon column at
+# all (confirmed live 2026-09-04), so ETOP fills this gap the same way
+# route_customer_profiles fills gaps in TMCUST - needed as the route
+# optimizer's depot coordinate.
+route_warehouse_locations_table = Table(
+    "route_warehouse_locations",
+    metadata,
+    Column("warehouse_number", Integer, primary_key=True, autoincrement=False),
+    Column("latitude", Float, nullable=True),
+    Column("longitude", Float, nullable=True),
+    Column("updated_at", String(64), nullable=False),
+    Column("updated_by", String(255), nullable=False, server_default=""),
+)
+
+# One row per manual "compute route optimization" trigger (RI-4) -
+# unlike samsara_sync_state/route_forecast_runs's "latest state" style,
+# every run is kept (not upserted) since the program plan's acceptance
+# gates want plans reproducible from stored inputs, i.e. real history.
+route_optimization_runs_table = Table(
+    "route_optimization_runs",
+    metadata,
+    Column("run_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("run_at", String(64), nullable=False),
+    Column("warehouse_number", Integer, nullable=False),
+    Column("target_date", String(32), nullable=False),
+    Column("customer_count", Integer, nullable=False, server_default="0"),
+    Column("customers_with_location_count", Integer, nullable=False, server_default="0"),
+    Column("vehicle_count", Integer, nullable=False, server_default="0"),
+    Column("vehicles_with_capacity_count", Integer, nullable=False, server_default="0"),
+    Column("status", String(32), nullable=False, server_default=""),
+    Column("message", Text, nullable=False),
+    Index("idx_route_optimization_runs_warehouse", "warehouse_number"),
+)
+
+# One row per vehicle-slot route within one optimization run/scenario -
+# stop_sequence_json is the ordered list of customer_numbers visited
+# (folded into JSON rather than a separate per-stop child table, same
+# "don't over-normalize" simplification RI-3 used for forecast values -
+# nothing yet needs per-stop rows queried independently).
+route_optimization_plans_table = Table(
+    "route_optimization_plans",
+    metadata,
+    Column("plan_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column(
+        "run_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("route_optimization_runs.run_id"),
+        nullable=False,
+    ),
+    Column("scenario", String(32), nullable=False),
+    Column("vehicle_slot", Integer, nullable=False),
+    Column(
+        "assigned_vehicle_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("route_vehicles.vehicle_id"),
+        nullable=True,
+    ),
+    Column("stop_sequence_json", Text, nullable=False),
+    Column("stop_count", Integer, nullable=False, server_default="0"),
+    Column("total_distance_miles", Float, nullable=True),
+    Column("total_time_minutes", Float, nullable=True),
+    Index("idx_route_optimization_plans_run", "run_id"),
+)
+
 
 _engine: Engine | None = None
 _engine_override: Engine | None = None

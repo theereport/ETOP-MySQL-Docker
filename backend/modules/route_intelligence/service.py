@@ -17,7 +17,17 @@ from .providers.forecast_provider import (
     HistoricalDemandPoint,
     SimpleDayOfWeekForecastProvider,
 )
+from .providers.routing_solver_provider import (
+    RoutingSolverProvider,
+    SolverStop,
+    SolverVehicle,
+    get_routing_solver_provider,
+)
 from .providers.samsara_provider import SamsaraProvider, get_samsara_provider
+from .providers.travel_matrix_provider import (
+    HaversineTravelMatrixProvider,
+    TravelMatrixProvider,
+)
 from .schemas import (
     ActualRun,
     BusinessRule,
@@ -28,6 +38,9 @@ from .schemas import (
     Driver,
     DriverAvailability,
     ForecastRunStatus,
+    OptimizationPlan,
+    OptimizationReadiness,
+    OptimizationRunStatus,
     RoutePerformanceResponse,
     SamsaraAddress,
     SamsaraImportResult,
@@ -35,6 +48,7 @@ from .schemas import (
     Vehicle,
     VehicleCapacity,
     VehicleRunPerformance,
+    WarehouseLocation,
     WarehouseWorkloadSummary,
     WorkloadSummaryResponse,
 )
@@ -1073,6 +1087,364 @@ def compute_capacity_forecast(
         },
     )
     return _map_forecast_run(completed)
+
+
+# --- route optimizer / backup split scenarios (RI-4, shadow planning) ------
+
+_DEFAULT_OPTIMIZER_MAX_STOPS_PER_VEHICLE = 25.0
+
+
+def _map_warehouse_location(row: dict[str, Any]) -> WarehouseLocation:
+    return WarehouseLocation(
+        warehouse_number=row["warehouse_number"],
+        latitude=row.get("latitude"),
+        longitude=row.get("longitude"),
+        updated_at=row.get("updated_at") or "",
+        updated_by=row.get("updated_by") or "",
+    )
+
+
+def get_warehouse_location(warehouse_number: int) -> WarehouseLocation:
+    row = repository.get_warehouse_location(warehouse_number)
+    if row is None:
+        return WarehouseLocation(warehouse_number=warehouse_number)
+    return _map_warehouse_location(row)
+
+
+def list_warehouse_locations() -> list[WarehouseLocation]:
+    return [
+        _map_warehouse_location(row)
+        for row in repository.list_warehouse_locations()
+    ]
+
+
+def save_warehouse_location(
+    warehouse_number: int, payload: dict[str, Any]
+) -> WarehouseLocation:
+    row = repository.save_warehouse_location(
+        warehouse_number,
+        {
+            "latitude": payload.get("latitude"),
+            "longitude": payload.get("longitude"),
+            "updated_by": payload.get("updated_by", ""),
+        },
+    )
+    return _map_warehouse_location(row)
+
+
+def _customer_numbers_for_warehouse(warehouse_number: int) -> set[str]:
+    """Every real MaddenCo customer whose store/warehouse number
+    (`CUSTORENUM`) matches this warehouse - the same field the Data
+    Quality Center already validates against `freight_service.list_warehouses()`."""
+
+    numbers: set[str] = set()
+    for customer in repository.list_customer_route_assignments():
+        store_number = customer.get("CUSTORENUM")
+        try:
+            store_number_int = int(store_number) if store_number is not None else None
+        except (TypeError, ValueError):
+            store_number_int = None
+        if store_number_int == warehouse_number:
+            customer_number = str(customer.get("CUNUMBER") or "").strip()
+            if customer_number:
+                numbers.add(customer_number)
+    return numbers
+
+
+def compute_optimization_readiness(warehouse_number: int) -> OptimizationReadiness:
+    """Real, live diagnostic of whether an optimization run for this
+    warehouse would produce anything - the honest "are we ready" signal
+    a dispatcher should check before computing. As of RI-4's build, every
+    real K&M warehouse reports 0 customers/vehicles ready - see the
+    module README."""
+
+    location = repository.get_warehouse_location(warehouse_number)
+    has_location = bool(
+        location
+        and location.get("latitude") is not None
+        and location.get("longitude") is not None
+    )
+
+    customer_numbers = _customer_numbers_for_warehouse(warehouse_number)
+    profiles_by_customer = {
+        profile["customer_number"]: profile
+        for profile in repository.list_customer_profiles()
+    }
+    customers_with_location = 0
+    for number in customer_numbers:
+        profile = profiles_by_customer.get(number)
+        if profile and profile.get("latitude") is not None and profile.get("longitude") is not None:
+            customers_with_location += 1
+
+    vehicles = [
+        vehicle for vehicle in repository.list_vehicles()
+        if vehicle.get("active", True)
+        and vehicle.get("home_warehouse_number") == warehouse_number
+    ]
+    vehicles_with_capacity = sum(
+        1 for vehicle in vehicles
+        if repository.get_current_vehicle_capacity(vehicle["vehicle_id"]) is not None
+    )
+
+    return OptimizationReadiness(
+        warehouse_number=warehouse_number,
+        has_location=has_location,
+        customer_count=len(customer_numbers),
+        customers_with_location_count=customers_with_location,
+        vehicle_count=len(vehicles),
+        vehicles_with_capacity_count=vehicles_with_capacity,
+    )
+
+
+def _map_optimization_plan(row: dict[str, Any]) -> OptimizationPlan:
+    return OptimizationPlan(
+        plan_id=row["plan_id"],
+        scenario=row["scenario"],
+        vehicle_slot=row["vehicle_slot"],
+        assigned_vehicle_id=row.get("assigned_vehicle_id"),
+        stop_sequence=json.loads(row.get("stop_sequence_json") or "[]"),
+        stop_count=row.get("stop_count") or 0,
+        total_distance_miles=row.get("total_distance_miles"),
+        total_time_minutes=row.get("total_time_minutes"),
+    )
+
+
+def _map_optimization_run(
+    row: dict[str, Any], plans: list[OptimizationPlan]
+) -> OptimizationRunStatus:
+    return OptimizationRunStatus(
+        run_id=row.get("run_id"),
+        run_at=row.get("run_at"),
+        warehouse_number=row.get("warehouse_number"),
+        target_date=row.get("target_date"),
+        customer_count=row.get("customer_count") or 0,
+        customers_with_location_count=row.get("customers_with_location_count") or 0,
+        vehicle_count=row.get("vehicle_count") or 0,
+        vehicles_with_capacity_count=row.get("vehicles_with_capacity_count") or 0,
+        status=row.get("status") or "",
+        message=row.get("message") or "",
+        plans=plans,
+    )
+
+
+def get_optimization_run(run_id: int) -> OptimizationRunStatus:
+    row = repository.get_optimization_run(run_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404, detail=f"Optimization run {run_id} not found."
+        )
+    plans = [
+        _map_optimization_plan(plan_row)
+        for plan_row in repository.list_optimization_plans_for_run(run_id)
+    ]
+    return _map_optimization_run(row, plans)
+
+
+def _route_distance_and_time(
+    depot: tuple[float, float],
+    coords_by_stop: dict[str, tuple[float, float]],
+    stop_ids: list[str],
+    travel_matrix: TravelMatrixProvider,
+) -> tuple[float, float]:
+    if not stop_ids:
+        return 0.0, 0.0
+    points = [depot] + [coords_by_stop[stop_id] for stop_id in stop_ids] + [depot]
+    total_distance = 0.0
+    total_time = 0.0
+    for origin, destination in zip(points, points[1:]):
+        total_distance += travel_matrix.distance_miles(origin, destination)
+        total_time += travel_matrix.travel_time_minutes(origin, destination)
+    return round(total_distance, 2), round(total_time, 1)
+
+
+def compute_route_optimization(
+    warehouse_number: int,
+    target_date: date,
+    *,
+    freight_service: FreightLogisticsService = freight_logistics_service,
+    travel_matrix: TravelMatrixProvider | None = None,
+    solver: RoutingSolverProvider | None = None,
+) -> OptimizationRunStatus:
+    """Manual-trigger shadow-planning compute: a real OR-Tools CVRP over
+    whatever real customer-location/vehicle-capacity data exists for a
+    warehouse, comparing a "baseline" scenario (real active vehicles)
+    against a "with_backup" scenario (one extra hypothetical vehicle) -
+    the literal backup-split comparison the program plan's section I
+    asks for.
+
+    Every real K&M warehouse has 0 customer profiles with coordinates as
+    of RI-4's build (see compute_optimization_readiness and the module
+    README) - this function reports "insufficient_data" with the real
+    counts rather than fabricating a plan, and that is the expected,
+    honest result until real data is entered.
+    """
+
+    if travel_matrix is None:
+        travel_matrix = HaversineTravelMatrixProvider()
+    if solver is None:
+        solver = get_routing_solver_provider()
+
+    now = _now()
+    target_date_str = target_date.isoformat()
+
+    location_row = repository.get_warehouse_location(warehouse_number)
+    depot: tuple[float, float] | None = None
+    if (
+        location_row
+        and location_row.get("latitude") is not None
+        and location_row.get("longitude") is not None
+    ):
+        depot = (location_row["latitude"], location_row["longitude"])
+
+    customer_numbers = _customer_numbers_for_warehouse(warehouse_number)
+    profiles_by_customer = {
+        profile["customer_number"]: profile
+        for profile in repository.list_customer_profiles()
+    }
+    eligible_customers: list[tuple[str, float, float]] = []
+    for number in customer_numbers:
+        profile = profiles_by_customer.get(number)
+        if profile and profile.get("latitude") is not None and profile.get("longitude") is not None:
+            eligible_customers.append((number, profile["latitude"], profile["longitude"]))
+
+    active_vehicles = [
+        vehicle for vehicle in repository.list_vehicles()
+        if vehicle.get("active", True)
+        and vehicle.get("home_warehouse_number") == warehouse_number
+    ]
+    vehicles_with_capacity: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for vehicle in active_vehicles:
+        capacity = repository.get_current_vehicle_capacity(vehicle["vehicle_id"])
+        if capacity is not None:
+            vehicles_with_capacity.append((vehicle, capacity))
+
+    run_values = {
+        "run_at": now,
+        "warehouse_number": warehouse_number,
+        "target_date": target_date_str,
+        "customer_count": len(customer_numbers),
+        "customers_with_location_count": len(eligible_customers),
+        "vehicle_count": len(active_vehicles),
+        "vehicles_with_capacity_count": len(vehicles_with_capacity),
+    }
+
+    if depot is None:
+        run = repository.save_optimization_run({
+            **run_values,
+            "status": "insufficient_data",
+            "message": (
+                f"Warehouse {warehouse_number} has no saved location - "
+                f"set one via PUT /warehouse-locations/{warehouse_number}."
+            ),
+        })
+        return _map_optimization_run(run, [])
+
+    if not eligible_customers:
+        run = repository.save_optimization_run({
+            **run_values,
+            "status": "insufficient_data",
+            "message": (
+                f"{len(customer_numbers)} customer(s) are assigned to warehouse "
+                f"{warehouse_number}, but none have a saved location in "
+                "route_customer_profiles - add customer coordinates to enable "
+                "optimization."
+            ),
+        })
+        return _map_optimization_run(run, [])
+
+    if not vehicles_with_capacity:
+        run = repository.save_optimization_run({
+            **run_values,
+            "status": "insufficient_data",
+            "message": (
+                f"{len(active_vehicles)} active vehicle(s) are home-based at "
+                f"warehouse {warehouse_number}, but none have a capacity "
+                "record - add vehicle capacity to enable optimization."
+            ),
+        })
+        return _map_optimization_run(run, [])
+
+    coords_by_stop = {number: (lat, lon) for number, lat, lon in eligible_customers}
+    stops = [
+        SolverStop(stop_id=number, latitude=lat, longitude=lon)
+        for number, lat, lon in eligible_customers
+    ]
+
+    default_max_stops = _get_threshold(
+        "optimizer_default_max_stops_per_vehicle",
+        _DEFAULT_OPTIMIZER_MAX_STOPS_PER_VEHICLE,
+    )
+
+    def _vehicle_max_stops(capacity: dict[str, Any]) -> int:
+        value = capacity.get("max_stops")
+        return int(value) if value else int(default_max_stops)
+
+    run = repository.save_optimization_run({
+        **run_values, "status": "running", "message": "Computing route optimization.",
+    })
+    run_id = run["run_id"]
+
+    try:
+        baseline_vehicles = [
+            SolverVehicle(vehicle_slot=index + 1, max_stops=_vehicle_max_stops(capacity))
+            for index, (_vehicle, capacity) in enumerate(vehicles_with_capacity)
+        ]
+        vehicle_by_slot = {
+            index + 1: vehicle["vehicle_id"]
+            for index, (vehicle, _capacity) in enumerate(vehicles_with_capacity)
+        }
+        average_max_stops = int(
+            round(sum(v.max_stops for v in baseline_vehicles) / len(baseline_vehicles))
+        )
+        with_backup_vehicles = [*baseline_vehicles, SolverVehicle(
+            vehicle_slot=len(baseline_vehicles) + 1, max_stops=average_max_stops,
+        )]
+        scenarios = {"baseline": baseline_vehicles, "with_backup": with_backup_vehicles}
+
+        unassigned_by_scenario: dict[str, int] = {}
+        for scenario_name, solver_vehicles in scenarios.items():
+            plan = solver.solve(
+                depot=depot, stops=stops, vehicles=solver_vehicles,
+                travel_matrix=travel_matrix,
+            )
+            unassigned_by_scenario[scenario_name] = len(plan.unassigned_stop_ids)
+            for route in plan.routes:
+                distance, time_minutes = _route_distance_and_time(
+                    depot, coords_by_stop, route.stop_ids, travel_matrix,
+                )
+                repository.save_optimization_plan({
+                    "run_id": run_id,
+                    "scenario": scenario_name,
+                    "vehicle_slot": route.vehicle_slot,
+                    "assigned_vehicle_id": vehicle_by_slot.get(route.vehicle_slot),
+                    "stop_sequence_json": json.dumps(route.stop_ids),
+                    "stop_count": len(route.stop_ids),
+                    "total_distance_miles": distance,
+                    "total_time_minutes": time_minutes,
+                })
+    except Exception as exc:
+        repository.update_optimization_run(
+            run_id, {"status": "failed", "message": str(exc)},
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to compute route optimization: {exc}",
+        ) from exc
+
+    message = (
+        f"Computed {len(scenarios)} scenario(s) for {len(stops)} stop(s) across "
+        f"{len(vehicles_with_capacity)} vehicle(s). Unassigned stops - baseline: "
+        f"{unassigned_by_scenario.get('baseline', 0)}, with backup: "
+        f"{unassigned_by_scenario.get('with_backup', 0)}."
+    )
+    completed = repository.update_optimization_run(
+        run_id, {"status": "success", "message": message},
+    )
+    plans = [
+        _map_optimization_plan(plan_row)
+        for plan_row in repository.list_optimization_plans_for_run(run_id)
+    ]
+    return _map_optimization_run(completed, plans)
 
 
 def compute_data_quality_report(

@@ -93,13 +93,25 @@ number** (`route_vehicles.home_warehouse_number` /
   `HaversineTravelMatrixProvider` - a real design decision, not made
   here).
 
-Also live-verified 2026-09-04: every warehouse currently reports status
+Also live-verified 2026-09-04: every warehouse initially reported status
 `unknown`, not because of a bug but because **zero** of the 1,472
-Samsara-imported vehicles have `home_warehouse_number` or a capacity row
+Samsara-imported vehicles had `home_warehouse_number` or a capacity row
 set (`import_samsara_vehicles()` never sets either - matches the
-pre-existing `vehicle_missing_capacity` Data Quality Center check). The
-dashboard needs real capacity/warehouse data entered before it reports
-anything but "unknown."
+pre-existing `vehicle_missing_capacity` Data Quality Center check).
+**Update, same day**: the user supplied K&M's real truck list
+spreadsheet, matched by VIN - 902 vehicles got a real
+`home_warehouse_number` from the sheet's Location column (the real 51
+K&M warehouse numbers, confirmed by the user directly - see the
+"freight_logistics warehouse master incomplete" reference for why that's
+more than `list_warehouses()` itself returns), and separately 867
+vehicles got a real `weight_capacity` from the sheet's GVW (Gross
+Vehicle Weight Rating) column. **Known caveat, not a bug**: GVW is the
+vehicle's total gross weight rating (truck + cargo combined), not net
+payload capacity - the only weight-like column the source spreadsheet
+has - so utilization percentages computed against it are systematically
+optimistic (real trucks can carry meaningfully less than their GVW).
+Most warehouses now report real `ok` status with real (if
+GVW-overstated) utilization numbers instead of `unknown`.
 
 Still explicitly deferred: any route_code-to-vehicle/driver assignment
 (true per-route performance/capacity stays blocked on this); predictive
@@ -163,6 +175,80 @@ yet; automatic/scheduled recomputation (manual trigger only this slice -
 natural future home); tire-equivalent-based forecasting (`INWHLOAD`'s
 `WEIGHT`/`QUANTITY` columns carry no product-mix/tire-classification
 data).
+
+## RI-4: route optimizer and backup split scenarios (added 2026-09-04)
+
+`PUT /warehouse-locations/{warehouse_number}` / `GET /warehouse-locations`
+(manual depot coordinates), `GET /optimize/readiness/{warehouse_number}`
+(real diagnostic), `POST /optimize/compute` (manual trigger, body:
+warehouse_number/target_date), `GET /optimize/runs/{run_id}`.
+
+**This increment hit a fundamentally different blocker than RI-1/2/3.**
+Live-checked every real input a route optimizer needs, before writing
+any solver code:
+
+- `route_customer_profiles`: 0 rows - no customer has a saved location
+  anywhere in ETOP.
+- `route_driver_availability`: 0 of 958 real imported drivers have any
+  schedule data.
+- Stop sequencing: MaddenCo has three columns literally named "Delivery
+  Sequence" (`INWHLOAD.SEQ`, `TMCUST.CUDELTRUCK`, `TMIHSH.TIHHDELSEQ`).
+  Live-queried all three - **every one is always 0** in real data. None
+  are actually populated; there is no real record anywhere of what
+  order a route's stops happen in.
+- Warehouse depot coordinates: MaddenCo's own warehouse master
+  (`WH_DASHBOARD_LOCATIONS`) has only `LOCATION_NAME`/`LOCATION_NUMBER`/
+  `ACTIVE` - no lat/lon column at all.
+- The optimizer engine itself was a stub (`UnconfiguredRoutingSolverProvider`
+  always raised) and OR-Tools wasn't a dependency yet.
+
+Asked the user directly how to proceed given this. **Chosen: build the
+real engine now, gate every output on real data completeness rather
+than faking inputs or skipping the increment.** Added `ortools` as a
+real dependency and a real `OrToolsRoutingSolverProvider` (capacitated
+VRP - `providers/routing_solver_provider.py`), wired to the already-real
+`HaversineTravelMatrixProvider`. Capacity is **stop-count only** this
+slice (`max_stops`, defaulting via a new
+`optimizer_default_max_stops_per_vehicle` business rule when a vehicle
+has no real value) - real per-customer demand weight isn't cleanly
+available from MaddenCo yet. `route_warehouse_locations` fills the
+missing depot-coordinate gap the same way `route_customer_profiles`
+fills gaps in `TMCUST` - manual entry, ETOP-owned.
+
+`compute_route_optimization(warehouse_number, target_date)` gathers
+real customers assigned to the warehouse (`CUSTORENUM` match, same
+field the Data Quality Center already validates) with real coordinates,
+real active vehicles with a real capacity row, and the warehouse's
+saved depot location - if any of the three is missing, it stores a
+`status="insufficient_data"` run with the real counts in the message
+and returns, rather than fabricating a plan. When all three exist, it
+solves twice - `"baseline"` (today's real active vehicles) vs.
+`"with_backup"` (one extra hypothetical vehicle, average fleet
+`max_stops`) - the literal backup-split comparison the program plan's
+section I asks for - and persists both scenarios'
+per-vehicle stop sequences, distance, and time.
+
+**Live-verified 2026-09-04**: every real K&M warehouse reports
+`insufficient_data` today (0 customer profiles exist anywhere in ETOP -
+this is expected and honest, not a bug). Manually setting one real
+warehouse's location via the new endpoint confirmed that piece of the
+readiness gate flips correctly; a synthetic small-fixture test (not
+against real data, since none of the required real data exists yet)
+confirms the solver itself produces valid, capacity-respecting,
+correctly-comparing baseline/with-backup plans once real inputs exist.
+
+Still explicitly deferred: real per-customer demand weight/cube in the
+capacity constraint; time windows, HOS, and driver-availability
+constraints (no such data exists anywhere in this codebase); comparing
+a recommendation against the *real* existing route structure (an
+explicit Definition-of-Done item in the program plan) - not possible
+until real stop-sequence data exists from *somewhere* (none of
+MaddenCo's three "Delivery Sequence" columns are populated; Samsara's
+actual-stops webhook receiver still isn't built); a real
+production-grade travel-time matrix (OSRM/Valhalla/a licensed routing
+API, per the program plan's section 8) - `HaversineTravelMatrixProvider`
+(straight-line × 1.3 fudge factor) remains the only implementation;
+customer-level demand forecasting feeding the optimizer.
 
 ## Samsara integration status (added 2026-09-04)
 

@@ -331,6 +331,21 @@
   color: #96420c;
 }
 
+.ri-status-tag--success {
+  background: #e5f5ef;
+  color: #17674d;
+}
+
+.ri-status-tag--insufficient_data {
+  background: #fff0d5;
+  color: #815608;
+}
+
+.ri-status-tag--failed {
+  background: #fbeaec;
+  color: #8e3340;
+}
+
 .ri-structural-review-flag {
   display: inline-flex;
   align-items: center;

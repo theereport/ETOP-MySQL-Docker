@@ -5,6 +5,7 @@ import type {
   BusinessRuleListResponse,
   CapacityForecastListResponse,
   ComputeForecastRequest,
+  ComputeOptimizationRequest,
   CreateDriverRequest,
   CreateVehicleRequest,
   CustomerProfile,
@@ -14,17 +15,21 @@ import type {
   DriverListResponse,
   ForecastRunStatus,
   LinkCustomerSamsaraAddressRequest,
+  OptimizationReadiness,
+  OptimizationRunStatus,
   RoutePerformanceResponse,
   SamsaraAddressSearchResponse,
   SamsaraImportResult,
   SaveBusinessRuleRequest,
   SaveCustomerProfileRequest,
+  SaveWarehouseLocationRequest,
   SetDriverAvailabilityRequest,
   SyncSamsaraTripsRequest,
   SyncSamsaraTripsResult,
   Vehicle,
   VehicleListResponse,
   WarehouseListResponse,
+  WarehouseLocationListResponse,
   WarehouseRouteListResponse,
   WorkloadSummaryResponse,
 } from './types'
@@ -262,4 +267,50 @@ export function listCapacityForecasts(
 
 export function getForecastRunStatus(signal?: AbortSignal): Promise<ForecastRunStatus> {
   return requestJson<ForecastRunStatus>(`${BASE}/forecast/status`, { signal })
+}
+
+export function listWarehouseLocations(
+  signal?: AbortSignal,
+): Promise<WarehouseLocationListResponse> {
+  return requestJson<WarehouseLocationListResponse>(
+    `${BASE}/warehouse-locations`,
+    { signal },
+  )
+}
+
+export function saveWarehouseLocation(
+  warehouseNumber: number,
+  payload: SaveWarehouseLocationRequest,
+  signal?: AbortSignal,
+) {
+  return requestJson(
+    `${BASE}/warehouse-locations/${warehouseNumber}`,
+    { method: 'PUT', body: payload, signal },
+  )
+}
+
+export function getOptimizationReadiness(
+  warehouseNumber: number,
+  signal?: AbortSignal,
+): Promise<OptimizationReadiness> {
+  return requestJson<OptimizationReadiness>(
+    `${BASE}/optimize/readiness/${warehouseNumber}`,
+    { signal },
+  )
+}
+
+export function computeRouteOptimization(
+  payload: ComputeOptimizationRequest,
+  signal?: AbortSignal,
+): Promise<OptimizationRunStatus> {
+  return requestJson<OptimizationRunStatus>(`${BASE}/optimize/compute`, {
+    method: 'POST', body: payload, signal,
+  })
+}
+
+export function getOptimizationRun(
+  runId: number,
+  signal?: AbortSignal,
+): Promise<OptimizationRunStatus> {
+  return requestJson<OptimizationRunStatus>(`${BASE}/optimize/runs/${runId}`, { signal })
 }

@@ -18,6 +18,7 @@ from .schemas import (
     BusinessRuleListResponse,
     CapacityForecastListResponse,
     ComputeForecastRequest,
+    ComputeOptimizationRequest,
     CreateDriverRequest,
     CreateVehicleRequest,
     CustomerProfile,
@@ -27,11 +28,14 @@ from .schemas import (
     DriverListResponse,
     ForecastRunStatus,
     LinkCustomerSamsaraAddressRequest,
+    OptimizationReadiness,
+    OptimizationRunStatus,
     RoutePerformanceResponse,
     SamsaraAddressSearchResponse,
     SamsaraImportResult,
     SaveBusinessRuleRequest,
     SaveCustomerProfileRequest,
+    SaveWarehouseLocationRequest,
     SetDriverAvailabilityRequest,
     SyncSamsaraTripsRequest,
     SyncSamsaraTripsResult,
@@ -39,6 +43,8 @@ from .schemas import (
     UpdateVehicleRequest,
     Vehicle,
     VehicleListResponse,
+    WarehouseLocation,
+    WarehouseLocationListResponse,
     WorkloadSummaryResponse,
 )
 
@@ -294,6 +300,43 @@ def list_capacity_forecasts() -> CapacityForecastListResponse:
 @router.get("/forecast/status", response_model=ForecastRunStatus)
 def get_forecast_run_status() -> ForecastRunStatus:
     return service.get_forecast_run_status()
+
+
+# --- route optimizer / backup split scenarios (RI-4, shadow planning) ------
+
+@router.get("/warehouse-locations", response_model=WarehouseLocationListResponse)
+def list_warehouse_locations() -> WarehouseLocationListResponse:
+    locations = service.list_warehouse_locations()
+    return WarehouseLocationListResponse(count=len(locations), locations=locations)
+
+
+@router.put(
+    "/warehouse-locations/{warehouse_number}",
+    response_model=WarehouseLocation,
+)
+def save_warehouse_location(
+    warehouse_number: int, payload: SaveWarehouseLocationRequest,
+) -> WarehouseLocation:
+    return service.save_warehouse_location(warehouse_number, payload.model_dump())
+
+
+@router.get(
+    "/optimize/readiness/{warehouse_number}",
+    response_model=OptimizationReadiness,
+)
+def get_optimization_readiness(warehouse_number: int) -> OptimizationReadiness:
+    return service.compute_optimization_readiness(warehouse_number)
+
+
+@router.post("/optimize/compute", response_model=OptimizationRunStatus)
+def compute_route_optimization(payload: ComputeOptimizationRequest) -> OptimizationRunStatus:
+    target_date = date.fromisoformat(payload.target_date)
+    return service.compute_route_optimization(payload.warehouse_number, target_date)
+
+
+@router.get("/optimize/runs/{run_id}", response_model=OptimizationRunStatus)
+def get_optimization_run(run_id: int) -> OptimizationRunStatus:
+    return service.get_optimization_run(run_id)
 
 
 # --- data quality ----------------------------------------------------------

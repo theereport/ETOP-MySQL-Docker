@@ -3,11 +3,13 @@ import type { FormEvent } from 'react'
 import {
   addVehicleCapacity,
   computeCapacityForecast,
+  computeRouteOptimization,
   createDriver,
   createVehicle,
   getCustomerProfile,
   getDataQualityReport,
   getForecastRunStatus,
+  getOptimizationReadiness,
   getVehiclePerformance,
   getWorkloadSummary,
   importSamsaraDrivers,
@@ -23,6 +25,7 @@ import {
   listWarehouses,
   saveBusinessRule,
   saveCustomerProfile,
+  saveWarehouseLocation,
   searchSamsaraAddresses,
   setDriverAvailability,
   syncSamsaraTrips,
@@ -35,6 +38,9 @@ import type {
   DataQualityReport,
   Driver,
   ForecastStatus,
+  OptimizationPlan,
+  OptimizationReadiness,
+  OptimizationRunStatus,
   RouteSummary,
   SamsaraAddress,
   Vehicle,
@@ -55,6 +61,7 @@ type Tab =
   | 'trip-history'
   | 'capacity-performance'
   | 'capacity-forecast'
+  | 'route-optimizer'
   | 'business-rules'
 
 const TABS: { id: Tab; label: string }[] = [
@@ -66,6 +73,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'trip-history', label: 'Trip History' },
   { id: 'capacity-performance', label: 'Capacity & Performance' },
   { id: 'capacity-forecast', label: 'Capacity Forecast' },
+  { id: 'route-optimizer', label: 'Route Optimizer' },
   { id: 'business-rules', label: 'Business Rules' },
 ]
 
@@ -1107,6 +1115,221 @@ function CapacityForecastTab() {
   )
 }
 
+// --- Route Optimizer ---------------------------------------------------
+
+function OptimizationStatusTag({ status }: { status: string }) {
+  const normalized = status || 'unknown'
+  return (
+    <span className={`ri-status-tag ri-status-tag--${normalized}`}>
+      {normalized.replaceAll('_', ' ')}
+    </span>
+  )
+}
+
+function RouteOptimizerTab() {
+  const [warehouses, setWarehouses] = useState<WarehouseSummary[]>([])
+  const [warehouseNumber, setWarehouseNumber] = useState<number | null>(null)
+  const [targetDate, setTargetDate] = useState(daysAgoIsoDate(-1))
+  const [readiness, setReadiness] = useState<OptimizationReadiness | null>(null)
+  const [locationLat, setLocationLat] = useState('')
+  const [locationLon, setLocationLon] = useState('')
+  const [runResult, setRunResult] = useState<OptimizationRunStatus | null>(null)
+  const [error, setError] = useState('')
+  const [isLoadingReadiness, setIsLoadingReadiness] = useState(false)
+  const [isSavingLocation, setIsSavingLocation] = useState(false)
+  const [isComputing, setIsComputing] = useState(false)
+
+  useEffect(() => {
+    listWarehouses()
+      .then((response) => {
+        setWarehouses(response.warehouses)
+        if (response.warehouses.length > 0) {
+          setWarehouseNumber(response.warehouses[0].warehouse_number)
+        }
+      })
+      .catch((err) => setError(errorMessage(err, 'Unable to load warehouses.')))
+  }, [])
+
+  const loadReadiness = (number: number) => {
+    setIsLoadingReadiness(true)
+    setError('')
+    getOptimizationReadiness(number)
+      .then(setReadiness)
+      .catch((err) => setError(errorMessage(err, 'Unable to load optimization readiness.')))
+      .finally(() => setIsLoadingReadiness(false))
+  }
+
+  useEffect(() => {
+    if (warehouseNumber != null) {
+      setRunResult(null)
+      loadReadiness(warehouseNumber)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warehouseNumber])
+
+  const saveLocation = () => {
+    if (warehouseNumber == null || !locationLat.trim() || !locationLon.trim()) return
+    setIsSavingLocation(true)
+    setError('')
+    saveWarehouseLocation(warehouseNumber, {
+      latitude: Number(locationLat), longitude: Number(locationLon),
+    })
+      .then(() => {
+        setLocationLat('')
+        setLocationLon('')
+        loadReadiness(warehouseNumber)
+      })
+      .catch((err) => setError(errorMessage(err, 'Unable to save the warehouse location.')))
+      .finally(() => setIsSavingLocation(false))
+  }
+
+  const runCompute = () => {
+    if (warehouseNumber == null) return
+    setIsComputing(true)
+    setError('')
+    computeRouteOptimization({ warehouse_number: warehouseNumber, target_date: targetDate })
+      .then(setRunResult)
+      .catch((err) => setError(errorMessage(err, 'Unable to compute route optimization.')))
+      .finally(() => setIsComputing(false))
+  }
+
+  const plansByScenario = (scenario: string): OptimizationPlan[] =>
+    (runResult?.plans ?? []).filter((plan) => plan.scenario === scenario)
+
+  return (
+    <div className="ri-panel">
+      <div className="ri-panel-header">
+        <div>
+          <h3>Route Optimizer</h3>
+          <p>
+            Shadow planning only - computes a recommendation, writes nothing
+            to Samsara or MaddenCo. Compares a baseline plan (today's active
+            vehicles) against a with-backup plan (one extra hypothetical
+            vehicle). Requires a warehouse location and real customer/
+            vehicle location and capacity data - most warehouses will show
+            "insufficient data" until that's entered.
+          </p>
+        </div>
+      </div>
+      {error && <div className="ri-error">{error}</div>}
+
+      <div className="ri-inline-form">
+        <label>
+          Warehouse
+          <select
+            value={warehouseNumber ?? ''}
+            onChange={(event) => setWarehouseNumber(Number(event.target.value))}
+          >
+            {warehouses.map((warehouse) => (
+              <option key={warehouse.warehouse_number} value={warehouse.warehouse_number}>
+                {warehouse.warehouse_number} - {warehouse.warehouse_location_name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Target date
+          <input
+            type="date"
+            value={targetDate}
+            onChange={(event) => setTargetDate(event.target.value)}
+          />
+        </label>
+        <button type="button" onClick={runCompute} disabled={isComputing || !readiness}>
+          {isComputing ? 'Computing…' : 'Compute Now'}
+        </button>
+      </div>
+
+      {isLoadingReadiness ? (
+        <div className="ri-empty">Loading readiness…</div>
+      ) : readiness && (
+        <div className="ri-metrics">
+          <div className="ri-metric">
+            <strong>{readiness.has_location ? 'Yes' : 'No'}</strong>
+            <span>Warehouse Has Location</span>
+          </div>
+          <div className="ri-metric">
+            <strong>{readiness.customers_with_location_count} / {readiness.customer_count}</strong>
+            <span>Customers With Coordinates</span>
+          </div>
+          <div className="ri-metric">
+            <strong>{readiness.vehicles_with_capacity_count} / {readiness.vehicle_count}</strong>
+            <span>Vehicles With Capacity</span>
+          </div>
+        </div>
+      )}
+
+      {readiness && !readiness.has_location && (
+        <div className="ri-inline-form">
+          <label>
+            Warehouse Latitude
+            <input
+              type="number" step="0.0001" value={locationLat}
+              onChange={(event) => setLocationLat(event.target.value)}
+            />
+          </label>
+          <label>
+            Warehouse Longitude
+            <input
+              type="number" step="0.0001" value={locationLon}
+              onChange={(event) => setLocationLon(event.target.value)}
+            />
+          </label>
+          <button type="button" onClick={saveLocation} disabled={isSavingLocation}>
+            {isSavingLocation ? 'Saving…' : 'Save Warehouse Location'}
+          </button>
+        </div>
+      )}
+
+      {runResult && (
+        <>
+          <div className="ri-note">
+            <OptimizationStatusTag status={runResult.status} /> {runResult.message}
+          </div>
+
+          {(['baseline', 'with_backup'] as const).map((scenario) => {
+            const plans = plansByScenario(scenario)
+            if (runResult.status !== 'success') return null
+            return (
+              <div key={scenario}>
+                <h4 className="ri-section-title">
+                  {scenario === 'baseline' ? 'Baseline (current fleet)' : 'With Backup (+1 vehicle)'}
+                </h4>
+                <div className="ri-table-wrap">
+                  {plans.length === 0 ? (
+                    <div className="ri-empty">No vehicle routes in this scenario.</div>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Vehicle Slot</th><th>Assigned Vehicle</th><th>Stops</th>
+                          <th>Stop Sequence</th><th>Distance (mi)</th><th>Time (min)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {plans.map((plan) => (
+                          <tr key={plan.plan_id}>
+                            <td>{plan.vehicle_slot}</td>
+                            <td>{plan.assigned_vehicle_id ?? 'Hypothetical'}</td>
+                            <td>{plan.stop_count}</td>
+                            <td>{plan.stop_sequence.join(' -> ') || '—'}</td>
+                            <td>{plan.total_distance_miles ?? '—'}</td>
+                            <td>{plan.total_time_minutes ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </>
+      )}
+    </div>
+  )
+}
+
 // --- Business Rules ---------------------------------------------------
 
 function BusinessRulesTab() {
@@ -1221,6 +1444,7 @@ export default function RouteIntelligenceWorkspace() {
       {tab === 'trip-history' && <TripHistoryTab />}
       {tab === 'capacity-performance' && <CapacityPerformanceTab />}
       {tab === 'capacity-forecast' && <CapacityForecastTab />}
+      {tab === 'route-optimizer' && <RouteOptimizerTab />}
       {tab === 'business-rules' && <BusinessRulesTab />}
     </div>
   )
