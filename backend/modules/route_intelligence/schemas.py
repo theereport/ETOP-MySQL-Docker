@@ -400,6 +400,33 @@ class RunDecisionHistoryResponse(BaseModel):
     decisions: list[RunDecisionRecord]
 
 
+# --- live fleet monitoring (RI-7, read-only) -------------------------------
+
+class VehicleLiveStatus(BaseModel):
+    vehicle_id: int
+    unit_number: str
+    samsara_vehicle_id: str | None = None
+    on_trip: bool | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    location_label: str = ""
+    # Real unit not confirmed anywhere in Samsara's docs or this
+    # codebase - the live payload just returns a bare number. Passed
+    # through as-is rather than guessed at.
+    speed: float | None = None
+    heading_degrees: float | None = None
+    last_updated_at: str | None = None
+    unavailable_reason: str | None = None
+
+
+class LiveFleetStatusResponse(BaseModel):
+    warehouse_number: int
+    generated_at: str
+    vehicle_count: int
+    on_trip_count: int
+    vehicles: list[VehicleLiveStatus]
+
+
 # --- data quality --------------------------------------------------------
 
 class DataQualityIssue(BaseModel):

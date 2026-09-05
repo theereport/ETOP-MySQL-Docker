@@ -9,6 +9,7 @@ import {
   getCustomerProfile,
   getDataQualityReport,
   getForecastRunStatus,
+  getLiveFleetStatus,
   getOptimizationReadiness,
   getVehiclePerformance,
   getWorkloadSummary,
@@ -40,6 +41,7 @@ import type {
   DataQualityReport,
   Driver,
   ForecastStatus,
+  LiveFleetStatusResponse,
   OptimizationPlan,
   OptimizationReadiness,
   OptimizationRunStatus,
@@ -48,6 +50,7 @@ import type {
   RunDecisionRecord,
   SamsaraAddress,
   Vehicle,
+  VehicleLiveStatus,
   VehicleRunPerformance,
   WarehouseSummary,
   WarehouseWorkloadSummary,
@@ -66,6 +69,7 @@ type Tab =
   | 'capacity-performance'
   | 'capacity-forecast'
   | 'route-optimizer'
+  | 'live-fleet'
   | 'business-rules'
 
 const TABS: { id: Tab; label: string }[] = [
@@ -78,6 +82,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'capacity-performance', label: 'Capacity & Performance' },
   { id: 'capacity-forecast', label: 'Capacity Forecast' },
   { id: 'route-optimizer', label: 'Route Optimizer' },
+  { id: 'live-fleet', label: 'Live Fleet' },
   { id: 'business-rules', label: 'Business Rules' },
 ]
 
@@ -1450,6 +1455,130 @@ function RouteOptimizerTab() {
   )
 }
 
+// --- Live Fleet ---------------------------------------------------------
+
+function OnTripBadge({ status }: { status: VehicleLiveStatus }) {
+  if (status.unavailable_reason) {
+    return <span className="ri-status-tag">unavailable</span>
+  }
+  const tag = status.on_trip ? 'on_trip' : 'parked'
+  return <span className={`ri-status-tag ri-status-tag--${tag}`}>{tag.replace('_', ' ')}</span>
+}
+
+function LiveFleetTab() {
+  const [warehouses, setWarehouses] = useState<WarehouseSummary[]>([])
+  const [warehouseNumber, setWarehouseNumber] = useState<number | null>(null)
+  const [status, setStatus] = useState<LiveFleetStatusResponse | null>(null)
+  const [error, setError] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+
+  useEffect(() => {
+    listWarehouses()
+      .then((response) => {
+        setWarehouses(response.warehouses)
+        if (response.warehouses.length > 0) {
+          setWarehouseNumber(response.warehouses[0].warehouse_number)
+        }
+      })
+      .catch((err) => setError(errorMessage(err, 'Unable to load warehouses.')))
+  }, [])
+
+  const load = () => {
+    if (warehouseNumber == null) return
+    setIsLoading(true)
+    setError('')
+    getLiveFleetStatus(warehouseNumber)
+      .then(setStatus)
+      .catch((err) => setError(errorMessage(err, 'Unable to load live fleet status.')))
+      .finally(() => setIsLoading(false))
+  }
+
+  useEffect(() => {
+    if (warehouseNumber != null) load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warehouseNumber])
+
+  return (
+    <div className="ri-panel">
+      <div className="ri-panel-header">
+        <div>
+          <h3>Live Fleet</h3>
+          <p>
+            Real-time vehicle position and on-trip status from Samsara -
+            computed fresh every refresh, never cached. A vehicle with no
+            Samsara link or no recent location shows as unavailable rather
+            than being silently dropped.
+          </p>
+        </div>
+      </div>
+      {error && <div className="ri-error">{error}</div>}
+
+      <div className="ri-inline-form">
+        <label>
+          Warehouse
+          <select
+            value={warehouseNumber ?? ''}
+            onChange={(event) => setWarehouseNumber(Number(event.target.value))}
+          >
+            {warehouses.map((warehouse) => (
+              <option key={warehouse.warehouse_number} value={warehouse.warehouse_number}>
+                {warehouse.warehouse_number} - {warehouse.warehouse_location_name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button type="button" onClick={load} disabled={isLoading}>
+          {isLoading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+
+      {status && (
+        <div className="ri-metrics">
+          <div className="ri-metric">
+            <strong>{status.vehicle_count}</strong>
+            <span>Vehicles</span>
+          </div>
+          <div className="ri-metric">
+            <strong>{status.on_trip_count}</strong>
+            <span>Currently On Trip</span>
+          </div>
+        </div>
+      )}
+
+      <div className="ri-table-wrap">
+        {!status || status.vehicles.length === 0 ? (
+          <div className="ri-empty">No vehicles at this warehouse.</div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Unit #</th><th>Status</th><th>Location</th>
+                <th>Speed</th><th>Heading</th><th>Last Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status.vehicles.map((vehicle) => (
+                <tr key={vehicle.vehicle_id}>
+                  <td>{vehicle.unit_number}</td>
+                  <td><OnTripBadge status={vehicle} /></td>
+                  <td>
+                    {vehicle.unavailable_reason
+                      ? vehicle.unavailable_reason
+                      : vehicle.location_label || '—'}
+                  </td>
+                  <td>{vehicle.speed ?? '—'}</td>
+                  <td>{vehicle.heading_degrees ?? '—'}</td>
+                  <td>{vehicle.last_updated_at || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // --- Business Rules ---------------------------------------------------
 
 function BusinessRulesTab() {
@@ -1565,6 +1694,7 @@ export default function RouteIntelligenceWorkspace() {
       {tab === 'capacity-performance' && <CapacityPerformanceTab />}
       {tab === 'capacity-forecast' && <CapacityForecastTab />}
       {tab === 'route-optimizer' && <RouteOptimizerTab />}
+      {tab === 'live-fleet' && <LiveFleetTab />}
       {tab === 'business-rules' && <BusinessRulesTab />}
     </div>
   )

@@ -425,6 +425,30 @@ export interface RunDecisionHistoryResponse {
   decisions: RunDecisionRecord[]
 }
 
+// --- live fleet monitoring (RI-7, read-only) --------------------------------
+
+export interface VehicleLiveStatus {
+  vehicle_id: number
+  unit_number: string
+  samsara_vehicle_id: string | null
+  on_trip: boolean | null
+  latitude: number | null
+  longitude: number | null
+  location_label: string
+  speed: number | null
+  heading_degrees: number | null
+  last_updated_at: string | null
+  unavailable_reason: string | null
+}
+
+export interface LiveFleetStatusResponse {
+  warehouse_number: number
+  generated_at: string
+  vehicle_count: number
+  on_trip_count: number
+  vehicles: VehicleLiveStatus[]
+}
+
 // --- data quality ----------------------------------------------------------
 
 export interface DataQualityIssue {

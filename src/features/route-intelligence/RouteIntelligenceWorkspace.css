@@ -346,6 +346,16 @@
   color: #8e3340;
 }
 
+.ri-status-tag--on_trip {
+  background: #e5f5ef;
+  color: #17674d;
+}
+
+.ri-status-tag--parked {
+  background: #edf1f5;
+  color: #56657a;
+}
+
 .ri-structural-review-flag {
   display: inline-flex;
   align-items: center;

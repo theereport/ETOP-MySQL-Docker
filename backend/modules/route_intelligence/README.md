@@ -295,6 +295,63 @@ visual designs (maps, capacity bars, live route progress) - these need
 real customer/vehicle location data to render anything meaningful;
 publishing an approved plan anywhere (RI-6's job entirely).
 
+## RI-7: live fleet monitoring (added 2026-09-05, RI-6 skipped)
+
+`GET /live-fleet/{warehouse_number}` - real-time vehicle status,
+computed fresh every call (no snapshot, same "no staleness" philosophy
+as the Data Quality Center).
+
+**The user explicitly skipped RI-6** ("controlled Samsara route
+publishing" - a Level-3 change per the program plan's section 9, since
+it can affect live delivery operations) and asked to go straight to
+RI-7 ("live monitoring and future-stop replanning") with nothing
+written externally in this increment either.
+
+Research + live verification reshaped this slice in both directions:
+- **"Future-stop replanning" stays fully deferred, not attempted.** It
+  needs an approved plan to replan against (still impossible - 0 real
+  customer profiles have coordinates, 0 warehouses have a saved
+  location, unchanged since RI-4/RI-5) and real stop-level arrival/
+  departure data (still blocked on the Samsara webhook receiver +
+  public HTTPS endpoint, unchanged since RI-0). Skipping RI-6 also
+  removes the other prerequisite - a *published* plan to monitor -
+  entirely.
+- **"Live monitoring" turned out to be more buildable than expected.**
+  `get_live_gps()` (built in RI-0, never actually called against the
+  real API until this session) was live-verified for the first time:
+  it works, and returns real fields nobody had confirmed before -
+  `onTrip` (bool), `latitude`/`longitude`, `location` (human-readable),
+  `speed`, `heading`, `time` (epoch ms). `onTrip` is exactly the "which
+  vehicles are active right now" signal - a better source than
+  `route_actual_runs`, whose `completion_status` can only ever be
+  `"completed"` by construction (`list_historical_routes()` hardcodes
+  that filter in its own request, so in-progress trips are never even
+  requested from Samsara).
+
+`get_live_fleet_status(warehouse_number)` gathers active vehicles home-
+based at the warehouse and calls `get_samsara_live_gps()` per vehicle -
+there is no bulk "all vehicles' live locations" Samsara endpoint in this
+provider today. A single vehicle's failure (no Samsara link, no live
+location on file, or a real API error) is caught and reported as
+`unavailable_reason` rather than failing the whole response - same
+"don't let one bad item sink the whole report" discipline as the Data
+Quality Center. `speed`'s real unit is unconfirmed anywhere in Samsara's
+docs or this codebase - passed through as-is rather than guessed at.
+
+Checked `backend/modules/automations/`'s `AutomationScheduler` as a way
+to make this refresh automatically - real and running, but its finest
+schedule granularity is daily (weekly/monthly beyond that); "custom"/
+cron scheduling explicitly raises "not enabled yet." So this stays a
+manual, on-demand "Refresh," same as every other RI tab - appropriately,
+since caching a live GPS snapshot would defeat the point of it being
+live.
+
+Still explicitly deferred: future-stop replanning entirely (see above);
+RI-6 itself (out of scope per the user's direct instruction);
+automatic/scheduled refresh (no sub-daily scheduling infrastructure
+exists); a fleet-wide bulk live-location endpoint (Samsara's API this
+module uses only exposes per-vehicle lookups).
+
 ## Samsara integration status (added 2026-09-04)
 
 Real, confirmed against developers.samsara.com the day this was built:

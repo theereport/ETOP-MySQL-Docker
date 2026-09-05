@@ -41,8 +41,10 @@ from .schemas import (
     OptimizationPlan,
     OptimizationReadiness,
     OptimizationRunStatus,
+    LiveFleetStatusResponse,
     RoutePerformanceResponse,
     RunDecisionRecord,
+    VehicleLiveStatus,
     SamsaraAddress,
     SamsaraImportResult,
     SyncState,
@@ -382,6 +384,93 @@ def get_samsara_live_gps(
         "get_live_gps",
         vehicle_id,
         samsara=samsara,
+    )
+
+
+def _epoch_ms_to_iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value) / 1000, tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def get_live_fleet_status(
+    warehouse_number: int, *, samsara: SamsaraProvider | None = None
+) -> LiveFleetStatusResponse:
+    """Real-time fleet snapshot for a warehouse - computed fresh every
+    call, never stored (unlike RI-3/RI-4's manual-trigger-then-cache
+    tables, caching a live GPS position would defeat the point of it
+    being live). Reuses get_samsara_live_gps() (RI-0) per vehicle - there
+    is no bulk "all vehicles' live locations" Samsara endpoint in this
+    module's provider today.
+
+    A single vehicle's live-lookup failure is caught and reported as
+    `unavailable_reason` rather than failing the whole response - same
+    "don't let one bad item sink the whole report" discipline as the
+    Data Quality Center.
+    """
+
+    provider = samsara or get_samsara_provider()
+    vehicles = [
+        vehicle for vehicle in repository.list_vehicles()
+        if vehicle.get("active", True)
+        and vehicle.get("home_warehouse_number") == warehouse_number
+    ]
+
+    statuses: list[VehicleLiveStatus] = []
+    on_trip_count = 0
+    for vehicle in vehicles:
+        samsara_id = vehicle.get("samsara_vehicle_id")
+        if not samsara_id:
+            statuses.append(VehicleLiveStatus(
+                vehicle_id=vehicle["vehicle_id"],
+                unit_number=vehicle["unit_number"],
+                unavailable_reason="Not linked to a Samsara vehicle.",
+            ))
+            continue
+        try:
+            gps = get_samsara_live_gps(samsara_id, samsara=provider)
+        except HTTPException as exc:
+            statuses.append(VehicleLiveStatus(
+                vehicle_id=vehicle["vehicle_id"],
+                unit_number=vehicle["unit_number"],
+                samsara_vehicle_id=samsara_id,
+                unavailable_reason=str(exc.detail),
+            ))
+            continue
+        if gps is None:
+            statuses.append(VehicleLiveStatus(
+                vehicle_id=vehicle["vehicle_id"],
+                unit_number=vehicle["unit_number"],
+                samsara_vehicle_id=samsara_id,
+                unavailable_reason="No live location on file for this vehicle.",
+            ))
+            continue
+
+        on_trip = gps.get("onTrip")
+        if on_trip:
+            on_trip_count += 1
+        statuses.append(VehicleLiveStatus(
+            vehicle_id=vehicle["vehicle_id"],
+            unit_number=vehicle["unit_number"],
+            samsara_vehicle_id=samsara_id,
+            on_trip=bool(on_trip) if on_trip is not None else None,
+            latitude=gps.get("latitude"),
+            longitude=gps.get("longitude"),
+            location_label=str(gps.get("location") or ""),
+            speed=gps.get("speed"),
+            heading_degrees=gps.get("heading"),
+            last_updated_at=_epoch_ms_to_iso(gps.get("time")),
+        ))
+
+    return LiveFleetStatusResponse(
+        warehouse_number=warehouse_number,
+        generated_at=_now(),
+        vehicle_count=len(vehicles),
+        on_trip_count=on_trip_count,
+        vehicles=statuses,
     )
 
 

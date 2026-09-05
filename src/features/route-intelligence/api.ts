@@ -16,6 +16,7 @@ import type {
   DriverListResponse,
   ForecastRunStatus,
   LinkCustomerSamsaraAddressRequest,
+  LiveFleetStatusResponse,
   OptimizationReadiness,
   OptimizationRunStatus,
   RoutePerformanceResponse,
@@ -334,6 +335,16 @@ export function listOptimizationDecisions(
 ): Promise<RunDecisionHistoryResponse> {
   return requestJson<RunDecisionHistoryResponse>(
     `${BASE}/optimize/runs/${runId}/decisions`,
+    { signal },
+  )
+}
+
+export function getLiveFleetStatus(
+  warehouseNumber: number,
+  signal?: AbortSignal,
+): Promise<LiveFleetStatusResponse> {
+  return requestJson<LiveFleetStatusResponse>(
+    `${BASE}/live-fleet/${warehouseNumber}`,
     { signal },
   )
 }

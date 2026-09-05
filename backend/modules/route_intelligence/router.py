@@ -29,6 +29,7 @@ from .schemas import (
     DriverListResponse,
     ForecastRunStatus,
     LinkCustomerSamsaraAddressRequest,
+    LiveFleetStatusResponse,
     OptimizationReadiness,
     OptimizationRunStatus,
     RoutePerformanceResponse,
@@ -221,6 +222,11 @@ def get_samsara_customer_geofence(customer_number: str) -> dict:
 @router.get("/samsara/vehicles/{vehicle_id}/live-gps")
 def get_samsara_live_gps(vehicle_id: str) -> dict:
     return {"location": service.get_samsara_live_gps(vehicle_id)}
+
+
+@router.get("/live-fleet/{warehouse_number}", response_model=LiveFleetStatusResponse)
+def get_live_fleet_status(warehouse_number: int) -> LiveFleetStatusResponse:
+    return service.get_live_fleet_status(warehouse_number)
 
 
 @router.post("/samsara/import/vehicles", response_model=SamsaraImportResult)
