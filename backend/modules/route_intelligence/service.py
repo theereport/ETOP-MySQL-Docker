@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
@@ -38,10 +39,12 @@ from .schemas import (
     Driver,
     DriverAvailability,
     ForecastRunStatus,
+    NetworkReviewStatus,
     OptimizationPlan,
     OptimizationReadiness,
     OptimizationRunStatus,
     LiveFleetStatusResponse,
+    PermanentRouteCandidate,
     RoutePerformanceResponse,
     RunDecisionRecord,
     VehicleLiveStatus,
@@ -1602,6 +1605,231 @@ def decide_optimization_run(
         "decided_at": _now(),
     })
     return _map_plan_decision(row)
+
+
+# --- network review / permanent-route candidates (RI-8, read-only) --------
+
+_DEFAULT_NETWORK_REVIEW_MEDIAN_THRESHOLD_PCT = 85.0
+_DEFAULT_NETWORK_REVIEW_MIN_DAYS_OVER_MEDIAN = 3.0
+_DEFAULT_NETWORK_REVIEW_MIN_DAYS_OVER_P90 = 2.0
+
+# The program plan's permanent-route recommendation requires these
+# fields - none are computable this slice (real customer geography and
+# cost data don't exist anywhere in this codebase). Listed explicitly on
+# every candidate rather than silently omitted.
+_UNAVAILABLE_RECOMMENDATION_FIELDS = [
+    "proposed_customers",
+    "territory",
+    "expected_miles_hours",
+    "expected_cost",
+    "service_level_impact",
+]
+
+
+def _map_permanent_route_candidate(
+    row: dict[str, Any], *, warehouse_names: dict[int, str]
+) -> PermanentRouteCandidate:
+    return PermanentRouteCandidate(
+        candidate_id=row["candidate_id"],
+        run_id=row["run_id"],
+        warehouse_number=row["warehouse_number"],
+        warehouse_location_name=warehouse_names.get(row["warehouse_number"], ""),
+        trigger_reasons=json.loads(row.get("trigger_reasons_json") or "[]"),
+        median_utilization_pct=row.get("median_utilization_pct"),
+        days_over_median_threshold=row.get("days_over_median_threshold") or 0,
+        days_over_p90_threshold=row.get("days_over_p90_threshold") or 0,
+        forecasted_weekly_weight_demand=row.get("forecasted_weekly_weight_demand"),
+        current_weight_capacity=row.get("current_weight_capacity"),
+        capacity_gap=row.get("capacity_gap"),
+        confidence=row.get("confidence") or "low",
+        unavailable_fields=json.loads(row.get("unavailable_fields_json") or "[]"),
+        computed_at=row.get("computed_at") or "",
+    )
+
+
+def _map_network_review(
+    row: dict[str, Any], candidates: list[PermanentRouteCandidate]
+) -> NetworkReviewStatus:
+    return NetworkReviewStatus(
+        run_id=row.get("run_id"),
+        run_at=row.get("run_at"),
+        warehouse_count=row.get("warehouse_count") or 0,
+        candidate_count=row.get("candidate_count") or 0,
+        status=row.get("status") or "",
+        message=row.get("message") or "",
+        candidates=candidates,
+    )
+
+
+def get_network_review(
+    run_id: int, *, freight_service: FreightLogisticsService = freight_logistics_service,
+) -> NetworkReviewStatus:
+    row = repository.get_network_review(run_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404, detail=f"Network review {run_id} not found."
+        )
+    warehouse_names = {
+        warehouse.warehouse_number: warehouse.warehouse_location_name
+        for warehouse in freight_service.list_warehouses().warehouses
+    }
+    candidates = [
+        _map_permanent_route_candidate(candidate_row, warehouse_names=warehouse_names)
+        for candidate_row in repository.list_permanent_route_candidates_for_run(run_id)
+    ]
+    return _map_network_review(row, candidates)
+
+
+def compute_network_review(
+    *,
+    warehouse_number: int | None = None,
+    freight_service: FreightLogisticsService = freight_logistics_service,
+) -> NetworkReviewStatus:
+    """Evaluates the plan's structural-review trigger conditions using
+    RI-3's already-stored route_capacity_assessments - no new external
+    calls, no live MaddenCo/Samsara query. Only the three trigger
+    conditions real data supports are evaluated here (recurring median-
+    utilization overage, recurring P90-over-100% overage, an already-
+    recurring split_recommended pattern as a proxy for "forecast shows
+    exceeding capacity soon") - the other three the program plan
+    describes (backup-usage frequency, overtime/service risk, customer-
+    cluster transfer history) have no real data source anywhere in this
+    codebase and are simply not evaluated, rather than defaulted to
+    "no risk." Every candidate also lists which of the plan's required
+    recommendation fields aren't computable this slice - see
+    _UNAVAILABLE_RECOMMENDATION_FIELDS.
+    """
+
+    now = _now()
+    median_threshold = _get_threshold(
+        "network_review_median_threshold_pct",
+        _DEFAULT_NETWORK_REVIEW_MEDIAN_THRESHOLD_PCT,
+    )
+    min_days_over_median = _get_threshold(
+        "network_review_min_days_over_median",
+        _DEFAULT_NETWORK_REVIEW_MIN_DAYS_OVER_MEDIAN,
+    )
+    min_days_over_p90 = _get_threshold(
+        "network_review_min_days_over_p90",
+        _DEFAULT_NETWORK_REVIEW_MIN_DAYS_OVER_P90,
+    )
+
+    assessments = repository.list_capacity_assessments()
+    if warehouse_number is not None:
+        assessments = [
+            row for row in assessments if row["warehouse_number"] == warehouse_number
+        ]
+
+    by_warehouse: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in assessments:
+        by_warehouse[row["warehouse_number"]].append(row)
+
+    warehouse_names = {
+        warehouse.warehouse_number: warehouse.warehouse_location_name
+        for warehouse in freight_service.list_warehouses().warehouses
+    }
+
+    run = repository.save_network_review({
+        "run_at": now,
+        "warehouse_count": len(by_warehouse),
+        "candidate_count": 0,
+        "status": "running",
+        "message": "Computing network review.",
+    })
+    run_id = run["run_id"]
+
+    candidate_count = 0
+    try:
+        for wh_number, rows in by_warehouse.items():
+            weight_capacity = rows[0].get("weight_capacity") or 0.0
+            utilization_pcts: list[float] = []
+            days_over_median = 0
+            days_over_p90 = 0
+            has_split_recommended = False
+            min_sample_size: int | None = None
+            total_expected_weight = 0.0
+
+            for day_row in rows:
+                total_expected_weight += day_row.get("expected_weight") or 0.0
+                p50 = day_row.get("p50_weight") or 0.0
+                if weight_capacity > 0:
+                    utilization_pct = p50 / weight_capacity * 100
+                    utilization_pcts.append(utilization_pct)
+                    if utilization_pct > median_threshold:
+                        days_over_median += 1
+                if day_row.get("status") == "split_recommended":
+                    days_over_p90 += 1
+                    has_split_recommended = True
+                sample_size = day_row.get("sample_size")
+                if sample_size is not None:
+                    min_sample_size = (
+                        sample_size if min_sample_size is None
+                        else min(min_sample_size, sample_size)
+                    )
+
+            trigger_reasons: list[str] = []
+            if days_over_median >= min_days_over_median:
+                trigger_reasons.append("median_utilization_over_threshold")
+            if days_over_p90 >= min_days_over_p90:
+                trigger_reasons.append("p90_over_threshold_at_least_twice")
+            if has_split_recommended:
+                trigger_reasons.append("forecast_shows_recurring_overload")
+
+            if not trigger_reasons:
+                continue
+
+            median_utilization = (
+                round(statistics.median(utilization_pcts), 1)
+                if utilization_pcts else None
+            )
+            capacity_gap = (
+                round(total_expected_weight - weight_capacity, 1)
+                if weight_capacity > 0 else None
+            )
+            if min_sample_size is None or min_sample_size < 4:
+                confidence: Literal["low", "medium", "high"] = "low"
+            elif min_sample_size < 8:
+                confidence = "medium"
+            else:
+                confidence = "high"
+
+            repository.save_permanent_route_candidate({
+                "run_id": run_id,
+                "warehouse_number": wh_number,
+                "trigger_reasons_json": json.dumps(trigger_reasons),
+                "median_utilization_pct": median_utilization,
+                "days_over_median_threshold": days_over_median,
+                "days_over_p90_threshold": days_over_p90,
+                "forecasted_weekly_weight_demand": round(total_expected_weight, 1),
+                "current_weight_capacity": weight_capacity,
+                "capacity_gap": capacity_gap,
+                "confidence": confidence,
+                "unavailable_fields_json": json.dumps(_UNAVAILABLE_RECOMMENDATION_FIELDS),
+                "computed_at": now,
+            })
+            candidate_count += 1
+    except Exception as exc:
+        repository.update_network_review(
+            run_id, {"status": "failed", "message": str(exc)},
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to compute network review: {exc}",
+        ) from exc
+
+    completed = repository.update_network_review(run_id, {
+        "candidate_count": candidate_count,
+        "status": "success",
+        "message": (
+            f"Reviewed {len(by_warehouse)} warehouse(s), found "
+            f"{candidate_count} candidate(s)."
+        ),
+    })
+    candidates = [
+        _map_permanent_route_candidate(candidate_row, warehouse_names=warehouse_names)
+        for candidate_row in repository.list_permanent_route_candidates_for_run(run_id)
+    ]
+    return _map_network_review(completed, candidates)
 
 
 def compute_data_quality_report(

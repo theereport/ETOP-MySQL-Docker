@@ -356,6 +356,21 @@
   color: #56657a;
 }
 
+.ri-status-tag--high {
+  background: #e5f5ef;
+  color: #17674d;
+}
+
+.ri-status-tag--medium {
+  background: #fff0d5;
+  color: #815608;
+}
+
+.ri-status-tag--low {
+  background: #edf1f5;
+  color: #56657a;
+}
+
 .ri-structural-review-flag {
   display: inline-flex;
   align-items: center;

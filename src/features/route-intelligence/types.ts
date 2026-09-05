@@ -449,6 +449,41 @@ export interface LiveFleetStatusResponse {
   vehicles: VehicleLiveStatus[]
 }
 
+// --- network review / permanent-route candidates (RI-8, read-only) --------
+
+export type CandidateConfidence = 'low' | 'medium' | 'high'
+
+export interface PermanentRouteCandidate {
+  candidate_id: number
+  run_id: number
+  warehouse_number: number
+  warehouse_location_name: string
+  trigger_reasons: string[]
+  median_utilization_pct: number | null
+  days_over_median_threshold: number
+  days_over_p90_threshold: number
+  forecasted_weekly_weight_demand: number | null
+  current_weight_capacity: number | null
+  capacity_gap: number | null
+  confidence: CandidateConfidence
+  unavailable_fields: string[]
+  computed_at: string
+}
+
+export interface NetworkReviewStatus {
+  run_id: number | null
+  run_at: string | null
+  warehouse_count: number
+  candidate_count: number
+  status: string
+  message: string
+  candidates: PermanentRouteCandidate[]
+}
+
+export interface ComputeNetworkReviewRequest {
+  warehouse_number?: number | null
+}
+
 // --- data quality ----------------------------------------------------------
 
 export interface DataQualityIssue {

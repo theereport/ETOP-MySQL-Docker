@@ -2922,6 +2922,50 @@ route_plan_decisions_table = Table(
     Index("idx_route_plan_decisions_run", "run_id"),
 )
 
+# One row per manual "compute network review" trigger (RI-8) - every
+# run kept, not upserted, same reproducibility reasoning as RI-4's
+# optimization runs.
+route_network_reviews_table = Table(
+    "route_network_reviews",
+    metadata,
+    Column("run_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column("run_at", String(64), nullable=False),
+    Column("warehouse_count", Integer, nullable=False, server_default="0"),
+    Column("candidate_count", Integer, nullable=False, server_default="0"),
+    Column("status", String(32), nullable=False, server_default=""),
+    Column("message", Text, nullable=False),
+)
+
+# One row per warehouse that triggered a structural-review condition in
+# a given run (RI-8) - computed entirely from RI-3's already-stored
+# route_capacity_assessments, no new external calls. unavailable_fields_json
+# always lists the plan-required recommendation fields this slice can't
+# compute (real customer geography/cost data doesn't exist) - an honest
+# gap, not a silently-omitted one.
+route_permanent_route_candidates_table = Table(
+    "route_permanent_route_candidates",
+    metadata,
+    Column("candidate_id", _SEQUENCE_TYPE, primary_key=True, autoincrement=True),
+    Column(
+        "run_id",
+        _SEQUENCE_TYPE,
+        ForeignKey("route_network_reviews.run_id"),
+        nullable=False,
+    ),
+    Column("warehouse_number", Integer, nullable=False),
+    Column("trigger_reasons_json", Text, nullable=False),
+    Column("median_utilization_pct", Float, nullable=True),
+    Column("days_over_median_threshold", Integer, nullable=False, server_default="0"),
+    Column("days_over_p90_threshold", Integer, nullable=False, server_default="0"),
+    Column("forecasted_weekly_weight_demand", Float, nullable=True),
+    Column("current_weight_capacity", Float, nullable=True),
+    Column("capacity_gap", Float, nullable=True),
+    Column("confidence", String(16), nullable=False, server_default=""),
+    Column("unavailable_fields_json", Text, nullable=False),
+    Column("computed_at", String(64), nullable=False),
+    Index("idx_route_permanent_route_candidates_run", "run_id"),
+)
+
 
 _engine: Engine | None = None
 _engine_override: Engine | None = None

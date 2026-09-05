@@ -26,8 +26,10 @@ from data.mysql import (
     route_driver_availability_table,
     route_drivers_table,
     route_forecast_runs_table,
+    route_network_reviews_table,
     route_optimization_plans_table,
     route_optimization_runs_table,
+    route_permanent_route_candidates_table,
     route_plan_decisions_table,
     route_vehicle_capacities_table,
     route_vehicles_table,
@@ -50,6 +52,8 @@ _TABLES = [
     route_optimization_runs_table,
     route_optimization_plans_table,
     route_plan_decisions_table,
+    route_network_reviews_table,
+    route_permanent_route_candidates_table,
 ]
 
 
@@ -854,5 +858,66 @@ def list_plan_decisions_for_run(run_id: int) -> list[dict[str, Any]]:
             select(table)
             .where(table.c.run_id == run_id)
             .order_by(table.c.decision_id)
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+# --- route_network_reviews / route_permanent_route_candidates (RI-8) ------
+
+def save_network_review(values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_network_reviews_table
+    with get_engine().begin() as connection:
+        result = connection.execute(table.insert().values(**values))
+        run_id = result.inserted_primary_key[0]
+    run = get_network_review(run_id)
+    assert run is not None  # pragma: no cover
+    return run
+
+
+def update_network_review(run_id: int, values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_network_reviews_table
+    with get_engine().begin() as connection:
+        connection.execute(
+            table.update().where(table.c.run_id == run_id).values(**values)
+        )
+    run = get_network_review(run_id)
+    assert run is not None  # pragma: no cover
+    return run
+
+
+def get_network_review(run_id: int) -> dict[str, Any] | None:
+    initialize_database()
+    table = route_network_reviews_table
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.run_id == run_id)
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def save_permanent_route_candidate(values: dict[str, Any]) -> dict[str, Any]:
+    initialize_database()
+    table = route_permanent_route_candidates_table
+    with get_engine().begin() as connection:
+        result = connection.execute(table.insert().values(**values))
+        candidate_id = result.inserted_primary_key[0]
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            select(table).where(table.c.candidate_id == candidate_id)
+        ).mappings().first()
+    assert row is not None  # pragma: no cover
+    return dict(row)
+
+
+def list_permanent_route_candidates_for_run(run_id: int) -> list[dict[str, Any]]:
+    initialize_database()
+    table = route_permanent_route_candidates_table
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            select(table)
+            .where(table.c.run_id == run_id)
+            .order_by(table.c.warehouse_number)
         ).mappings().all()
     return [dict(row) for row in rows]

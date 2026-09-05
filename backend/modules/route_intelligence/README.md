@@ -352,6 +352,68 @@ automatic/scheduled refresh (no sub-daily scheduling infrastructure
 exists); a fleet-wide bulk live-location endpoint (Samsara's API this
 module uses only exposes per-vehicle lookups).
 
+## RI-8: permanent-route candidate detection (added 2026-09-05)
+
+`POST /network-review/compute` (body: optional `warehouse_number`),
+`GET /network-review/runs/{run_id}`.
+
+Section J of the program plan describes a structural review firing on
+six trigger conditions, then ETOP simulating six route-redesign
+scenarios, producing a recommendation with proposed customers,
+territory, expected miles/hours/cost, service-level impact, and a
+confidence level. **Re-checked reality before designing**: still 0 real
+customer profiles with coordinates and 0 warehouse locations (unchanged
+since RI-4) - this still blocks a customer-density heatmap, proposed-
+customer/territory lists, and real route-redesign simulation, since
+RI-4's optimizer has nothing real to simulate against.
+
+**What's different this time**: RI-3 already computed and *stored* 305
+real per-warehouse, per-weekday capacity assessments the last time it
+ran. Three of the plan's six structural-review trigger conditions are
+directly computable from that already-real, already-stored data, with
+zero new external calls:
+- "Median utilization exceeds 85% at least three days per week" -
+  `p50_weight / weight_capacity` per stored weekday, counted across
+  the week.
+- "P90 utilization exceeds 100% at least twice per week" - directly
+  countable from the already-stored `status == "split_recommended"`
+  assessments (RI-3's own classification, reused as-is).
+- "Forecast shows a route exceeding capacity within four to eight
+  weeks" - a recurring `split_recommended` day-of-week pattern recurs
+  every week it holds - a real, honest (if simplified) reading of this
+  condition, not a fabricated multi-week projection.
+
+The other three conditions (backup-capacity usage frequency, overtime/
+service risk, customer-cluster transfer history) have no real data
+source anywhere in this codebase and are **not evaluated** - not
+defaulted to "no risk," which would be a worse kind of wrong.
+`compute_network_review()` persists a run + one
+`PermanentRouteCandidate` row per warehouse that triggers at least one
+of the three real conditions, with real `forecasted_weekly_weight_demand`/
+`current_weight_capacity`/`capacity_gap` and a `confidence` level
+derived from the minimum real `sample_size` seen that week. Every
+candidate also carries an explicit `unavailable_fields` list - the
+plan's required recommendation fields this slice genuinely can't
+compute (`proposed_customers`, `territory`, `expected_miles_hours`,
+`expected_cost`, `service_level_impact`) - shown to the user as a
+constructive "not yet available" note, not silently omitted.
+
+**Live-verified 2026-09-05** against the real, already-stored 305 RI-3
+assessments (see the RI-3 section above for how that data was
+generated) - reports real candidate counts and real trigger reasons per
+warehouse, with `unavailable_fields` populated on every candidate.
+
+Still explicitly deferred: full route-redesign scenario simulation
+(current+flex driver, one additional route, rebalanced adjacent routes,
+different vehicle sizes, alternative warehouse assignments) - needs
+RI-4's optimizer to have real customer stops to move around, which it
+doesn't yet; proposed-customer lists, territory boundaries, a customer-
+density heatmap - all need real customer coordinates; the three trigger
+conditions with no real data source (reported as not evaluated, not
+guessed at); a multi-run historical trend of the trigger evaluation
+itself over calendar time (this slice evaluates real 8-week-lookback
+data within one run, not a trend across many past runs).
+
 ## Samsara integration status (added 2026-09-04)
 
 Real, confirmed against developers.samsara.com the day this was built:

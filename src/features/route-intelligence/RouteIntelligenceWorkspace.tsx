@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import {
   addVehicleCapacity,
   computeCapacityForecast,
+  computeNetworkReview,
   computeRouteOptimization,
   createDriver,
   createVehicle,
@@ -42,9 +43,11 @@ import type {
   Driver,
   ForecastStatus,
   LiveFleetStatusResponse,
+  NetworkReviewStatus,
   OptimizationPlan,
   OptimizationReadiness,
   OptimizationRunStatus,
+  PermanentRouteCandidate,
   PlanDecision,
   RouteSummary,
   RunDecisionRecord,
@@ -70,6 +73,7 @@ type Tab =
   | 'capacity-forecast'
   | 'route-optimizer'
   | 'live-fleet'
+  | 'network-review'
   | 'business-rules'
 
 const TABS: { id: Tab; label: string }[] = [
@@ -83,6 +87,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'capacity-forecast', label: 'Capacity Forecast' },
   { id: 'route-optimizer', label: 'Route Optimizer' },
   { id: 'live-fleet', label: 'Live Fleet' },
+  { id: 'network-review', label: 'Network Review' },
   { id: 'business-rules', label: 'Business Rules' },
 ]
 
@@ -1579,6 +1584,112 @@ function LiveFleetTab() {
   )
 }
 
+// --- Network Review -------------------------------------------------------
+
+function ConfidenceBadge({ confidence }: { confidence: string }) {
+  return <span className={`ri-status-tag ri-status-tag--${confidence}`}>{confidence}</span>
+}
+
+function NetworkReviewTab() {
+  const [review, setReview] = useState<NetworkReviewStatus | null>(null)
+  const [error, setError] = useState('')
+  const [isComputing, setIsComputing] = useState(false)
+
+  const compute = () => {
+    setIsComputing(true)
+    setError('')
+    computeNetworkReview()
+      .then(setReview)
+      .catch((err) => setError(errorMessage(err, 'Unable to compute the network review.')))
+      .finally(() => setIsComputing(false))
+  }
+
+  return (
+    <div className="ri-panel">
+      <div className="ri-panel-header">
+        <div>
+          <h3>Network Review</h3>
+          <p>
+            Flags warehouses showing a structural-review pattern - real
+            historical overload, computed entirely from the Capacity
+            Forecast tab's already-stored data (compute a forecast there
+            first). This is a candidate list for further review, not a
+            route redesign - proposed customers, territory, and cost
+            estimates need real customer location data this platform
+            doesn't have yet (see each candidate's "not yet available"
+            note).
+          </p>
+        </div>
+        <button type="button" onClick={compute} disabled={isComputing}>
+          {isComputing ? 'Computing…' : 'Compute Now'}
+        </button>
+      </div>
+      {error && <div className="ri-error">{error}</div>}
+
+      {review && (
+        <>
+          <div className="ri-metrics">
+            <div className="ri-metric">
+              <strong>{review.warehouse_count}</strong>
+              <span>Warehouses Reviewed</span>
+            </div>
+            <div className="ri-metric">
+              <strong>{review.candidate_count}</strong>
+              <span>Permanent-Route Candidates</span>
+            </div>
+          </div>
+
+          <div className="ri-table-wrap">
+            {review.candidates.length === 0 ? (
+              <div className="ri-empty">
+                No warehouses currently show a structural-review pattern.
+              </div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Warehouse</th><th>Trigger Reasons</th>
+                    <th>Days Over Median</th><th>Days Over P90</th>
+                    <th>Weekly Demand</th><th>Capacity</th>
+                    <th>Gap</th><th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {review.candidates.map((candidate: PermanentRouteCandidate) => (
+                    <tr key={candidate.candidate_id}>
+                      <td>
+                        {candidate.warehouse_number}
+                        {candidate.warehouse_location_name
+                          ? ` - ${candidate.warehouse_location_name}` : ''}
+                      </td>
+                      <td>{candidate.trigger_reasons.map((r) => r.replaceAll('_', ' ')).join('; ')}</td>
+                      <td>{candidate.days_over_median_threshold}</td>
+                      <td>{candidate.days_over_p90_threshold}</td>
+                      <td>{formatNumber(candidate.forecasted_weekly_weight_demand ?? 0)}</td>
+                      <td>{formatNumber(candidate.current_weight_capacity ?? 0)}</td>
+                      <td>{formatNumber(candidate.capacity_gap ?? 0)}</td>
+                      <td><ConfidenceBadge confidence={candidate.confidence} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {review.candidates.length > 0 && (
+            <div className="ri-note">
+              Not yet available for any candidate: proposed customers, route
+              territory, expected miles/hours, expected cost, service-level
+              impact - all need real customer location data this platform
+              doesn't have yet.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // --- Business Rules ---------------------------------------------------
 
 function BusinessRulesTab() {
@@ -1695,6 +1806,7 @@ export default function RouteIntelligenceWorkspace() {
       {tab === 'capacity-forecast' && <CapacityForecastTab />}
       {tab === 'route-optimizer' && <RouteOptimizerTab />}
       {tab === 'live-fleet' && <LiveFleetTab />}
+      {tab === 'network-review' && <NetworkReviewTab />}
       {tab === 'business-rules' && <BusinessRulesTab />}
     </div>
   )

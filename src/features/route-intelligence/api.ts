@@ -14,9 +14,11 @@ import type {
   DecideOptimizationRunRequest,
   Driver,
   DriverListResponse,
+  ComputeNetworkReviewRequest,
   ForecastRunStatus,
   LinkCustomerSamsaraAddressRequest,
   LiveFleetStatusResponse,
+  NetworkReviewStatus,
   OptimizationReadiness,
   OptimizationRunStatus,
   RoutePerformanceResponse,
@@ -347,4 +349,20 @@ export function getLiveFleetStatus(
     `${BASE}/live-fleet/${warehouseNumber}`,
     { signal },
   )
+}
+
+export function computeNetworkReview(
+  payload: ComputeNetworkReviewRequest = {},
+  signal?: AbortSignal,
+): Promise<NetworkReviewStatus> {
+  return requestJson<NetworkReviewStatus>(`${BASE}/network-review/compute`, {
+    method: 'POST', body: payload, signal,
+  })
+}
+
+export function getNetworkReview(
+  runId: number,
+  signal?: AbortSignal,
+): Promise<NetworkReviewStatus> {
+  return requestJson<NetworkReviewStatus>(`${BASE}/network-review/runs/${runId}`, { signal })
 }

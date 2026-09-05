@@ -427,6 +427,39 @@ class LiveFleetStatusResponse(BaseModel):
     vehicles: list[VehicleLiveStatus]
 
 
+# --- network review / permanent-route candidates (RI-8, read-only) --------
+
+class PermanentRouteCandidate(BaseModel):
+    candidate_id: int
+    run_id: int
+    warehouse_number: int
+    warehouse_location_name: str = ""
+    trigger_reasons: list[str] = Field(default_factory=list)
+    median_utilization_pct: float | None = None
+    days_over_median_threshold: int = 0
+    days_over_p90_threshold: int = 0
+    forecasted_weekly_weight_demand: float | None = None
+    current_weight_capacity: float | None = None
+    capacity_gap: float | None = None
+    confidence: Literal["low", "medium", "high"]
+    unavailable_fields: list[str] = Field(default_factory=list)
+    computed_at: str = ""
+
+
+class NetworkReviewStatus(BaseModel):
+    run_id: int | None = None
+    run_at: str | None = None
+    warehouse_count: int = 0
+    candidate_count: int = 0
+    status: str = ""
+    message: str = ""
+    candidates: list[PermanentRouteCandidate] = Field(default_factory=list)
+
+
+class ComputeNetworkReviewRequest(BaseModel):
+    warehouse_number: int | None = None
+
+
 # --- data quality --------------------------------------------------------
 
 class DataQualityIssue(BaseModel):

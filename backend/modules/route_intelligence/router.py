@@ -18,6 +18,7 @@ from .schemas import (
     BusinessRuleListResponse,
     CapacityForecastListResponse,
     ComputeForecastRequest,
+    ComputeNetworkReviewRequest,
     ComputeOptimizationRequest,
     CreateDriverRequest,
     CreateVehicleRequest,
@@ -30,6 +31,7 @@ from .schemas import (
     ForecastRunStatus,
     LinkCustomerSamsaraAddressRequest,
     LiveFleetStatusResponse,
+    NetworkReviewStatus,
     OptimizationReadiness,
     OptimizationRunStatus,
     RoutePerformanceResponse,
@@ -374,6 +376,18 @@ def decide_optimization_run(
 def list_plan_decisions(run_id: int) -> RunDecisionHistoryResponse:
     decisions = service.list_plan_decisions(run_id)
     return RunDecisionHistoryResponse(count=len(decisions), decisions=decisions)
+
+
+# --- network review / permanent-route candidates (RI-8, read-only) --------
+
+@router.post("/network-review/compute", response_model=NetworkReviewStatus)
+def compute_network_review(payload: ComputeNetworkReviewRequest) -> NetworkReviewStatus:
+    return service.compute_network_review(warehouse_number=payload.warehouse_number)
+
+
+@router.get("/network-review/runs/{run_id}", response_model=NetworkReviewStatus)
+def get_network_review(run_id: int) -> NetworkReviewStatus:
+    return service.get_network_review(run_id)
 
 
 # --- data quality ----------------------------------------------------------
